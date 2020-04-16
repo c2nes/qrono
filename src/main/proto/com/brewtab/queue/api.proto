@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package com.brewtab.queue;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service QueueServer {
+  rpc Enqueue (EnqueueRequest) returns (EnqueueResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:enqueue"
+      body: "*"
+    };
+  }
+
+  rpc EnqueueStream (stream EnqueueRequest) returns (stream EnqueueResponse);
+
+  rpc Dequeue (DequeueRequest) returns (Item) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:dequeue"
+      body: "*"
+    };
+  }
+
+  rpc Requeue (RequeueRequest) returns (RequeueResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:requeue"
+      body: "*"
+    };
+  }
+
+  rpc Release (ReleaseRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:release"
+      body: "*"
+    };
+  }
+
+  rpc GetQueueInfo (GetQueueInfoRequest) returns (QueueInfo) {
+    option (google.api.http) = {
+      get: "/v1/queues/{queue}"
+    };
+  }
+
+  rpc DropQueue (DropQueueRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:drop"
+    };
+  }
+}
+
+message EnqueueRequest {
+  string queue = 1;
+  bytes value = 2;
+  google.protobuf.Timestamp deadline = 3;
+}
+
+message EnqueueResponse {
+  uint64 id = 1;
+  google.protobuf.Timestamp deadline = 2;
+}
+
+// Blocking?
+message DequeueRequest {
+  string queue = 1;
+}
+
+message Item {
+  uint64 id = 1;
+  google.protobuf.Timestamp deadline = 2;
+  bytes value = 3;
+  Stats stats = 4;
+}
+
+message Stats {
+  uint32 dequeue_count = 1; // increments on each dequeue
+  google.protobuf.Timestamp enqueue_time = 2; // immutable
+  google.protobuf.Timestamp requeue_time = 3; // updated on requeue
+}
+
+message RequeueRequest {
+  string queue = 1;
+  uint64 id = 2;
+  google.protobuf.Timestamp deadline = 3;
+}
+
+message RequeueResponse {
+}
+
+message ReleaseRequest {
+  string queue = 1;
+  uint64 id = 2;
+}
+
+message GetQueueInfoRequest {
+  string queue = 1;
+}
+
+message QueueInfo {
+  string name = 1;
+  uint64 pending = 2;
+  uint64 dequeued = 3;
+}
+
+message DropQueueRequest {
+  string queue = 1;
+}
+
+// Each queue has a separate log
+message LogEntry {
+  // Operation ID.
+  uint64 id = 1;
+  // ID of the operation which this operation supersedes (e.g. a ReleaseOp supersedes a DequeueOp).
+  uint64 predecessor_id = 2;
+
+  oneof operation {
+    EnqueueOp enqueue = 3;
+    RequeueOp requeue = 5;
+    ReleaseOp release = 6;
+  }
+}
+
+message EnqueueOp {
+  // uint64 item_id = LogEntry.id;
+
+  // Required.
+  google.protobuf.Timestamp deadline = 1;
+  // Required.
+  google.protobuf.Timestamp enqueue_time = 2;
+  bytes value = 3;
+}
+
+message RequeueOp {
+  uint64 item_id = 1;
+  // Required.
+  google.protobuf.Timestamp deadline = 2;
+  // Required.
+  google.protobuf.Timestamp requeue_time = 3;
+}
+
+message ReleaseOp {
+  uint64 item_id = 1;
+}
+
+// A segment is an ordered sequence of pending items and tombstones
+message Segment {
+  message Header {
+    uint64 entry_count = 1;
+    Entry.Key last_key = 2;
+  }
+
+  message Entry {
+    Key key = 1;
+
+    oneof entry {
+      Pending pending = 2;
+      Tombstone tombstone = 3;
+    }
+
+    message Key {
+      google.protobuf.Timestamp deadline = 1;
+      uint64 id = 2;
+    }
+  }
+
+  message Pending {
+    Item item = 1;
+  }
+
+  message Tombstone {
+
+  }
+}
