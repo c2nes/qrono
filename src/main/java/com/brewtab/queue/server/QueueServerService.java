@@ -1,11 +1,16 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.Api;
 import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
 import com.brewtab.queue.Api.Item;
+import com.brewtab.queue.Api.ReleaseRequest;
+import com.brewtab.queue.Api.RequeueRequest;
+import com.brewtab.queue.Api.RequeueResponse;
 import com.brewtab.queue.QueueServerGrpc;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.Empty;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -97,7 +102,8 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
   }
 
-  private Item dequeue(DequeueRequest request) throws IOException {
+  @VisibleForTesting
+  Item dequeue(DequeueRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = queues.get(queueName);
     if (queue == null) {
@@ -107,5 +113,52 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     return queue.dequeue();
+  }
+
+  @Override
+  public void release(ReleaseRequest request, StreamObserver<Empty> responseObserver) {
+    try {
+      responseObserver.onNext(release(request));
+      responseObserver.onCompleted();
+    } catch (Exception e) {
+      responseObserver.onError(e);
+    }
+  }
+
+  @VisibleForTesting
+  Empty release(ReleaseRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = queues.get(queueName);
+    if (queue == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no such queue, " + queueName)
+          .asRuntimeException();
+    }
+
+    queue.release(request);
+    return Empty.getDefaultInstance();
+  }
+
+  @Override
+  public void requeue(RequeueRequest request, StreamObserver<RequeueResponse> responseObserver) {
+    try {
+      responseObserver.onNext(requeue(request));
+      responseObserver.onCompleted();
+    } catch (Exception e) {
+      responseObserver.onError(e);
+    }
+  }
+
+  @VisibleForTesting
+  RequeueResponse requeue(RequeueRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = queues.get(queueName);
+    if (queue == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no such queue, " + queueName)
+          .asRuntimeException();
+    }
+
+    return queue.requeue(request);
   }
 }

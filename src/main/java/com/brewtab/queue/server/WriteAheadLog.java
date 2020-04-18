@@ -22,7 +22,7 @@ public class WriteAheadLog implements Closeable {
   private Instant fsyncDeadline;
 
   public WriteAheadLog(Path path) throws IOException {
-    this(path, Duration.ofSeconds(5));
+    this(path, Duration.ofSeconds(1));
   }
 
   public WriteAheadLog(Path path, Duration fsyncInterval) throws IOException {

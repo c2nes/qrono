@@ -13,6 +13,7 @@ import com.brewtab.queue.Api.Segment.Entry.EntryCase;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
+import com.google.protobuf.util.Timestamps;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -60,8 +61,10 @@ public class WritableSegmentImpl implements WritableSegment {
   private void checkEntry(Entry entry) {
     if (entry.getEntryCase() == EntryCase.PENDING && lastRemoved != null) {
       Item item = entry.getPending();
-      Preconditions.checkArgument(itemComparator().compare(item, lastRemoved) < 0,
-          "item deadline too far in the past, %s", item.getDeadline());
+      Preconditions.checkArgument(itemComparator().compare(lastRemoved, item) <= 0,
+          "item deadline too far in the past, %s < %s",
+          Timestamps.toString(item.getDeadline()),
+          Timestamps.toString(lastRemoved.getDeadline()));
     }
   }
 
@@ -150,11 +153,6 @@ public class WritableSegmentImpl implements WritableSegment {
         readerView = ImmutableSegment.newReader(input, offset);
       }
     }
-
-    // Allow entries to be GC'ed
-    pending.clear();
-    removed.clear();
-    tombstones.clear();
 
     return readerView;
   }

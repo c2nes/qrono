@@ -12,7 +12,19 @@ public final class SegmentEntryComparators {
           .thenComparing(Key::getId);
 
   private static final Comparator<Entry> ENTRY_COMPARATOR =
-      Comparator.comparing(Segment::entryKey, KEY_COMPARATOR);
+      Comparator.comparing(Segment::entryKey, KEY_COMPARATOR)
+          .thenComparing((Entry entry) -> {
+            switch (entry.getEntryCase()) {
+              case TOMBSTONE:
+                return 0;
+
+              case PENDING:
+                return 1;
+
+              default:
+                return 2;
+            }
+          });
 
   private static final Comparator<Item> ITEM_COMPARATOR =
       Comparator.comparing(Segment::itemKey, KEY_COMPARATOR);

@@ -6,6 +6,7 @@ import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.brewtab.queue.Api.Segment.Header;
 import com.google.common.base.Preconditions;
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -101,16 +102,7 @@ public final class ImmutableSegment {
   }
 
   public static void write(OutputStream output, Segment segment) throws IOException {
-    Header.newBuilder()
-        .setEntryCount(segment.size())
-        .setLastKey(segment.last())
-        .build()
-        .writeDelimitedTo(output);
-
-    for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
-      entryKey(entry).writeDelimitedTo(output);
-      entry.toBuilder().build().writeDelimitedTo(output);
-    }
+    write(output, segment, false);
   }
 
   public static void write(Path path, Segment segment) throws IOException {
@@ -123,23 +115,42 @@ public final class ImmutableSegment {
   public static Map<Key, Long> writeWithOffsetTracking(Path path, Segment segment)
       throws IOException {
     try (var output = new FileOutputStream(path.toFile())) {
-      Header.newBuilder()
-          .setEntryCount(segment.size())
-          .setLastKey(segment.last())
-          .build()
-          .writeDelimitedTo(output);
-
-      var offsets = new HashMap<Key, Long>();
-      for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
-        var key = entryKey(entry);
-        offsets.put(key, output.getChannel().position());
-        key.writeDelimitedTo(output);
-        entry.writeDelimitedTo(output);
-      }
-
+      var offsets = write(output, segment, true);
       output.getFD().sync();
       return offsets;
     }
   }
 
+  private static Map<Key, Long> write(OutputStream output, Segment segment, boolean trackOffsets)
+      throws IOException {
+    var bufferSize = 4 * 1024;
+
+    ByteArrayOutputStream buffer = new ByteArrayOutputStream(bufferSize);
+    Header.newBuilder()
+        .setEntryCount(segment.size())
+        .setLastKey(segment.last())
+        .build()
+        .writeDelimitedTo(buffer);
+
+    var offsets = trackOffsets ? new HashMap<Key, Long>() : null;
+    var offsetBase = 0L;
+
+    for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
+      var key = entryKey(entry);
+      if (trackOffsets) {
+        offsets.put(key, offsetBase + buffer.size());
+      }
+      key.writeDelimitedTo(buffer);
+      entry.writeDelimitedTo(buffer);
+      if (buffer.size() > (bufferSize >> 1)) {
+        buffer.writeTo(output);
+        offsetBase += buffer.size();
+        buffer.reset();
+      }
+    }
+
+    buffer.writeTo(output);
+
+    return offsets;
+  }
 }
