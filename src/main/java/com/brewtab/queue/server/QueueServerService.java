@@ -1,6 +1,5 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api;
 import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
@@ -13,10 +12,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.Empty;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -24,13 +21,11 @@ import org.slf4j.LoggerFactory;
 
 public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   private static final Logger logger = LoggerFactory.getLogger(QueueServerService.class);
+  private final QueueFactory queueFactory;
   private final Map<String, Queue> queues = new HashMap<>();
-  private final IdGenerator idGenerator;
-  private final Path directory;
 
-  public QueueServerService(IdGenerator idGenerator, Path directory) {
-    this.idGenerator = idGenerator;
-    this.directory = directory;
+  public QueueServerService(QueueFactory queueFactory) {
+    this.queueFactory = queueFactory;
   }
 
   @Override
@@ -55,7 +50,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
     Queue queue = queues.get(queueName);
     if (queue == null) {
-      queue = new Queue(queueName, idGenerator, directory.resolve(queueName));
+      queue = queueFactory.createQueue(queueName);
       queues.put(queueName, queue);
     }
 
@@ -112,7 +107,13 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
           .asRuntimeException();
     }
 
-    return queue.dequeue();
+    Item item = queue.dequeue();
+    if (item == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no items ready")
+          .asRuntimeException();
+    }
+    return item;
   }
 
   @Override

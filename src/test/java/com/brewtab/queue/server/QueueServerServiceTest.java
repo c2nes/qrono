@@ -26,7 +26,9 @@ public class QueueServerServiceTest {
   public void testEnqueueThroughput() throws InterruptedException, IOException {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
-    QueueServerService service = new QueueServerService(idGenerator, directory);
+    var segmentFreezer = new WriterPoolSegmentFreezer(1);
+    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
     var n = 1_000_000;
@@ -50,7 +52,9 @@ public class QueueServerServiceTest {
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
-    QueueServerService service = new QueueServerService(idGenerator, directory);
+    var segmentFreezer = new WriterPoolSegmentFreezer(1);
+    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8("Hello, world!");
     EnqueueResponse resp = service.enqueue(EnqueueRequest.newBuilder()
