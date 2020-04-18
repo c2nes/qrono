@@ -64,4 +64,16 @@ public class IdGeneratorImpl implements IdGenerator {
 
     return (tick << COUNTER_BITS) | counter;
   }
+
+  @Override
+  public synchronized void advancePastId(long id) {
+    long counter = id & COUNTER_MAX;
+    long tick = (id >>> COUNTER_BITS) & TICK_MAX;
+    if (tick > lastTick) {
+      lastTick = tick;
+      lastCounter = counter;
+    } else if (tick == lastTick && counter > lastCounter) {
+      lastCounter = counter;
+    }
+  }
 }

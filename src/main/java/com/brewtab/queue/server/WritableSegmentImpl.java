@@ -96,6 +96,7 @@ public class WritableSegmentImpl implements WritableSegment {
   }
 
   // TODO: This name clashes with "close()" in ImmutableSegment which may be confusing.
+
   @Override
   public void close() throws IOException {
     Preconditions.checkState(!closed, "already closed");
@@ -143,11 +144,11 @@ public class WritableSegmentImpl implements WritableSegment {
 
     // Switch reads to the file atomically
     synchronized (this) {
-      Item next = pending.peek();
+      Key next = peek();
       if (next == null) {
         readerView = new EmptySegment();
       } else {
-        Long offset = offsets.get(itemKey(next));
+        Long offset = offsets.get(next);
         Verify.verifyNotNull(offset, "missing offset");
         FileChannel input = FileChannel.open(pendingIdxPath);
         readerView = ImmutableSegment.newReader(input, offset);

@@ -92,3 +92,8 @@ TODO,
 - Persist ID generator information
 - Handle deadlines in the past (advance them as needed)
 - Online segment merging
+- Implement queue size tracking
+- Switch to more efficient segment and log encoding
+- Do not keep working item values in memory (just IDs)
+    - Add ID lookup index to segments?
+- Requeue with new value?

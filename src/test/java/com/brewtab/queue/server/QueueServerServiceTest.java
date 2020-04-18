@@ -10,6 +10,9 @@ import com.brewtab.queue.Api.RequeueResponse;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
+import io.grpc.Status;
+import io.grpc.Status.Code;
+import io.grpc.StatusRuntimeException;
 import io.grpc.testing.GrpcServerRule;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -27,6 +30,7 @@ public class QueueServerServiceTest {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
     var segmentFreezer = new WriterPoolSegmentFreezer(1);
+    segmentFreezer.startAsync().awaitRunning();
     var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
     QueueServerService service = new QueueServerService(queueFactory);
 
@@ -53,6 +57,7 @@ public class QueueServerServiceTest {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
     var segmentFreezer = new WriterPoolSegmentFreezer(1);
+    segmentFreezer.startAsync().awaitRunning();
     var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
     QueueServerService service = new QueueServerService(queueFactory);
 
@@ -92,5 +97,52 @@ public class QueueServerServiceTest {
         .setQueue("test-queue")
         .setId(item.getId())
         .build());
+  }
+
+  @Test
+  public void testEnqueueDequeueReleaseMany() throws IOException, InterruptedException {
+    IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
+    Path directory = Path.of("/tmp/queue-server-test");
+    var segmentFreezer = new WriterPoolSegmentFreezer(1);
+    segmentFreezer.startAsync().awaitRunning();
+    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    QueueServerService service = new QueueServerService(queueFactory);
+    var queueName = "test-queue-" + System.currentTimeMillis();
+
+    var start = Instant.now();
+    var n = 1_000_000;
+    for (int i = 0; i < n; i++) {
+      var value = ByteString.copyFromUtf8("Hello, world! " + i);
+      service.enqueue(EnqueueRequest.newBuilder()
+          .setQueue(queueName)
+          .setValue(value)
+          .build());
+    }
+
+    var dequeued = 0;
+    try {
+      while (true) {
+        Item item = service.dequeue(DequeueRequest.newBuilder()
+            .setQueue(queueName)
+            .build());
+
+        dequeued++;
+        service.release(ReleaseRequest.newBuilder()
+            .setQueue(queueName)
+            .setId(item.getId())
+            .build());
+      }
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() != Code.NOT_FOUND) {
+        throw e;
+      }
+    }
+
+    System.out.println("Dequeue: " + dequeued);
+    var end = Instant.now();
+    var duration = Duration.between(start, end);
+    System.out.println(duration.toMillis());
+    var seconds = 1e-9 * duration.toNanos();
+    System.out.println((long) (n / seconds));
   }
 }

@@ -5,4 +5,10 @@ package com.brewtab.queue.server;
  */
 public interface IdGenerator {
   long generateId();
+
+  /**
+   * Advance the generator past the given ID. All subsequent calls to {@link #generateId()} will
+   * return an ID larger than the given ID.
+   */
+  void advancePastId(long id);
 }

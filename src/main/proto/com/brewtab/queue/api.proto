@@ -127,3 +127,7 @@ message Segment {
     }
   }
 }
+
+message GlobalState {
+  google.protobuf.Timestamp deadline = 1;
+}

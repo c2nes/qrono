@@ -17,4 +17,8 @@ public class QueueFactory {
   public Queue createQueue(String name) throws IOException {
     return new Queue(name, idGenerator, directory.resolve(name), segmentFreezer);
   }
+
+  public Queue createQueue(String name) throws IOException {
+
+  }
 }
