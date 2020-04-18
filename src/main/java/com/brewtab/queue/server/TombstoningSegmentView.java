@@ -1,8 +1,9 @@
 package com.brewtab.queue.server;
 
+import static com.brewtab.queue.server.Segment.entryKey;
+
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.EntryCase;
-import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.google.common.base.Verify;
 import java.io.IOException;
 
@@ -25,7 +26,7 @@ public class TombstoningSegmentView /* implements Segment */ {
         return null;
       }
 
-      var key = entry.getKey();
+      var key = entryKey(entry);
       var nextKey = delegate.peek();
 
       // Next key is different so this is either an unpaired tombstone
@@ -44,7 +45,7 @@ public class TombstoningSegmentView /* implements Segment */ {
 
       // At most two entries (a pending item and it's tombstone) may share a pending key.
       // Validate that the next key (if any) is different
-      Verify.verifyNotNull(!entry.getKey().equals(delegate.peek()),
+      Verify.verifyNotNull(!entryKey(entry).equals(delegate.peek()),
           "duplicate segment entries found; key=");
     }
   }

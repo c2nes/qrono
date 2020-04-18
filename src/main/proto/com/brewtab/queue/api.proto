@@ -108,42 +108,6 @@ message DropQueueRequest {
   string queue = 1;
 }
 
-// Each queue has a separate log
-message LogEntry {
-  // Operation ID.
-  uint64 id = 1;
-  // ID of the operation which this operation supersedes (e.g. a ReleaseOp supersedes a DequeueOp).
-  uint64 predecessor_id = 2;
-
-  oneof operation {
-    EnqueueOp enqueue = 3;
-    RequeueOp requeue = 5;
-    ReleaseOp release = 6;
-  }
-}
-
-message EnqueueOp {
-  // uint64 item_id = LogEntry.id;
-
-  // Required.
-  google.protobuf.Timestamp deadline = 1;
-  // Required.
-  google.protobuf.Timestamp enqueue_time = 2;
-  bytes value = 3;
-}
-
-message RequeueOp {
-  uint64 item_id = 1;
-  // Required.
-  google.protobuf.Timestamp deadline = 2;
-  // Required.
-  google.protobuf.Timestamp requeue_time = 3;
-}
-
-message ReleaseOp {
-  uint64 item_id = 1;
-}
-
 // A segment is an ordered sequence of pending items and tombstones
 message Segment {
   message Header {
@@ -152,24 +116,14 @@ message Segment {
   }
 
   message Entry {
-    Key key = 1;
-
     oneof entry {
-      Pending pending = 2;
-      Tombstone tombstone = 3;
+      Item pending = 1;
+      Key tombstone = 2;
     }
 
     message Key {
-      google.protobuf.Timestamp deadline = 1;
-      uint64 id = 2;
+      uint64 id = 1;
+      google.protobuf.Timestamp deadline = 2;
     }
-  }
-
-  message Pending {
-    Item item = 1;
-  }
-
-  message Tombstone {
-
   }
 }

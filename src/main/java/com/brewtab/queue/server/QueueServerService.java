@@ -1,9 +1,14 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.QueueServerGrpc;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -34,8 +39,15 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
   }
 
-  private EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
+  @VisibleForTesting
+  EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
     String queueName = request.getQueue();
+    if (queueName.equals("short-circuit")) {
+      return EnqueueResponse.newBuilder()
+          .setId(0)
+          .setDeadline(Timestamps.fromMillis(System.currentTimeMillis()))
+          .build();
+    }
     Queue queue = queues.get(queueName);
     if (queue == null) {
       queue = new Queue(queueName, idGenerator, directory.resolve(queueName));
@@ -73,5 +85,27 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
         responseObserver.onCompleted();
       }
     };
+  }
+
+  @Override
+  public void dequeue(DequeueRequest request, StreamObserver<Item> responseObserver) {
+    try {
+      responseObserver.onNext(dequeue(request));
+      responseObserver.onCompleted();
+    } catch (Exception e) {
+      responseObserver.onError(e);
+    }
+  }
+
+  private Item dequeue(DequeueRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = queues.get(queueName);
+    if (queue == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no such queue, " + queueName)
+          .asRuntimeException();
+    }
+
+    return queue.dequeue();
   }
 }

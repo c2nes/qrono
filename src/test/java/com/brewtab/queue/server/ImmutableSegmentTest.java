@@ -1,16 +1,18 @@
 package com.brewtab.queue.server;
 
+import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Pending;
 import com.brewtab.queue.server.ImmutableSegment.Reader;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.protobuf.util.Timestamps;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import org.junit.Test;
 
 public class ImmutableSegmentTest {
@@ -20,32 +22,27 @@ public class ImmutableSegmentTest {
     IdGeneratorImpl generator = new IdGeneratorImpl(baseTime);
 
     Entry entry1 = Entry.newBuilder()
-        .setKey(Key.newBuilder()
+        .setPending(Item.newBuilder()
             .setDeadline(Timestamps.fromMillis(baseTime))
             .setId(generator.generateId()))
-        .setPending(Pending.newBuilder().build())
         .build();
     Entry entry2 = Entry.newBuilder()
-        .setKey(Key.newBuilder()
+        .setPending(Item.newBuilder()
             .setDeadline(Timestamps.fromMillis(baseTime - 5))
             .setId(generator.generateId()))
-        .setPending(Pending.newBuilder().build())
         .build();
     Entry entry3 = Entry.newBuilder()
-        .setKey(Key.newBuilder()
+        .setPending(Item.newBuilder()
             .setDeadline(Timestamps.fromMillis(baseTime + 5))
             .setId(generator.generateId()))
-        .setPending(Pending.newBuilder().build())
         .build();
 
-    InMemorySegment memSegment = new InMemorySegment();
-    memSegment.addEntry(entry1);
-    memSegment.addEntry(entry2);
-    memSegment.addEntry(entry3);
+    InMemorySegment memSegment = new InMemorySegment(entry1, entry2, entry3);
 
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ImmutableSegment.write(baos, memSegment.freeze());
+    ImmutableSegment.write(baos, memSegment);
     Reader reader = ImmutableSegment.newReader(new ByteArrayInputStream(baos.toByteArray()));
+    assertEquals(3, reader.size());
     assertEquals(entry2, reader.next());
     assertEquals(entry1, reader.next());
     assertEquals(entry3, reader.next());

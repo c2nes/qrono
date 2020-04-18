@@ -1,6 +1,8 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
+import com.brewtab.queue.Api.Segment.Entry.Key;
 import java.io.IOException;
 
 public interface Segment {
@@ -13,4 +15,24 @@ public interface Segment {
   Entry.Key first();
 
   Entry.Key last();
+
+  static Entry.Key itemKey(Item item) {
+    return Key.newBuilder()
+        .setDeadline(item.getDeadline())
+        .setId(item.getId())
+        .build();
+  }
+
+  static Entry.Key entryKey(Entry entry) {
+    switch (entry.getEntryCase()) {
+      case PENDING:
+        return itemKey(entry.getPending());
+
+      case TOMBSTONE:
+        return entry.getTombstone();
+
+      default:
+        throw new IllegalArgumentException("invalid entry type: " + entry.getEntryCase());
+    }
+  }
 }

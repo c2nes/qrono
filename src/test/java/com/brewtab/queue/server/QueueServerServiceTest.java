@@ -50,18 +50,22 @@ public class QueueServerServiceTest {
       }
     });
 
+    var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
+    var n = 1_000_000;
     Instant start = Instant.now();
-    for (int i = 0; i < 1_000_000; i++) {
+    for (int i = 0; i < n; i++) {
       stream.onNext(EnqueueRequest.newBuilder()
-          .setQueue("test-queue-1")
-          .setValue(ByteString.copyFromUtf8(String.format("Hello world %9d-", i)
-              + Strings.repeat("0", 256)))
+          .setQueue("test-queue")
+          .setValue(value)
           .build());
       EnqueueResponse resp = respQueue.take();
       // System.out.println(resp.getDeadline() + " / " + resp.getId());
     }
     stream.onCompleted();
     Instant end = Instant.now();
-    System.out.println(Duration.between(start, end).toMillis());
+    Duration duration = Duration.between(start, end);
+    System.out.println(duration.toMillis());
+    var seconds = 1e-9 * duration.toNanos();
+    System.out.println((long) (n / seconds));
   }
 }
