@@ -2,8 +2,15 @@ package com.brewtab.queue.server;
 
 import com.brewtab.queue.Api.Segment.Entry;
 import java.io.IOException;
+import java.util.Collection;
 
 public interface WritableSegment extends Segment {
+  /**
+   * Returns the name of this segment.
+   */
+  // TODO: Rename "ID"?
+  String getName();
+
   /**
    * Add a new entry to the segment.
    */
@@ -16,8 +23,7 @@ public interface WritableSegment extends Segment {
   void close() throws IOException;
 
   /**
-   * Freeze a previously closed segment. Returns a new segment which should
-   * replace this one.
+   * Returns the entries in the segment. The segment must be closed before the entries can be read.
    */
-  Segment freeze() throws IOException;
+  Collection<Entry> entries();
 }

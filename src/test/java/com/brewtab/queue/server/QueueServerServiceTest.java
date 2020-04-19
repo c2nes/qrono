@@ -10,7 +10,6 @@ import com.brewtab.queue.Api.RequeueResponse;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
-import io.grpc.Status;
 import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.grpc.testing.GrpcServerRule;
@@ -29,9 +28,9 @@ public class QueueServerServiceTest {
   public void testEnqueueThroughput() throws InterruptedException, IOException {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
-    var segmentFreezer = new WriterPoolSegmentFreezer(1);
-    segmentFreezer.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    var ioScheduler = new StaticIOWorkerPool(1);
+    ioScheduler.startAsync().awaitRunning();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
     QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
@@ -56,9 +55,9 @@ public class QueueServerServiceTest {
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
-    var segmentFreezer = new WriterPoolSegmentFreezer(1);
-    segmentFreezer.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    var ioScheduler = new StaticIOWorkerPool(1);
+    ioScheduler.startAsync().awaitRunning();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
     QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8("Hello, world!");
@@ -103,9 +102,9 @@ public class QueueServerServiceTest {
   public void testEnqueueDequeueReleaseMany() throws IOException, InterruptedException {
     IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
     Path directory = Path.of("/tmp/queue-server-test");
-    var segmentFreezer = new WriterPoolSegmentFreezer(1);
-    segmentFreezer.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, segmentFreezer);
+    var ioScheduler = new StaticIOWorkerPool(1);
+    ioScheduler.startAsync().awaitRunning();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
     QueueServerService service = new QueueServerService(queueFactory);
     var queueName = "test-queue-" + System.currentTimeMillis();
 

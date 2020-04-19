@@ -97,6 +97,9 @@ public final class ImmutableSegment {
     if (offset > 0) {
       input.position(offset);
       nextKey = Key.parseDelimitedFrom(inputStream);
+      if (nextKey == null) {
+        inputStream.close();
+      }
     }
     return new Reader(inputStream, header, firstKey, nextKey);
   }

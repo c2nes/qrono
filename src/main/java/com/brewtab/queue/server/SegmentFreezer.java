@@ -1,25 +1,12 @@
 package com.brewtab.queue.server;
 
-import com.google.common.util.concurrent.Uninterruptibles;
+import com.brewtab.queue.Api.Segment.Entry.Key;
+import java.io.IOException;
 
 public interface SegmentFreezer {
-  void freeze(WritableSegment segment) throws InterruptedException;
+  FrozenSegment freeze(WritableSegment segment) throws IOException;
 
-  default void freezeUninterruptibly(WritableSegment segment) {
-    boolean interrupted = false;
-    try {
-      while (true) {
-        try {
-          freeze(segment);
-          return;
-        } catch (InterruptedException e) {
-          interrupted = true;
-        }
-      }
-    } finally {
-      if (interrupted) {
-        Thread.currentThread().interrupt();
-      }
-    }
+  interface FrozenSegment {
+    Segment open(Key position) throws IOException;
   }
 }

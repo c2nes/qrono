@@ -1,11 +1,10 @@
 package com.brewtab.queue.server;
 
-import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.common.util.concurrent.Uninterruptibles;
-import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -14,37 +13,31 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class WriterPoolSegmentFreezer extends AbstractIdleService implements SegmentFreezer {
-  private static final Logger log = LoggerFactory.getLogger(WriterPoolSegmentFreezer.class);
-  private final SynchronousQueue<FreezeRequest> channel = new SynchronousQueue<>(true);
+public class StaticIOWorkerPool extends AbstractIdleService implements IOScheduler {
+  private static final Logger log = LoggerFactory.getLogger(StaticIOWorkerPool.class);
+  private final SynchronousQueue<Request<?>> channel = new SynchronousQueue<>(true);
   private final int numWriters;
 
   private ExecutorService executor;
 
-  public WriterPoolSegmentFreezer(int numWriters) {
+  public StaticIOWorkerPool(int numWriters) {
     this.numWriters = numWriters;
   }
 
   @Override
-  public void freeze(WritableSegment segment) throws InterruptedException {
-    Preconditions.checkState(isRunning(), "not running");
-    var request = new FreezeRequest(segment);
-    channel.put(request);
-  }
-
-  @Override
-  public void freezeUninterruptibly(WritableSegment segment) {
-    Preconditions.checkState(isRunning(), "not running");
-    var request = new FreezeRequest(segment);
+  public <V> CompletableFuture<V> schedule(Callable<V> operation, Parameters parameters) {
+    var request = new Request<>(operation);
     Uninterruptibles.putUninterruptibly(channel, request);
+    return request.future;
   }
 
-  private void processOne() throws InterruptedException, IOException {
+  private void processOne() throws Exception {
     var request = channel.take();
     var start = Instant.now();
-    request.segment.freeze();
+    // TODO: We're letting exceptions bubble up and we're not completing the future
+    request.execute();
     var duration = Duration.between(start, Instant.now());
-    log.debug("Segment freeze completed; duration={}ms", duration.toMillis());
+    log.debug("IO operation completed; duration={}ms", duration.toMillis());
   }
 
   private void process() {
@@ -57,7 +50,7 @@ public class WriterPoolSegmentFreezer extends AbstractIdleService implements Seg
         }
       } catch (Exception e) {
         // TODO: Need to do something here...maybe just kill the process?
-        log.error("Unhandled exception while freezing segment", e);
+        log.error("Unhandled exception while executing IO", e);
       }
     }
   }
@@ -81,11 +74,16 @@ public class WriterPoolSegmentFreezer extends AbstractIdleService implements Seg
     }
   }
 
-  private static class FreezeRequest {
-    private final WritableSegment segment;
+  private static class Request<V> {
+    private final CompletableFuture<V> future = new CompletableFuture<>();
+    private final Callable<V> operation;
 
-    private FreezeRequest(WritableSegment segment) {
-      this.segment = segment;
+    private Request(Callable<V> operation) {
+      this.operation = operation;
+    }
+
+    void execute() throws Exception {
+      future.complete(operation.call());
     }
   }
 }

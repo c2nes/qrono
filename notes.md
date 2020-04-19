@@ -97,3 +97,5 @@ TODO,
 - Do not keep working item values in memory (just IDs)
     - Add ID lookup index to segments?
 - Requeue with new value?
+- How do we avoid re-reading large numbers of segment entries to cancel out
+  tombstones?

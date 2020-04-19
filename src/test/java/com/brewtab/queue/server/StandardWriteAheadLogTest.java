@@ -16,7 +16,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-public class WriteAheadLogTest {
+public class StandardWriteAheadLogTest {
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
@@ -40,11 +40,11 @@ public class WriteAheadLogTest {
       entrySupplier = new Memoize<>(entrySupplier);
     }
 
-    var logPath = temporaryFolder.getRoot().toPath().resolve("log-test-" + UUID.randomUUID());
-    var log = new WriteAheadLog(logPath, syncDuration);
+    var name = "log-test-" + UUID.randomUUID();
+    var log = StandardWriteAheadLog.create(temporaryFolder.getRoot().toPath(), name, syncDuration);
     var start = Instant.now();
     for (var i = 0; i < n; i++) {
-      log.write(entrySupplier.get());
+      log.append(entrySupplier.get());
     }
     var duration = Duration.between(start, Instant.now());
     var seconds = 1e-9 * duration.toNanos();
