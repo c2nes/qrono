@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,27 +35,59 @@ public class QueueData {
     this.segmentFreezer = segmentFreezer;
   }
 
-  // TODO: Return "QueueLoadSummary"
-  public void load() throws IOException {
+  // TODO: Refactor loading process
+  public QueueLoadSummary load() throws IOException {
+    // TODO: Use some sort of file locking to prevent multiple processes
+    //  from accessing the queue data simultaneously?
     Files.createDirectories(directory);
-    var files = requireNonNull(directory.toFile().listFiles());
 
-    for (File file : files) {
+    // Load and freeze any existing segment logs
+    for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
+
       if (SegmentFiles.isClosedLogPath(path)) {
-        // TODO:
+        String segmentName = SegmentFiles.getSegmentNameFromPath(path);
+        List<Entry> entries = StandardWriteAheadLog.read(path);
+        segmentFreezer.freeze(segmentName, entries);
+        Files.delete(path);
       }
 
       if (SegmentFiles.isLogPath(path)) {
-        // TODO:
+        String segmentName = SegmentFiles.getSegmentNameFromPath(path);
+        // TODO: Use lax read method here
+        List<Entry> entries = StandardWriteAheadLog.read(path);
+        segmentFreezer.freeze(segmentName, entries);
+        Files.delete(path);
       }
-
-      // SegmentPaths(name).getLogPath
-      // SegmentPaths(name).getClosedLogPath
-      // SegmentPaths(name).getCombinedIndexPath
-      // SegmentPaths(name).getPendingIndexPath
-      // SegmentPaths(name).getTombstoneIndexPath
     }
+
+    long maxSegmentId = -1;
+    long maxId = 0;
+    for (File file : requireNonNull(directory.toFile().listFiles())) {
+      Path path = file.toPath();
+      if (SegmentFiles.isAnyIndexPath(path)) {
+        var segment = ImmutableSegment.open(path);
+        immutableSegments.addSegment(segment);
+        if (segment.getMaxId() > maxId) {
+          maxId = segment.getMaxId();
+        }
+
+        var segmentName = SegmentFiles.getSegmentNameFromPath(path);
+        var segmentId = Long.parseLong(segmentName);
+        if (segmentId > maxSegmentId) {
+          maxSegmentId = segmentId;
+        }
+      }
+    }
+
+    segmentCounter.set(maxSegmentId + 1);
+
+    return new QueueLoadSummary(maxId);
+    // SegmentPaths(name).getLogPath
+    // SegmentPaths(name).getClosedLogPath
+    // SegmentPaths(name).getCombinedIndexPath
+    // SegmentPaths(name).getPendingIndexPath
+    // SegmentPaths(name).getTombstoneIndexPath
   }
 
   // Read segment
@@ -103,23 +136,27 @@ public class QueueData {
     immutableSegments.addSegment(replaceOnFreezeSegment);
 
     // Schedule the freeze operation to happen asynchronously
-    var freezeFuture = ioScheduler.schedule(
-        () -> segmentFreezer.freeze(segment),
-        new Parameters());
+    var freezeFuture = ioScheduler.schedule(() -> freezeAndDeleteLog(segment), new Parameters());
 
     // TODO: Handle exceptional completion of the future
 
-    // When the freeze is complete, delete the WAL and replace the in-memory
-    // copy of the segment with the frozen on-disk copy.
+    // Replace the in-memory copy of the segment with the frozen on-disk copy.
     freezeFuture.thenAccept(frozenSegment -> {
       try {
-        StandardWriteAheadLog.delete(directory, segment.getName());
         replaceOnFreezeSegment.replace(frozenSegment);
       } catch (IOException e) {
         // TODO: Crash the process or handle the error or something...
         logger.error("Failed to replace in-memory segment with on-disk copy", e);
       }
     });
+  }
+
+  private FrozenSegment freezeAndDeleteLog(WritableSegment segment) throws IOException {
+    var segmentName = segment.getName();
+    var entries = segment.entries();
+    var frozenSegment = segmentFreezer.freeze(segmentName, entries);
+    StandardWriteAheadLog.delete(directory, segmentName);
+    return frozenSegment;
   }
 
   public Entry.Key peek() {
@@ -195,6 +232,11 @@ public class QueueData {
     @Override
     public Key last() {
       return active.last();
+    }
+
+    @Override
+    public long getMaxId() {
+      return active.getMaxId();
     }
 
     synchronized void replace(FrozenSegment frozenSegment) throws IOException {

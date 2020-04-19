@@ -8,21 +8,19 @@ import com.brewtab.queue.Api.Segment.Entry.Key;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 
 public class StandardSegmentFreezer implements SegmentFreezer {
   private final Path directory;
 
-  // TODO: Pass name to freeze()
   public StandardSegmentFreezer(Path directory) {
     this.directory = directory;
   }
 
   @Override
-  public FrozenSegment freeze(WritableSegment segment) throws IOException {
-    var name = segment.getName();
-    var entries = segment.entries();
+  public FrozenSegment freeze(String segmentName, Collection<Entry> entries) throws IOException {
     var tombstoneSegment = new InMemorySegment(entries.stream()
         .filter(Entry::hasTombstone)
         .collect(toImmutableSortedSet(entryComparator())));
@@ -32,11 +30,11 @@ public class StandardSegmentFreezer implements SegmentFreezer {
         .collect(toImmutableSortedSet(entryComparator())));
 
     if (tombstoneSegment.size() > 0) {
-      var tombstoneIdxPath = SegmentFiles.getTombstoneIndexPath(directory, name);
+      var tombstoneIdxPath = SegmentFiles.getTombstoneIndexPath(directory, segmentName);
       ImmutableSegment.write(tombstoneIdxPath, tombstoneSegment);
     }
 
-    var pendingIdxPath = SegmentFiles.getPendingIndexPath(directory, name);
+    var pendingIdxPath = SegmentFiles.getPendingIndexPath(directory, segmentName);
     var offsets = writeIfNonEmpty(pendingIdxPath, pendingSegment);
 
     return position -> {
@@ -45,7 +43,7 @@ public class StandardSegmentFreezer implements SegmentFreezer {
         throw new IllegalArgumentException("key not found in segment");
       }
 
-      return ImmutableSegment.newReader(FileChannel.open(pendingIdxPath), offset);
+      return ImmutableSegment.open(pendingIdxPath, offset);
     };
   }
 

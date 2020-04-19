@@ -113,6 +113,7 @@ message Segment {
   message Header {
     uint64 entry_count = 1;
     Entry.Key last_key = 2;
+    uint64 max_id = 3;
   }
 
   message Entry {
@@ -129,5 +130,5 @@ message Segment {
 }
 
 message GlobalState {
-  google.protobuf.Timestamp deadline = 1;
+  google.protobuf.Timestamp epoch = 1;
 }

@@ -3,6 +3,7 @@ package com.brewtab.queue.server;
 import static com.brewtab.queue.server.Segment.entryKey;
 import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
 
+import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.google.common.collect.ImmutableSortedSet;
@@ -47,5 +48,15 @@ public class InMemorySegment implements Segment {
   @Override
   public Key last() {
     return entries.isEmpty() ? null : entryKey(entries.descendingIterator().next());
+  }
+
+  @Override
+  public long getMaxId() {
+    return entries.stream()
+        .filter(Entry::hasPending)
+        .map(Entry::getPending)
+        .mapToLong(Item::getId)
+        .max()
+        .orElse(0);
   }
 }

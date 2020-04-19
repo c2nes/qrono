@@ -4,7 +4,7 @@ import java.time.Clock;
 
 // TODO: Persist state
 // TODO: Standardize interface for creating new generator vs restoring state of existing generator.
-public class IdGeneratorImpl implements IdGenerator {
+public class StandardIdGenerator implements IdGenerator {
   // ID:       64 bits
   // Ticks:    38 bits, 16 ms step, offset from configured epoch, ~139 years range
   // Counter:  16 bits, rolls over every 16ms, ~4 million IDs/second
@@ -20,16 +20,18 @@ public class IdGeneratorImpl implements IdGenerator {
   private final Clock clock;
   private final long epoch;
 
-  private long lastTick = 0;
-  private long lastCounter = 0;
+  private long lastTick;
+  private long lastCounter;
 
-  public IdGeneratorImpl(long epoch) {
-    this(Clock.systemUTC(), epoch);
+  public StandardIdGenerator(long epoch, long lastId) {
+    this(Clock.systemUTC(), epoch, lastId);
   }
 
-  public IdGeneratorImpl(Clock clock, long epoch) {
+  public StandardIdGenerator(Clock clock, long epoch, long lastId) {
     this.clock = clock;
     this.epoch = epoch;
+    lastTick = lastId & COUNTER_MAX;
+    lastCounter = (lastId >>> COUNTER_BITS) & TICK_MAX;
   }
 
   private long tick() {
@@ -63,17 +65,5 @@ public class IdGeneratorImpl implements IdGenerator {
     }
 
     return (tick << COUNTER_BITS) | counter;
-  }
-
-  @Override
-  public synchronized void advancePastId(long id) {
-    long counter = id & COUNTER_MAX;
-    long tick = (id >>> COUNTER_BITS) & TICK_MAX;
-    if (tick > lastTick) {
-      lastTick = tick;
-      lastCounter = counter;
-    } else if (tick == lastTick && counter > lastCounter) {
-      lastCounter = counter;
-    }
   }
 }

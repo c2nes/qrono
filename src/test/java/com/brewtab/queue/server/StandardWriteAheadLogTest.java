@@ -23,7 +23,7 @@ public class StandardWriteAheadLogTest {
   public void test(long n, int valueSize, Duration syncDuration, boolean memoizeValue)
       throws IOException {
     var baseTime = System.currentTimeMillis();
-    var generator = new IdGeneratorImpl(baseTime);
+    var generator = new StandardIdGenerator(baseTime, 0);
     var id = generator.generateId();
     var deadline = Timestamps.fromMillis(baseTime);
     var value = ByteString.copyFromUtf8(Strings.repeat("0", valueSize));

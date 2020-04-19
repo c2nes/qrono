@@ -16,6 +16,8 @@ public interface Segment {
 
   Entry.Key last();
 
+  long getMaxId();
+
   static Entry.Key itemKey(Item item) {
     return Key.newBuilder()
         .setDeadline(item.getDeadline())

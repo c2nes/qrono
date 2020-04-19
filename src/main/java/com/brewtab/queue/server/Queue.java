@@ -35,6 +35,10 @@ public class Queue {
     this.clock = clock;
   }
 
+  public QueueLoadSummary load() throws IOException {
+    return data.load();
+  }
+
   public synchronized Item enqueue(EnqueueRequest request) throws IOException {
     Timestamp enqueueTime = Timestamps.fromMillis(clock.millis());
     Timestamp deadline = request.hasDeadline() ? request.getDeadline() : enqueueTime;

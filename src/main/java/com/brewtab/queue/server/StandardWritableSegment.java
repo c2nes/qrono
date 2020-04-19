@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.PriorityQueue;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.stream.Stream;
 
 public class StandardWritableSegment implements WritableSegment {
   private final String name;
@@ -140,6 +141,14 @@ public class StandardWritableSegment implements WritableSegment {
   public Key last() {
     // TODO: Implement
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public synchronized long getMaxId() {
+    return Stream.concat(pending.stream(), removed.values().stream())
+        .mapToLong(Item::getId)
+        .max()
+        .orElse(0);
   }
 }
 

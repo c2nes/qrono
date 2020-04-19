@@ -69,4 +69,12 @@ public class MergedSegmentView<E extends Segment> implements Segment {
         .max(entryKeyComparator())
         .orElse(null);
   }
+
+  @Override
+  public long getMaxId() {
+    return Stream.concat(segments.stream(), retired.stream())
+        .mapToLong(Segment::getMaxId)
+        .max()
+        .orElse(0);
+  }
 }

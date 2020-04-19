@@ -26,7 +26,7 @@ public class QueueServerServiceTest {
 
   @Test
   public void testEnqueueThroughput() throws InterruptedException, IOException {
-    IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
+    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
     Path directory = Path.of("/tmp/queue-server-test");
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
@@ -53,7 +53,7 @@ public class QueueServerServiceTest {
 
   @Test
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
-    IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
+    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
     Path directory = Path.of("/tmp/queue-server-test");
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
@@ -100,7 +100,7 @@ public class QueueServerServiceTest {
 
   @Test
   public void testEnqueueDequeueReleaseMany() throws IOException, InterruptedException {
-    IdGeneratorImpl idGenerator = new IdGeneratorImpl(System.currentTimeMillis());
+    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
     Path directory = Path.of("/tmp/queue-server-test");
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();

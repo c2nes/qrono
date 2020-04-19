@@ -13,83 +13,85 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class ImmutableSegment {
-  private ImmutableSegment() {
+public final class ImmutableSegment implements Segment, Closeable {
+  private final InputStream input;
+  private final Header header;
+  private final Entry.Key firstKey;
+
+  private Entry.Key nextKey;
+  private boolean closed = false;
+
+  private ImmutableSegment(InputStream input, Header header, Key firstKey, Key nextKey) {
+    this.input = input;
+    this.header = header;
+    this.firstKey = firstKey;
+    this.nextKey = nextKey;
   }
 
-  public static class Reader implements Segment, Closeable {
-    private final InputStream input;
-    private final Header header;
-    private final Entry.Key firstKey;
+  @Override
+  public long size() {
+    return header.getEntryCount();
+  }
 
-    private Entry.Key nextKey;
-    private boolean closed = false;
+  @Override
+  public Key peek() {
+    Preconditions.checkState(!closed, "closed");
+    return nextKey;
+  }
 
-    private Reader(InputStream input, Header header, Key firstKey, Key nextKey) {
-      this.input = input;
-      this.header = header;
-      this.firstKey = firstKey;
-      this.nextKey = nextKey;
+  @Override
+  public Entry next() throws IOException {
+    Preconditions.checkState(!closed, "closed");
+    if (nextKey == null) {
+      return null;
     }
 
-    @Override
-    public long size() {
-      return header.getEntryCount();
-    }
+    Entry entry = Entry.parseDelimitedFrom(input);
+    nextKey = Entry.Key.parseDelimitedFrom(input);
 
-    @Override
-    public Key peek() {
-      Preconditions.checkState(!closed, "closed");
-      return nextKey;
-    }
-
-    @Override
-    public Entry next() throws IOException {
-      Preconditions.checkState(!closed, "closed");
-      if (nextKey == null) {
-        return null;
-      }
-
-      Entry entry = Entry.parseDelimitedFrom(input);
-      nextKey = Entry.Key.parseDelimitedFrom(input);
-
-      if (nextKey == null) {
-        input.close();
-      }
-
-      return entry;
-    }
-
-    @Override
-    public Key first() {
-      return firstKey;
-    }
-
-    @Override
-    public Key last() {
-      return header.getLastKey();
-    }
-
-    @Override
-    public void close() throws IOException {
-      closed = true;
-      nextKey = null;
+    if (nextKey == null) {
       input.close();
     }
+
+    return entry;
   }
 
-  public static Reader newReader(InputStream input) throws IOException {
+  @Override
+  public Key first() {
+    return firstKey;
+  }
+
+  @Override
+  public Key last() {
+    return header.getLastKey();
+  }
+
+  @Override
+  public long getMaxId() {
+    return header.getMaxId();
+  }
+
+  @Override
+  public void close() throws IOException {
+    closed = true;
+    nextKey = null;
+    input.close();
+  }
+
+  public static ImmutableSegment newReader(InputStream input) throws IOException {
     Header header = Header.parseDelimitedFrom(input);
     Key firstKey = Key.parseDelimitedFrom(input);
-    return new Reader(input, header, firstKey, firstKey);
+    return new ImmutableSegment(input, header, firstKey, firstKey);
   }
 
-  public static Reader newReader(SeekableByteChannel input, long offset) throws IOException {
+  public static ImmutableSegment newReader(SeekableByteChannel input, long offset)
+      throws IOException {
     var inputStream = Channels.newInputStream(input);
     var header = Header.parseDelimitedFrom(inputStream);
     var firstKey = Key.parseDelimitedFrom(inputStream);
@@ -101,7 +103,15 @@ public final class ImmutableSegment {
         inputStream.close();
       }
     }
-    return new Reader(inputStream, header, firstKey, nextKey);
+    return new ImmutableSegment(inputStream, header, firstKey, nextKey);
+  }
+
+  public static ImmutableSegment open(Path path, long offset) throws IOException {
+    return newReader(FileChannel.open(path), offset);
+  }
+
+  public static ImmutableSegment open(Path path) throws IOException {
+    return open(path, 0);
   }
 
   public static void write(OutputStream output, Segment segment) throws IOException {
@@ -132,6 +142,7 @@ public final class ImmutableSegment {
     Header.newBuilder()
         .setEntryCount(segment.size())
         .setLastKey(segment.last())
+        .setMaxId(segment.getMaxId())
         .build()
         .writeDelimitedTo(buffer);
 

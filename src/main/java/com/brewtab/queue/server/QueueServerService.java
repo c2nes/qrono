@@ -14,6 +14,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -22,10 +23,15 @@ import org.slf4j.LoggerFactory;
 public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   private static final Logger logger = LoggerFactory.getLogger(QueueServerService.class);
   private final QueueFactory queueFactory;
-  private final Map<String, Queue> queues = new HashMap<>();
+  private final Map<String, Queue> queues;
 
   public QueueServerService(QueueFactory queueFactory) {
+    this(queueFactory, Collections.emptyMap());
+  }
+
+  public QueueServerService(QueueFactory queueFactory, Map<String, Queue> initialQueues) {
     this.queueFactory = queueFactory;
+    this.queues = new HashMap<>(initialQueues);
   }
 
   @Override

@@ -29,4 +29,9 @@ public class EmptySegment implements Segment {
   public Key last() {
     return null;
   }
+
+  @Override
+  public long getMaxId() {
+    return 0;
+  }
 }
