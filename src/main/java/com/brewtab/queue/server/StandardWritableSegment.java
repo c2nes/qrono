@@ -37,6 +37,7 @@ public class StandardWritableSegment implements WritableSegment {
   private final LinkedHashMap<Key, Item> removed = new LinkedHashMap<>();
   private Item lastRemoved = null;
 
+  private boolean frozen = false;
   private boolean closed = false;
 
   public StandardWritableSegment(String name, WriteAheadLog wal) {
@@ -62,7 +63,7 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public void add(Entry entry) throws IOException {
-    Preconditions.checkState(!closed, "closed");
+    Preconditions.checkState(!frozen, "frozen");
     checkEntry(entry);
     wal.append(entry);
 
@@ -83,18 +84,16 @@ public class StandardWritableSegment implements WritableSegment {
     }
   }
 
-  // TODO: This name clashes with "close()" in ImmutableSegment which may be confusing.
-
   @Override
-  public void close() throws IOException {
-    Preconditions.checkState(!closed, "already closed");
-    closed = true;
+  public void freeze() throws IOException {
+    Preconditions.checkState(!frozen, "already frozen");
+    frozen = true;
     wal.close();
   }
 
   @Override
   public synchronized Collection<Entry> entries() {
-    Preconditions.checkState(closed, "must be closed");
+    Preconditions.checkState(frozen, "must be frozen");
     var entries = new ArrayList<Entry>();
     for (Key tombstone : tombstones) {
       entries.add(Entry.newBuilder().setTombstone(tombstone).build());
@@ -115,12 +114,14 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public Key peek() {
+    Preconditions.checkState(!closed, "closed");
     Item item = pending.peek();
     return item == null ? null : itemKey(item);
   }
 
   @Override
   public Entry next() {
+    Preconditions.checkState(!closed, "closed");
     Item item = pending.poll();
     if (item == null) {
       return null;
@@ -150,5 +151,12 @@ public class StandardWritableSegment implements WritableSegment {
         .max()
         .orElse(0);
   }
-}
 
+  @Override
+  public void close() throws IOException {
+    if (!frozen) {
+      freeze();
+    }
+    closed = true;
+  }
+}

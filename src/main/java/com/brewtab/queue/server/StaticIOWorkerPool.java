@@ -69,7 +69,7 @@ public class StaticIOWorkerPool extends AbstractIdleService implements IOSchedul
     while (executor.isTerminated()) {
       executor.awaitTermination(5, TimeUnit.SECONDS);
       if (!executor.isTerminated()) {
-        log.info("Waiting for in-progress segment freezes to complete...");
+        log.info("Waiting for in-progress IO operations to complete...");
       }
     }
   }

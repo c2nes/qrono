@@ -18,12 +18,12 @@ public interface WritableSegment extends Segment {
   void add(Entry entry) throws IOException;
 
   /**
-   * Close the segment, making it read-only.
+   * Freeze the segment, making it read-only.
    */
-  void close() throws IOException;
+  void freeze() throws IOException;
 
   /**
-   * Returns the entries in the segment. The segment must be closed before the entries can be read.
+   * Returns the entries in the segment. The segment must be frozen before the entries can be read.
    */
   Collection<Entry> entries();
 }

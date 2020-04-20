@@ -6,21 +6,20 @@ import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 
-public class StandardSegmentFreezer implements SegmentFreezer {
+public class StandardSegmentWriter implements SegmentWriter {
   private final Path directory;
 
-  public StandardSegmentFreezer(Path directory) {
+  public StandardSegmentWriter(Path directory) {
     this.directory = directory;
   }
 
   @Override
-  public FrozenSegment freeze(String segmentName, Collection<Entry> entries) throws IOException {
+  public Opener write(String segmentName, Collection<Entry> entries) throws IOException {
     var tombstoneSegment = new InMemorySegment(entries.stream()
         .filter(Entry::hasTombstone)
         .collect(toImmutableSortedSet(entryComparator())));
@@ -45,6 +44,12 @@ public class StandardSegmentFreezer implements SegmentFreezer {
 
       return ImmutableSegment.open(pendingIdxPath, offset);
     };
+  }
+
+  @Override
+  public void copy(String segmentName, Segment source) throws IOException {
+    var path = SegmentFiles.getCombinedIndexPath(directory, segmentName);
+    ImmutableSegment.write(path, source);
   }
 
   private Map<Key, Long> writeIfNonEmpty(Path path, Segment segment) throws IOException {

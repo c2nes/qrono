@@ -19,11 +19,11 @@ class SegmentFiles {
   );
 
   static boolean isLogPath(Path path) {
-    return path.getFileName().endsWith(LOG_SUFFIX);
+    return path.getFileName().toString().endsWith(LOG_SUFFIX);
   }
 
   static boolean isClosedLogPath(Path path) {
-    return path.getFileName().endsWith(CLOSED_LOG_SUFFIX);
+    return path.getFileName().toString().endsWith(CLOSED_LOG_SUFFIX);
   }
 
   static boolean isAnyLogPath(Path path) {
@@ -31,15 +31,15 @@ class SegmentFiles {
   }
 
   static boolean isTombstoneIndexPath(Path path) {
-    return path.getFileName().endsWith(TOMBSTONE_INDEX_SUFFIX);
+    return path.getFileName().toString().endsWith(TOMBSTONE_INDEX_SUFFIX);
   }
 
   static boolean isPendingIndexPath(Path path) {
-    return path.getFileName().endsWith(PENDING_INDEX_SUFFIX);
+    return path.getFileName().toString().endsWith(PENDING_INDEX_SUFFIX);
   }
 
   static boolean isCombinedIndexPath(Path path) {
-    return path.getFileName().endsWith(COMBINED_INDEX_SUFFIX);
+    return path.getFileName().toString().endsWith(COMBINED_INDEX_SUFFIX);
   }
 
   static boolean isAnyIndexPath(Path path) {

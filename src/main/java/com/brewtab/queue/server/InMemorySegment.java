@@ -6,15 +6,18 @@ import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 
 public class InMemorySegment implements Segment {
   private final ImmutableSortedSet<Entry> entries;
   private final PeekingIterator<Entry> it;
+  private boolean closed = false;
 
   public InMemorySegment(Entry... entries) {
     this(Arrays.asList(entries));
@@ -32,11 +35,13 @@ public class InMemorySegment implements Segment {
 
   @Override
   public Key peek() {
+    Preconditions.checkState(!closed, "closed");
     return it.hasNext() ? entryKey(it.peek()) : null;
   }
 
   @Override
   public Entry next() {
+    Preconditions.checkState(!closed, "closed");
     return it.hasNext() ? it.next() : null;
   }
 
@@ -58,5 +63,10 @@ public class InMemorySegment implements Segment {
         .mapToLong(Item::getId)
         .max()
         .orElse(0);
+  }
+
+  @Override
+  public void close() throws IOException {
+    closed = true;
   }
 }

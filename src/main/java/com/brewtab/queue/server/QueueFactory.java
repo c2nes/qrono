@@ -20,8 +20,8 @@ public class QueueFactory {
 
   public Queue createQueue(String name) throws IOException {
     Path queueDirectory = directory.resolve(name);
-    StandardSegmentFreezer segmentFreezer = new StandardSegmentFreezer(queueDirectory);
-    QueueData queueData = new QueueData(queueDirectory, ioScheduler, segmentFreezer);
+    StandardSegmentWriter segmentWriter = new StandardSegmentWriter(queueDirectory);
+    QueueData queueData = new QueueData(queueDirectory, ioScheduler, segmentWriter);
     return new Queue(queueData, idGenerator, Clock.systemUTC());
   }
 }

@@ -99,3 +99,4 @@ TODO,
 - Requeue with new value?
 - How do we avoid re-reading large numbers of segment entries to cancel out
   tombstones?
+- Add concurrency suppor

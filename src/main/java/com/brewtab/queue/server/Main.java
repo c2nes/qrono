@@ -42,8 +42,8 @@ public class Main {
     List<QueueLoadSummary> loadSummaries = new ArrayList<>();
     Files.list(queuesDirectory).forEach(entry -> {
       if (Files.isDirectory(entry)) {
-        var freezer = new StandardSegmentFreezer(entry);
-        var data = new QueueData(entry, ioScheduler, freezer);
+        var writer = new StandardSegmentWriter(entry);
+        var data = new QueueData(entry, ioScheduler, writer);
         try {
           loadSummaries.add(data.load());
         } catch (IOException e) {

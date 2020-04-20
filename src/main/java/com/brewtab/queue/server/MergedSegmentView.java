@@ -4,6 +4,7 @@ import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparato
 
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -17,6 +18,7 @@ public class MergedSegmentView<E extends Segment> implements Segment {
       new PriorityQueue<>(Comparator.comparing(Segment::peek, entryKeyComparator()));
 
   private final List<E> retired = new ArrayList<>();
+  private boolean closed = false;
 
   public void addSegment(E segment) {
     // If peek is non-null then reinsert into the heap
@@ -37,12 +39,15 @@ public class MergedSegmentView<E extends Segment> implements Segment {
 
   @Override
   public Key peek() {
+    Preconditions.checkState(!closed, "closed");
     Segment segment = segments.peek();
     return segment == null ? null : segment.peek();
   }
 
   @Override
   public Entry next() throws IOException {
+    Preconditions.checkState(!closed, "closed");
+
     var segment = segments.poll();
     if (segment == null) {
       return null;
@@ -76,5 +81,15 @@ public class MergedSegmentView<E extends Segment> implements Segment {
         .mapToLong(Segment::getMaxId)
         .max()
         .orElse(0);
+  }
+
+  @Override
+  public void close() throws IOException {
+    for (E segment : segments) {
+      segment.close();
+    }
+    for (E segment : retired) {
+      segment.close();
+    }
   }
 }
