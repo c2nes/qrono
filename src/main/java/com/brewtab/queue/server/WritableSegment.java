@@ -14,8 +14,7 @@ public interface WritableSegment extends Segment {
   /**
    * Add a new entry to the segment.
    */
-  // TODO: Make this asynchronous?
-  void add(Entry entry) throws IOException;
+  Entry add(Entry entry) throws IOException;
 
   /**
    * Freeze the segment, making it read-only.

@@ -9,7 +9,7 @@ import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.EntryCase;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.google.common.base.Preconditions;
-import com.google.protobuf.util.Timestamps;
+import com.google.common.base.Verify;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -45,15 +45,26 @@ public class StandardWritableSegment implements WritableSegment {
     this.wal = wal;
   }
 
-  // TODO: Should we take responsibility for moving the deadline forward as needed?
-  private void checkEntry(Entry entry) {
+  private Entry adjustEntryDeadline(Entry entry) {
     if (entry.getEntryCase() == EntryCase.PENDING && lastRemoved != null) {
       Item item = entry.getPending();
-      Preconditions.checkArgument(itemComparator().compare(lastRemoved, item) <= 0,
-          "item deadline too far in the past, %s < %s",
-          Timestamps.toString(item.getDeadline()),
-          Timestamps.toString(lastRemoved.getDeadline()));
+      if (itemComparator().compare(item, lastRemoved) < 0) {
+        var withAdjustedDeadline = item.toBuilder()
+            .setDeadline(lastRemoved.getDeadline())
+            .build();
+
+        // If the item still compares less after adjusting the deadline then the item
+        // ID must have gone backwards (which should never happen).
+        Verify.verify(itemComparator().compare(lastRemoved, withAdjustedDeadline) < 0,
+            "Pending item ID went backwards! %s < %s",
+            withAdjustedDeadline.getId(),
+            lastRemoved.getId());
+
+        return entry.toBuilder().setPending(item).build();
+      }
     }
+
+    return entry;
   }
 
   @Override
@@ -62,9 +73,10 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public void add(Entry entry) throws IOException {
+  public Entry add(Entry originalEntry) throws IOException {
     Preconditions.checkState(!frozen, "frozen");
-    checkEntry(entry);
+
+    var entry = adjustEntryDeadline(originalEntry);
     wal.append(entry);
 
     switch (entry.getEntryCase()) {
@@ -82,10 +94,12 @@ public class StandardWritableSegment implements WritableSegment {
       default:
         throw new IllegalArgumentException("invalid entry case: " + entry.getEntryCase());
     }
+
+    return entry;
   }
 
   @Override
-  public void freeze() throws IOException {
+  public synchronized void freeze() throws IOException {
     Preconditions.checkState(!frozen, "already frozen");
     frozen = true;
     wal.close();
@@ -108,19 +122,19 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public long size() {
+  public synchronized long size() {
     return pending.size() + removed.size() + tombstones.size();
   }
 
   @Override
-  public Key peek() {
+  public synchronized Key peek() {
     Preconditions.checkState(!closed, "closed");
     Item item = pending.peek();
     return item == null ? null : itemKey(item);
   }
 
   @Override
-  public Entry next() {
+  public synchronized Entry next() {
     Preconditions.checkState(!closed, "closed");
     Item item = pending.poll();
     if (item == null) {
@@ -153,7 +167,7 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public void close() throws IOException {
+  public synchronized void close() throws IOException {
     if (!frozen) {
       freeze();
     }

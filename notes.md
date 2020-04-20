@@ -87,10 +87,11 @@ When freezing a segment,
 # 2020-04-18
 
 TODO,
-- Reload state on startup
-- Persist queue metadata (definitions, locations, ids)
-- Persist ID generator information
-- Handle deadlines in the past (advance them as needed)
+- [DONE?] Reload state on startup
+- [DONE?] Persist queue metadata (definitions, locations, ids)
+- [DONE?] Persist ID generator information
+- [DONE] Handle deadlines in the past (advance them as needed)
+
 - Online segment merging
 - Implement queue size tracking
 - Switch to more efficient segment and log encoding

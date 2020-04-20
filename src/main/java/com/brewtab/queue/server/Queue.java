@@ -35,13 +35,19 @@ public class Queue {
     this.clock = clock;
   }
 
-  public QueueLoadSummary load() throws IOException {
+  public synchronized QueueLoadSummary load() throws IOException {
     return data.load();
   }
 
   public synchronized Item enqueue(EnqueueRequest request) throws IOException {
     Timestamp enqueueTime = Timestamps.fromMillis(clock.millis());
     Timestamp deadline = request.hasDeadline() ? request.getDeadline() : enqueueTime;
+
+    // Invariant: Entries must be written in ID order.
+    //
+    // Solution: This method is synchronized so ID generation and entry writing
+    //  are performed atomically.
+
     long id = idGenerator.generateId();
 
     Item item = Item.newBuilder()
