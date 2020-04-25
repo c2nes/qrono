@@ -3,11 +3,10 @@ package com.brewtab.queue.server;
 import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparator;
 
 import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Header;
+import com.brewtab.queue.Api.Segment.Footer;
 import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.Api.Segment.Metadata.Builder;
 import com.brewtab.queue.Api.Segment.MetadataOrBuilder;
-import java.security.Key;
 import java.util.Comparator;
 import java.util.stream.Collector;
 
@@ -46,8 +45,8 @@ final class SegmentMetadata {
     );
   }
 
-  static Header toHeader(Metadata metadata) {
-    return Header.newBuilder()
+  static Footer toFooter(Metadata metadata) {
+    return Footer.newBuilder()
         .setPendingCount(metadata.getPendingCount())
         .setTombstoneCount(metadata.getTombstoneCount())
         .setLastKey(metadata.getLastKey())
@@ -55,13 +54,13 @@ final class SegmentMetadata {
         .build();
   }
 
-  static Metadata fromHeaderAndFirstKey(Header header, Entry.Key firstKey) {
+  static Metadata fromFooterAndFirstKey(Footer footer, Entry.Key firstKey) {
     return Metadata.newBuilder()
-        .setPendingCount(header.getPendingCount())
-        .setTombstoneCount(header.getTombstoneCount())
+        .setPendingCount(footer.getPendingCount())
+        .setTombstoneCount(footer.getTombstoneCount())
         .setFirstKey(firstKey)
-        .setLastKey(header.getLastKey())
-        .setMaxId(header.getMaxId())
+        .setLastKey(footer.getLastKey())
+        .setMaxId(footer.getMaxId())
         .build();
   }
 }

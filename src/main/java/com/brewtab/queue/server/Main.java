@@ -20,6 +20,7 @@ public class Main {
 
     // TODO: This should be configurable...
     Path root = Path.of("/tmp/queue-server-test");
+    Files.createDirectories(root);
 
     Path globalStatePath = root.resolve("state.bin");
     GlobalState globalState;

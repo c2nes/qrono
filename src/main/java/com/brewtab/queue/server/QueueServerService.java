@@ -12,7 +12,6 @@ import com.brewtab.queue.Api.RequeueResponse;
 import com.brewtab.queue.QueueServerGrpc;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.Empty;
-import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
@@ -39,32 +38,34 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     this.queues = new HashMap<>(initialQueues);
   }
 
-  @Override
-  public void enqueue(EnqueueRequest request, StreamObserver<EnqueueResponse> responseObserver) {
-    try {
-      responseObserver.onNext(enqueue(request));
-      responseObserver.onCompleted();
-    } catch (Exception e) {
-      logger.error("Unhandled exception", e);
-      responseObserver.onError(e);
+  private synchronized Queue getQueue(String queueName) {
+    Queue queue = queues.get(queueName);
+    if (queue == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no such queue, " + queueName)
+          .asRuntimeException();
     }
+    return queue;
   }
 
-  @VisibleForTesting
-  EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
-    String queueName = request.getQueue();
-    if (queueName.equals("short-circuit")) {
-      return EnqueueResponse.newBuilder()
-          .setId(0)
-          .setDeadline(Timestamps.fromMillis(System.currentTimeMillis()))
-          .build();
-    }
+  private synchronized Queue getOrCreateQueue(String queueName) throws IOException {
     Queue queue = queues.get(queueName);
     if (queue == null) {
       queue = queueFactory.createQueue(queueName);
       queues.put(queueName, queue);
     }
+    return queue;
+  }
 
+  @Override
+  public void enqueue(EnqueueRequest request, StreamObserver<EnqueueResponse> responseObserver) {
+    process(responseObserver, () -> enqueue(request));
+  }
+
+  @VisibleForTesting
+  EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = getOrCreateQueue(queueName);
     Item item = queue.enqueue(request);
     return EnqueueResponse.newBuilder()
         .setId(item.getId())
@@ -100,24 +101,13 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
 
   @Override
   public void dequeue(DequeueRequest request, StreamObserver<Item> responseObserver) {
-    try {
-      responseObserver.onNext(dequeue(request));
-      responseObserver.onCompleted();
-    } catch (Exception e) {
-      responseObserver.onError(e);
-    }
+    process(responseObserver, () -> dequeue(request));
   }
 
   @VisibleForTesting
   Item dequeue(DequeueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = queues.get(queueName);
-    if (queue == null) {
-      throw Status.NOT_FOUND
-          .withDescription("no such queue, " + queueName)
-          .asRuntimeException();
-    }
-
+    Queue queue = getQueue(queueName);
     Item item = queue.dequeue();
     if (item == null) {
       throw Status.NOT_FOUND
@@ -129,48 +119,26 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
 
   @Override
   public void release(ReleaseRequest request, StreamObserver<Empty> responseObserver) {
-    try {
-      responseObserver.onNext(release(request));
-      responseObserver.onCompleted();
-    } catch (Exception e) {
-      responseObserver.onError(e);
-    }
+    process(responseObserver, () -> release(request));
   }
 
   @VisibleForTesting
   Empty release(ReleaseRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = queues.get(queueName);
-    if (queue == null) {
-      throw Status.NOT_FOUND
-          .withDescription("no such queue, " + queueName)
-          .asRuntimeException();
-    }
-
+    Queue queue = getQueue(queueName);
     queue.release(request);
     return Empty.getDefaultInstance();
   }
 
   @Override
   public void requeue(RequeueRequest request, StreamObserver<RequeueResponse> responseObserver) {
-    try {
-      responseObserver.onNext(requeue(request));
-      responseObserver.onCompleted();
-    } catch (Exception e) {
-      responseObserver.onError(e);
-    }
+    process(responseObserver, () -> requeue(request));
   }
 
   @VisibleForTesting
   RequeueResponse requeue(RequeueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = queues.get(queueName);
-    if (queue == null) {
-      throw Status.NOT_FOUND
-          .withDescription("no such queue, " + queueName)
-          .asRuntimeException();
-    }
-
+    Queue queue = getQueue(queueName);
     return queue.requeue(request);
   }
 
@@ -185,12 +153,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   QueueInfo getQueueInfo(GetQueueInfoRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = queues.get(queueName);
-    if (queue == null) {
-      throw Status.NOT_FOUND
-          .withDescription("no such queue, " + queueName)
-          .asRuntimeException();
-    }
+    Queue queue = getQueue(queueName);
 
     return queue.getQueueInfo(request)
         .toBuilder()

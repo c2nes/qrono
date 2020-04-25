@@ -4,14 +4,18 @@ import static com.brewtab.queue.server.Segment.entryKey;
 
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Header;
+import com.brewtab.queue.Api.Segment.Footer;
 import com.brewtab.queue.Api.Segment.Metadata;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -20,27 +24,30 @@ import java.util.HashMap;
 import java.util.Map;
 
 public final class ImmutableSegment implements Segment {
+  @VisibleForTesting
+  static final int FOOTER_SIZE = 128; // current actual max size 60 bytes
+
   private final InputStream input;
-  private final Header header;
+  private final Footer footer;
   private final Entry.Key firstKey;
 
   private Entry.Key nextKey;
   private boolean closed = false;
 
-  private ImmutableSegment(InputStream input, Header header, Key firstKey, Key nextKey) {
+  private ImmutableSegment(InputStream input, Footer footer, Key firstKey, Key nextKey) {
     this.input = input;
-    this.header = header;
+    this.footer = footer;
     this.firstKey = firstKey;
     this.nextKey = nextKey;
   }
 
   @Override
   public Metadata getMetadata() {
-    return SegmentMetadata.fromHeaderAndFirstKey(header, firstKey);
+    return SegmentMetadata.fromFooterAndFirstKey(footer, firstKey);
   }
 
   public long size() {
-    return header.getPendingCount() + header.getTombstoneCount();
+    return footer.getPendingCount() + footer.getTombstoneCount();
   }
 
   @Override
@@ -67,7 +74,7 @@ public final class ImmutableSegment implements Segment {
   }
 
   public long getMaxId() {
-    return header.getMaxId();
+    return footer.getMaxId();
   }
 
   @Override
@@ -78,15 +85,15 @@ public final class ImmutableSegment implements Segment {
   }
 
   public static ImmutableSegment newReader(InputStream input) throws IOException {
-    Header header = Header.parseDelimitedFrom(input);
+    Footer footer = Footer.parseDelimitedFrom(input);
     Key firstKey = Key.parseDelimitedFrom(input);
-    return new ImmutableSegment(input, header, firstKey, firstKey);
+    return new ImmutableSegment(input, footer, firstKey, firstKey);
   }
 
   public static ImmutableSegment newReader(SeekableByteChannel input, long offset)
       throws IOException {
+    var footer = readFooter(input);
     var inputStream = Channels.newInputStream(input);
-    var header = Header.parseDelimitedFrom(inputStream);
     var firstKey = Key.parseDelimitedFrom(inputStream);
     var nextKey = firstKey;
     if (offset > 0) {
@@ -96,7 +103,21 @@ public final class ImmutableSegment implements Segment {
         inputStream.close();
       }
     }
-    return new ImmutableSegment(inputStream, header, firstKey, nextKey);
+    return new ImmutableSegment(inputStream, footer, firstKey, nextKey);
+  }
+
+  private static Footer readFooter(SeekableByteChannel input) throws IOException {
+    long original = input.position();
+    try {
+      input.position(input.size() - FOOTER_SIZE);
+      var bytes = new byte[FOOTER_SIZE];
+      var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+      input.read(buffer);
+      int footerMessageSize = buffer.getInt(0);
+      return Footer.parser().parseFrom(bytes, 4, footerMessageSize);
+    } finally {
+      input.position(original);
+    }
   }
 
   public static ImmutableSegment open(Path path, long offset) throws IOException {
@@ -131,13 +152,16 @@ public final class ImmutableSegment implements Segment {
       throws IOException {
     var bufferSize = 4 * 1024;
 
-    ByteArrayOutputStream buffer = new ByteArrayOutputStream(bufferSize);
-
-    // Write header
-    SegmentMetadata.toHeader(segment.getMetadata()).writeDelimitedTo(buffer);
+    var buffer = new ByteArrayOutputStream(bufferSize);
 
     var offsets = trackOffsets ? new HashMap<Key, Long>() : null;
     var offsetBase = 0L;
+
+    // Footer fields
+    Key lastKey = null;
+    long maxId = Long.MIN_VALUE;
+    long pendingCount = 0;
+    long tombstoneCount = 0;
 
     for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
       var key = entryKey(entry);
@@ -151,8 +175,44 @@ public final class ImmutableSegment implements Segment {
         offsetBase += buffer.size();
         buffer.reset();
       }
+
+      lastKey = key;
+      maxId = Math.max(maxId, key.getId());
+      if (entry.hasPending()) {
+        pendingCount++;
+      }
+      if (entry.hasTombstone()) {
+        tombstoneCount++;
+      }
     }
 
+    // Write footer
+    var footerMessage = Footer.newBuilder()
+        .setLastKey(lastKey)
+        .setMaxId(maxId)
+        .setPendingCount(pendingCount)
+        .setTombstoneCount(tombstoneCount)
+        .build();
+
+    // Create buffer for fixed sized footer
+    var footerBytes = new byte[FOOTER_SIZE];
+
+    // Wrap buffer for writing and skip the first 4 bytes
+    // to leave room for a length prefix.
+    var footerBB = ByteBuffer.wrap(footerBytes)
+        .order(ByteOrder.LITTLE_ENDIAN)
+        .position(4);
+
+    // Write message to buffer and then add length prefix
+    var codedOutput = CodedOutputStream.newInstance(footerBB);
+    footerMessage.writeTo(codedOutput);
+    codedOutput.flush();
+    footerBB.putInt(0, footerBB.position() - 4);
+
+    // Write footer to output buffer
+    buffer.write(footerBytes);
+
+    // Flush buffer to output
     buffer.writeTo(output);
 
     return offsets;

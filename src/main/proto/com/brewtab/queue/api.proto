@@ -117,7 +117,7 @@ message DropQueueRequest {
 
 // A segment is an ordered sequence of pending items and tombstones
 message Segment {
-  message Header {
+  message Footer {
     uint64 pending_count = 1;
     uint64 tombstone_count = 2;
     Entry.Key last_key = 3;

@@ -76,6 +76,7 @@ public class Client {
 
         log.info("Starting...");
         long n;
+        long mine = 0;
         while ((n = limit.getAndDecrement()) > 0) {
           try {
             while (responseQueue.size() >= pipelineLength) {
@@ -91,6 +92,7 @@ public class Client {
                 .setQueue("test-queue-1")
                 .setValue(ByteString.copyFromUtf8("yolo " + n))
                 .build());
+            mine++;
           } catch (StatusRuntimeException e) {
             log.error("Enqueue error", e);
             break;
@@ -99,8 +101,14 @@ public class Client {
         requestStream.onCompleted();
         // Wait for remaining responses
         while (!responseQueue.isEmpty()) {
-          responseQueue.removeFirst().join();
+          try {
+            responseQueue.removeFirst().join();
+          } catch (Exception e) {
+            log.error("Enqueue error", e);
+            break;
+          }
         }
+        log.info("Done! count={}", mine);
       });
     }
     sync.await();
