@@ -1,5 +1,7 @@
 package main
 
+//go:generate ./scripts/generate_protos.sh
+
 import (
 	"flag"
 	"net/http"
