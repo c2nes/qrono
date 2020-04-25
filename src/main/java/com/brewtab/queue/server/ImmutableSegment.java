@@ -5,9 +5,9 @@ import static com.brewtab.queue.server.Segment.entryKey;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.brewtab.queue.Api.Segment.Header;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.google.common.base.Preconditions;
 import java.io.ByteArrayOutputStream;
-import java.io.Closeable;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -19,7 +19,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class ImmutableSegment implements Segment, Closeable {
+public final class ImmutableSegment implements Segment {
   private final InputStream input;
   private final Header header;
   private final Entry.Key firstKey;
@@ -35,8 +35,12 @@ public final class ImmutableSegment implements Segment, Closeable {
   }
 
   @Override
+  public Metadata getMetadata() {
+    return SegmentMetadata.fromHeaderAndFirstKey(header, firstKey);
+  }
+
   public long size() {
-    return header.getEntryCount();
+    return header.getPendingCount() + header.getTombstoneCount();
   }
 
   @Override
@@ -62,17 +66,6 @@ public final class ImmutableSegment implements Segment, Closeable {
     return entry;
   }
 
-  @Override
-  public Key first() {
-    return firstKey;
-  }
-
-  @Override
-  public Key last() {
-    return header.getLastKey();
-  }
-
-  @Override
   public long getMaxId() {
     return header.getMaxId();
   }
@@ -139,12 +132,9 @@ public final class ImmutableSegment implements Segment, Closeable {
     var bufferSize = 4 * 1024;
 
     ByteArrayOutputStream buffer = new ByteArrayOutputStream(bufferSize);
-    Header.newBuilder()
-        .setEntryCount(segment.size())
-        .setLastKey(segment.last())
-        .setMaxId(segment.getMaxId())
-        .build()
-        .writeDelimitedTo(buffer);
+
+    // Write header
+    SegmentMetadata.toHeader(segment.getMetadata()).writeDelimitedTo(buffer);
 
     var offsets = trackOffsets ? new HashMap<Key, Long>() : null;
     var offsetBase = 0L;

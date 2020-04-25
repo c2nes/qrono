@@ -70,7 +70,7 @@ public class Main {
     });
 
     QueueServerService service = new QueueServerService(queueFactory, queues);
-    Server server = NettyServerBuilder.forPort(8080)
+    Server server = NettyServerBuilder.forPort(9090)
         .addService(service)
         .build();
 

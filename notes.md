@@ -100,4 +100,6 @@ TODO,
 - Requeue with new value?
 - How do we avoid re-reading large numbers of segment entries to cancel out
   tombstones?
-- Add concurrency suppor
+- Add concurrency support
+- How do we merge segment headers when merging segments? We can't trivially
+  combine pending & tombstone counts because they may cancel one another out.

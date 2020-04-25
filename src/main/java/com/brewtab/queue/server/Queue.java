@@ -3,12 +3,15 @@ package com.brewtab.queue.server;
 import static com.brewtab.queue.server.Segment.itemKey;
 
 import com.brewtab.queue.Api.EnqueueRequest;
+import com.brewtab.queue.Api.GetQueueInfoRequest;
 import com.brewtab.queue.Api.Item;
+import com.brewtab.queue.Api.QueueInfo;
 import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.Api.Stats;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -131,5 +134,18 @@ public class Queue {
         .build());
 
     return RequeueResponse.newBuilder().build();
+  }
+
+  public synchronized QueueInfo getQueueInfo(GetQueueInfoRequest request) {
+    Metadata meta = data.getMetadata();
+    // Our definition of pending excludes dequeued items, but at the data layer an
+    // item is pending until it is released / requeued.
+    long totalSize = meta.getPendingCount() - meta.getTombstoneCount();
+    long dequeuedSize = dequeued.size();
+    long pendingSize = totalSize - dequeuedSize;
+    return QueueInfo.newBuilder()
+        .setPending(pendingSize)
+        .setDequeued(dequeuedSize)
+        .build();
   }
 }

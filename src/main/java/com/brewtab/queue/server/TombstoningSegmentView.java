@@ -5,6 +5,7 @@ import static com.brewtab.queue.server.Segment.entryKey;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.EntryCase;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.google.common.base.Verify;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -18,8 +19,9 @@ public class TombstoningSegmentView implements Segment {
   }
 
   @Override
-  public long size() {
-    return delegate.size();
+  public Metadata getMetadata() {
+    // TODO: This lies
+    return delegate.getMetadata();
   }
 
   @Override
@@ -38,21 +40,6 @@ public class TombstoningSegmentView implements Segment {
     Entry entry = next;
     next = next(delegate);
     return entry;
-  }
-
-  @Override
-  public Key first() {
-    return delegate.first();
-  }
-
-  @Override
-  public Key last() {
-    return delegate.last();
-  }
-
-  @Override
-  public long getMaxId() {
-    return delegate.getMaxId();
   }
 
   private static Entry next(Segment delegate) throws IOException {

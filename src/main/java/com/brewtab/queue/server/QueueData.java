@@ -5,6 +5,7 @@ import static java.util.Objects.requireNonNull;
 
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.SegmentWriter.Opener;
 import com.google.common.annotations.VisibleForTesting;
@@ -198,6 +199,14 @@ public class QueueData implements Closeable {
     }
   }
 
+  public synchronized Metadata getMetadata() {
+    var memMeta = currentSegment == null
+        ? Metadata.getDefaultInstance()
+        : currentSegment.getMetadata();
+    var immutableMeta = tombstoningSegmentView.getMetadata();
+    return SegmentMetadata.merge(memMeta, immutableMeta);
+  }
+
   @Override
   public synchronized void close() throws IOException {
     currentSegment.freeze();
@@ -227,8 +236,8 @@ public class QueueData implements Closeable {
     }
 
     @Override
-    public long size() {
-      return active.size();
+    public Metadata getMetadata() {
+      return active.getMetadata();
     }
 
     @Override
@@ -239,21 +248,6 @@ public class QueueData implements Closeable {
     @Override
     public synchronized Entry next() throws IOException {
       return active.next();
-    }
-
-    @Override
-    public Key first() {
-      return active.first();
-    }
-
-    @Override
-    public Key last() {
-      return active.last();
-    }
-
-    @Override
-    public long getMaxId() {
-      return active.getMaxId();
     }
 
     @Override

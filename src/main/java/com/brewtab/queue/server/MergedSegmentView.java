@@ -4,6 +4,7 @@ import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparato
 
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -29,12 +30,12 @@ public class MergedSegmentView<E extends Segment> implements Segment {
     }
   }
 
-  // O(M)
   @Override
-  public long size() {
-    return segments.stream()
-        .map(Segment::size)
-        .reduce(0L, Long::sum);
+  public Metadata getMetadata() {
+    // TODO: This doesn't cancel out tombstones and pending entries
+    return Stream.concat(segments.stream(), retired.stream())
+        .map(Segment::getMetadata)
+        .collect(SegmentMetadata.merge());
   }
 
   @Override
@@ -57,30 +58,6 @@ public class MergedSegmentView<E extends Segment> implements Segment {
     addSegment(segment);
 
     return entry;
-  }
-
-  @Override
-  public Key first() {
-    return Stream.concat(segments.stream(), retired.stream())
-        .map(Segment::first)
-        .min(entryKeyComparator())
-        .orElse(null);
-  }
-
-  @Override
-  public Key last() {
-    return Stream.concat(segments.stream(), retired.stream())
-        .map(Segment::last)
-        .max(entryKeyComparator())
-        .orElse(null);
-  }
-
-  @Override
-  public long getMaxId() {
-    return Stream.concat(segments.stream(), retired.stream())
-        .mapToLong(Segment::getMaxId)
-        .max()
-        .orElse(0);
   }
 
   @Override

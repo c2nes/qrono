@@ -6,6 +6,7 @@ import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
@@ -29,6 +30,23 @@ public class InMemorySegment implements Segment {
   }
 
   @Override
+  public Metadata getMetadata() {
+    var builder = Metadata.newBuilder();
+    builder.setPendingCount(entries.stream().filter(Entry::hasPending).count());
+    builder.setTombstoneCount(entries.stream().filter(Entry::hasTombstone).count());
+    if (!entries.isEmpty()) {
+      builder.setFirstKey(entryKey(entries.iterator().next()));
+      builder.setLastKey(entryKey(entries.descendingIterator().next()));
+    }
+    builder.setMaxId(entries.stream()
+        .filter(Entry::hasPending)
+        .map(Entry::getPending)
+        .mapToLong(Item::getId)
+        .max()
+        .orElse(0));
+    return builder.build();
+  }
+
   public long size() {
     return entries.size();
   }
@@ -43,26 +61,6 @@ public class InMemorySegment implements Segment {
   public Entry next() {
     Preconditions.checkState(!closed, "closed");
     return it.hasNext() ? it.next() : null;
-  }
-
-  @Override
-  public Key first() {
-    return entries.isEmpty() ? null : entryKey(entries.iterator().next());
-  }
-
-  @Override
-  public Key last() {
-    return entries.isEmpty() ? null : entryKey(entries.descendingIterator().next());
-  }
-
-  @Override
-  public long getMaxId() {
-    return entries.stream()
-        .filter(Entry::hasPending)
-        .map(Entry::getPending)
-        .mapToLong(Item::getId)
-        .max()
-        .orElse(0);
   }
 
   @Override

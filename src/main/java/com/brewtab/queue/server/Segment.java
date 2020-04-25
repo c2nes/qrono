@@ -3,21 +3,24 @@ package com.brewtab.queue.server;
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import java.io.Closeable;
 import java.io.IOException;
 
 public interface Segment extends Closeable {
-  long size();
+  Metadata getMetadata();
 
   Entry.Key peek();
 
   Entry next() throws IOException;
 
-  Entry.Key first();
-
-  Entry.Key last();
-
-  long getMaxId();
+  /**
+   * Size without other metadata
+   */
+  default long size() {
+    Metadata meta = getMetadata();
+    return meta.getPendingCount() + meta.getTombstoneCount();
+  }
 
   static Entry.Key itemKey(Item item) {
     return Key.newBuilder()

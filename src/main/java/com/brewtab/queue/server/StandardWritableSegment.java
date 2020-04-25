@@ -8,6 +8,7 @@ import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.EntryCase;
 import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.Api.Segment.Metadata;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import java.io.IOException;
@@ -122,7 +123,21 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public synchronized long size() {
+  public synchronized Metadata getMetadata() {
+    var builder = Metadata.newBuilder();
+    builder.setPendingCount(pending.size() + removed.size());
+    builder.setTombstoneCount(tombstones.size());
+    builder.setMaxId(Stream.concat(pending.stream(), removed.values().stream())
+        .mapToLong(Item::getId)
+        .max()
+        .orElse(0));
+    // TODO: Set firstKey & lastKey
+    // throw new UnsupportedOperationException();
+    return builder.build();
+  }
+
+  @Override
+  public long size() {
     return pending.size() + removed.size() + tombstones.size();
   }
 
@@ -144,26 +159,6 @@ public class StandardWritableSegment implements WritableSegment {
     lastRemoved = item;
     removed.put(itemKey(item), item);
     return Entry.newBuilder().setPending(item).build();
-  }
-
-  @Override
-  public Key first() {
-    // TODO: Implement
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Key last() {
-    // TODO: Implement
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public synchronized long getMaxId() {
-    return Stream.concat(pending.stream(), removed.values().stream())
-        .mapToLong(Item::getId)
-        .max()
-        .orElse(0);
   }
 
   @Override

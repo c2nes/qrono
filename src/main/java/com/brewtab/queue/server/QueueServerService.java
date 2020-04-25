@@ -3,7 +3,9 @@ package com.brewtab.queue.server;
 import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
+import com.brewtab.queue.Api.GetQueueInfoRequest;
 import com.brewtab.queue.Api.Item;
+import com.brewtab.queue.Api.QueueInfo;
 import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
@@ -12,11 +14,14 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.Empty;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
+import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -167,5 +172,41 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     return queue.requeue(request);
+  }
+
+  @Override
+  public void getQueueInfo(
+      GetQueueInfoRequest request,
+      StreamObserver<QueueInfo> responseObserver
+  ) {
+    process(responseObserver, () -> getQueueInfo(request));
+  }
+
+  @VisibleForTesting
+  QueueInfo getQueueInfo(GetQueueInfoRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = queues.get(queueName);
+    if (queue == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no such queue, " + queueName)
+          .asRuntimeException();
+    }
+
+    return queue.getQueueInfo(request)
+        .toBuilder()
+        .setName(queueName)
+        .build();
+  }
+
+  private static <R> void process(StreamObserver<R> observer, Callable<R> operation) {
+    try {
+      observer.onNext(operation.call());
+      observer.onCompleted();
+    } catch (StatusException | StatusRuntimeException e) {
+      observer.onError(e);
+    } catch (Exception e) {
+      logger.error("Unhandled error", e);
+      observer.onError(e);
+    }
   }
 }
