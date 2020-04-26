@@ -74,9 +74,9 @@ public class QueueData implements Closeable {
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
       if (SegmentFiles.isAnyIndexPath(path)) {
-        logger.debug("Opening segment {}", path);
-
         var segment = ImmutableSegment.open(path);
+        logger.debug("Opening segment {}; meta={}", path,
+            TextFormat.shortDebugString(segment.getMetadata()));
         immutableSegments.addSegment(segment);
         if (segment.getMaxId() > maxId) {
           maxId = segment.getMaxId();

@@ -1,5 +1,10 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.Api;
+import com.brewtab.queue.Api.Item;
+import com.brewtab.queue.Api.Segment.Entry;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import java.nio.ByteBuffer;
 
 final class Encoding {
@@ -40,23 +45,30 @@ final class Encoding {
   static class PendingPreamble {
     static final int SIZE = 20;
 
-    private final Stats stats;
-    private final int valueLength;
+    final Stats stats;
+    final int valueLength;
 
     PendingPreamble(Stats stats, int valueLength) {
       this.stats = stats;
       this.valueLength = valueLength;
     }
 
-    void write(ByteBuffer bb) {
+    int write(ByteBuffer bb) {
       stats.write(bb);
       bb.putInt(valueLength);
+      return SIZE;
     }
 
     static PendingPreamble read(ByteBuffer bb) {
       return new PendingPreamble(
           Stats.read(bb),
           bb.getInt());
+    }
+
+    static PendingPreamble fromPending(Item item) {
+      return new PendingPreamble(
+          Stats.fromItemStats(item.getStats()),
+          item.getValue().size());
     }
   }
 
@@ -76,11 +88,20 @@ final class Encoding {
       this.dequeueCount = dequeueCount;
     }
 
-    void write(ByteBuffer bb) {
+    int write(ByteBuffer bb) {
       long upper = (enqueueTime << 16) | (requeueTime >>> 32);
       long lower = (requeueTime << 32) | dequeueCount;
       bb.putLong(upper);
       bb.putLong(lower);
+      return SIZE;
+    }
+
+    Api.Stats toApiStats() {
+      return Api.Stats.newBuilder()
+          .setEnqueueTime(fromTimestamp(enqueueTime))
+          .setRequeueTime(fromTimestamp(requeueTime))
+          .setDequeueCount((int) dequeueCount)
+          .build();
     }
 
     static Stats read(ByteBuffer bb) {
@@ -90,6 +111,13 @@ final class Encoding {
       long requeueTime = ((upper & ((1L << 16) - 1)) << 32) | (lower >>> 32);
       long dequeueCount = (lower & ((1L << 32) - 1));
       return new Stats(enqueueTime, requeueTime, dequeueCount);
+    }
+
+    static Stats fromItemStats(Api.Stats stats) {
+      return new Stats(
+          toTimestamp(stats.getEnqueueTime()),
+          toTimestamp(stats.getRequeueTime()),
+          stats.getDequeueCount());
     }
   }
 
@@ -104,9 +132,9 @@ final class Encoding {
   //
   static class Key {
     static final int SIZE = 16;
-    private final long deadline;
-    private final long id;
-    private final Type type;
+    final long deadline;
+    final long id;
+    final Type type;
 
     Key(long deadline, long id, Type type) {
       this.deadline = deadline;
@@ -114,11 +142,19 @@ final class Encoding {
       this.type = type;
     }
 
-    void write(ByteBuffer bb) {
+    int write(ByteBuffer bb) {
       long upper = (deadline << 2) | (id >>> 62);
       long lower = (id << 2) | type.bits;
       bb.putLong(upper);
       bb.putLong(lower);
+      return SIZE;
+    }
+
+    Entry.Key toEntryKey() {
+      return Entry.Key.newBuilder()
+          .setDeadline(fromTimestamp(deadline))
+          .setId(id)
+          .build();
     }
 
     static Key read(ByteBuffer bb) {
@@ -130,6 +166,22 @@ final class Encoding {
       Type type = Type.fromBits(((int) lower) & 0b11);
 
       return new Key(deadline, id, type);
+    }
+
+    static Key fromEntry(Entry entry) {
+      if (entry.hasTombstone()) {
+        var tombstone = entry.getTombstone();
+        long deadline = toTimestamp(tombstone.getDeadline());
+        long id = tombstone.getId();
+        return new Key(deadline, id, Type.TOMBSTONE);
+      } else if (entry.hasPending()) {
+        var pending = entry.getPending();
+        long deadline = toTimestamp(pending.getDeadline());
+        long id = pending.getId();
+        return new Key(deadline, id, Type.PENDING);
+      } else {
+        throw new IllegalArgumentException();
+      }
     }
 
     enum Type {
@@ -163,10 +215,10 @@ final class Encoding {
   static class Footer {
     static final int SIZE = 40;
 
-    private final long pendingCount;
-    private final long tombstoneCount;
-    private final Key lastKey;
-    private final long maxId;
+    final long pendingCount;
+    final long tombstoneCount;
+    final Key lastKey;
+    final long maxId;
 
     Footer(long pendingCount, long tombstoneCount, Key lastKey, long maxId) {
       this.pendingCount = pendingCount;
@@ -175,11 +227,21 @@ final class Encoding {
       this.maxId = maxId;
     }
 
-    void write(ByteBuffer bb) {
+    int write(ByteBuffer bb) {
       bb.putLong(pendingCount);
       bb.putLong(tombstoneCount);
       lastKey.write(bb);
       bb.putLong(maxId);
+      return SIZE;
+    }
+
+    Api.Segment.Footer toApiFooter() {
+      return Api.Segment.Footer.newBuilder()
+          .setLastKey(lastKey.toEntryKey())
+          .setMaxId(maxId)
+          .setPendingCount(pendingCount)
+          .setTombstoneCount(tombstoneCount)
+          .build();
     }
 
     static Footer read(ByteBuffer bb) {
@@ -189,5 +251,14 @@ final class Encoding {
           Key.read(bb),
           bb.getLong());
     }
+  }
+
+  static Timestamp fromTimestamp(long timestamp) {
+    return Timestamps.fromMillis(timestamp);
+  }
+
+  static long toTimestamp(Timestamp timestamp) {
+    // TODO: Check deadline overflow
+    return Timestamps.toMillis(timestamp);
   }
 }

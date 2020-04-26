@@ -1,6 +1,5 @@
 package com.brewtab.queue.server;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Arrays;

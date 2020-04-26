@@ -2,13 +2,17 @@ package com.brewtab.queue.server;
 
 import static com.brewtab.queue.server.Segment.entryKey;
 
+import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
 import com.brewtab.queue.Api.Segment.Footer;
 import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.Encoding.Key.Type;
+import com.brewtab.queue.server.Encoding.PendingPreamble;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.protobuf.CodedOutputStream;
+import com.google.common.base.Verify;
+import com.google.protobuf.ByteString;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -30,13 +34,13 @@ public final class ImmutableSegment implements Segment {
   private final Entry.Key firstKey;
   private final long limit;
 
-  private Entry.Key nextKey;
+  private Encoding.Key nextKey;
   private boolean closed = false;
 
   private final ByteBuffer buffer;
 
   private ImmutableSegment(SeekableByteChannel channel,
-      Footer footer, Key firstKey, Key nextKey, long limit) {
+      Footer footer, Key firstKey, Encoding.Key nextKey, long limit) {
     this.channel = channel;
     this.footer = footer;
     this.firstKey = firstKey;
@@ -55,21 +59,16 @@ public final class ImmutableSegment implements Segment {
     return footer.getPendingCount() + footer.getTombstoneCount();
   }
 
-  private static int readSize(SeekableByteChannel channel, ByteBuffer buffer) throws IOException {
-    buffer.position(0).limit(4);
-    channel.read(buffer);
-    return buffer.getInt(0);
-  }
-
-  private static Key readNextKey(SeekableByteChannel channel, long limit, ByteBuffer buffer)
-      throws IOException {
+  private static Encoding.Key readNextKey(
+      SeekableByteChannel channel,
+      long limit,
+      ByteBuffer buffer
+  ) throws IOException {
     if (channel.position() < limit) {
-      int size = readSize(channel, buffer);
-      buffer.position(0).limit(size);
+      buffer.position(0).limit(Encoding.Key.SIZE);
       channel.read(buffer);
       buffer.flip();
-
-      return Key.parser().parseFrom(buffer);
+      return Encoding.Key.read(buffer);
     }
 
     return null;
@@ -86,7 +85,7 @@ public final class ImmutableSegment implements Segment {
   @Override
   public Key peek() {
     Preconditions.checkState(!closed, "closed");
-    return nextKey;
+    return nextKey == null ? null : nextKey.toEntryKey();
   }
 
   @Override
@@ -96,11 +95,30 @@ public final class ImmutableSegment implements Segment {
       return null;
     }
 
-    var size = readSize(channel, buffer);
-    var buf = getPreparedBuffer(size);
-    channel.read(buf);
-    buf.flip();
-    var entry = Entry.parseFrom(buf);
+    Entry entry;
+    if (nextKey.type == Type.PENDING) {
+      buffer.position(0).limit(PendingPreamble.SIZE);
+      channel.read(buffer);
+      buffer.flip();
+      var preamble = PendingPreamble.read(buffer);
+      var buf = getPreparedBuffer(preamble.valueLength);
+      channel.read(buf);
+      buf.flip();
+      var val = ByteString.copyFrom(buf);
+      entry = Entry.newBuilder()
+          .setPending(Item.newBuilder()
+              .setId(nextKey.id)
+              .setDeadline(Encoding.fromTimestamp(nextKey.deadline))
+              .setStats(preamble.stats.toApiStats())
+              .setValue(val))
+          .build();
+    } else {
+      Verify.verify(nextKey.type == Type.TOMBSTONE);
+      entry = Entry.newBuilder()
+          .setTombstone(nextKey.toEntryKey())
+          .build();
+    }
+
     nextKey = readNextKey(channel, limit, buffer);
 
     if (nextKey == null) {
@@ -135,7 +153,8 @@ public final class ImmutableSegment implements Segment {
     if (nextKey == null) {
       input.close();
     }
-    return new ImmutableSegment(input, footer, firstKey, nextKey, limit);
+    return new ImmutableSegment(input, footer, firstKey == null ? null : firstKey.toEntryKey(),
+        nextKey, limit);
   }
 
   private static Footer readFooter(SeekableByteChannel input) throws IOException {
@@ -145,8 +164,8 @@ public final class ImmutableSegment implements Segment {
       var bytes = new byte[FOOTER_SIZE];
       var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
       input.read(buffer);
-      int footerMessageSize = buffer.getInt(0);
-      return Footer.parser().parseFrom(bytes, 4, footerMessageSize);
+      buffer.flip();
+      return Encoding.Footer.read(buffer).toApiFooter();
     } finally {
       input.position(original);
     }
@@ -190,28 +209,43 @@ public final class ImmutableSegment implements Segment {
     var offsetBase = 0L;
 
     // Footer fields
-    Key lastKey = Key.getDefaultInstance();
+    var lastEntry = Entry.getDefaultInstance();
     long maxId = Long.MIN_VALUE;
     long pendingCount = 0;
     long tombstoneCount = 0;
 
-    var sizePrefix = ByteBuffer.wrap(new byte[4]).order(ByteOrder.LITTLE_ENDIAN);
+    // TODO: Naming...?
+    var bb = ByteBuffer.wrap(new byte[128]).order(ByteOrder.LITTLE_ENDIAN);
 
     for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
+
+      // Reset
+      bb.position(0);
+      bb.limit(bb.capacity());
+
       var key = entryKey(entry);
       if (trackOffsets) {
         offsets.put(key, offsetBase + buffer.size());
       }
 
-      // Write key
-      sizePrefix.putInt(0, key.getSerializedSize());
-      buffer.write(sizePrefix.array());
-      key.writeTo(buffer);
+      Encoding.Key.fromEntry(entry).write(bb);
+      if (entry.hasPending()) {
+        PendingPreamble.fromPending(entry.getPending()).write(bb);
 
-      // Write entry
-      sizePrefix.putInt(0, entry.getSerializedSize());
-      buffer.write(sizePrefix.array());
-      entry.writeTo(buffer);
+        var val = entry.getPending().getValue();
+        if (bb.remaining() < val.size()) {
+          var newBB = ByteBuffer.wrap(new byte[bb.position() + val.size()])
+              .order(ByteOrder.LITTLE_ENDIAN);
+          bb.flip();
+          newBB.put(bb);
+          bb = newBB;
+        }
+        val.copyTo(bb);
+      }
+
+      // Copy bb to buffer
+      bb.flip();
+      buffer.write(bb.array(), bb.arrayOffset() + bb.position(), bb.remaining());
 
       if (buffer.size() > (bufferSize >> 1)) {
         buffer.writeTo(output);
@@ -219,7 +253,7 @@ public final class ImmutableSegment implements Segment {
         buffer.reset();
       }
 
-      lastKey = key;
+      lastEntry = entry;
       maxId = Math.max(maxId, key.getId());
       if (entry.hasPending()) {
         pendingCount++;
@@ -229,28 +263,16 @@ public final class ImmutableSegment implements Segment {
       }
     }
 
-    // Write footer
-    var footerMessage = Footer.newBuilder()
-        .setLastKey(lastKey)
-        .setMaxId(maxId)
-        .setPendingCount(pendingCount)
-        .setTombstoneCount(tombstoneCount)
-        .build();
-
     // Create buffer for fixed sized footer
     var footerBytes = new byte[FOOTER_SIZE];
+    var footerBB = ByteBuffer.wrap(footerBytes).order(ByteOrder.LITTLE_ENDIAN);
 
-    // Wrap buffer for writing and skip the first 4 bytes
-    // to leave room for a length prefix.
-    var footerBB = ByteBuffer.wrap(footerBytes)
-        .order(ByteOrder.LITTLE_ENDIAN)
-        .position(4);
-
-    // Write message to buffer and then add length prefix
-    var codedOutput = CodedOutputStream.newInstance(footerBB);
-    footerMessage.writeTo(codedOutput);
-    codedOutput.flush();
-    footerBB.putInt(0, footerBB.position() - 4);
+    new Encoding.Footer(
+        pendingCount,
+        tombstoneCount,
+        Encoding.Key.fromEntry(lastEntry),
+        maxId
+    ).write(footerBB);
 
     // Write footer to output buffer
     buffer.write(footerBytes);
