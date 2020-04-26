@@ -42,7 +42,11 @@ public class StandardSegmentWriter implements SegmentWriter {
         throw new IllegalArgumentException("key not found in segment");
       }
 
-      return ImmutableSegment.open(pendingIdxPath, offset);
+      var segment = ImmutableSegment.open(pendingIdxPath);
+      if (offset > 0) {
+        segment.position(offset);
+      }
+      return segment;
     };
   }
 

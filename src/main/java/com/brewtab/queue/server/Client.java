@@ -39,7 +39,7 @@ public class Client {
 
     var concurrency = 10;
     var sync = new CyclicBarrier(concurrency + 1);
-    var limit = new AtomicLong(1_000_000);
+    var limit = new AtomicLong(3_000_000);
     for (int i = 0; i < concurrency; i++) {
       executor.submit(() -> {
         var client = QueueServerGrpc.newStub(channel);

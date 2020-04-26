@@ -143,3 +143,7 @@ Footer:
   last_key        EntryKey(128)
   max_id          uint64
 ```
+
+TODO,
+* Clean up Encoding class
+

@@ -78,8 +78,8 @@ public class QueueData implements Closeable {
         logger.debug("Opening segment {}; meta={}", path,
             TextFormat.shortDebugString(segment.getMetadata()));
         immutableSegments.addSegment(segment);
-        if (segment.getMaxId() > maxId) {
-          maxId = segment.getMaxId();
+        if (segment.getMetadata().getMaxId() > maxId) {
+          maxId = segment.getMetadata().getMaxId();
         }
 
         var segmentName = SegmentFiles.getSegmentNameFromPath(path);
@@ -92,7 +92,8 @@ public class QueueData implements Closeable {
 
     segmentCounter.set(maxSegmentId + 1);
 
-    for (int i = 0; i < 15; i++) {
+    // TODO: Remove this
+    for (int i = 0; i < 1; i++) {
       var pendingMerge = new MergedSegmentView<ImmutableSegment>();
       for (File file : requireNonNull(directory.toFile().listFiles())) {
         Path path = file.toPath();
@@ -109,7 +110,7 @@ public class QueueData implements Closeable {
           pendingMerge.getSegments().size(),
           TextFormat.printer().shortDebugString(pendingMerge.getMetadata()),
           Duration.between(start, Instant.now()));
-      Files.delete(mergedPath);
+      //Files.delete(mergedPath);
     }
 
     return new QueueLoadSummary(maxId);

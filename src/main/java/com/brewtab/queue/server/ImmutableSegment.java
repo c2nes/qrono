@@ -1,285 +1,345 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.entryKey;
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
 import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Footer;
 import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.Encoding.Footer;
 import com.brewtab.queue.server.Encoding.Key.Type;
 import com.brewtab.queue.server.Encoding.PendingPreamble;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
+import com.google.common.collect.ImmutableMap;
 import com.google.protobuf.ByteString;
-import java.io.ByteArrayOutputStream;
-import java.io.FileOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.util.HashMap;
 import java.util.Map;
 
-public final class ImmutableSegment implements Segment {
-  @VisibleForTesting
-  static final int FOOTER_SIZE = 128; // current actual max size 60 bytes
+public class ImmutableSegment implements Segment {
+  private static final int DEFAULT_BUFFER_SIZE = 4096;
 
-  private final SeekableByteChannel channel;
-  private final Footer footer;
-  private final Entry.Key firstKey;
+  private final BufferedReadableChannel channel;
+  private final Metadata metadata;
   private final long limit;
-
   private Encoding.Key nextKey;
+
   private boolean closed = false;
 
-  private final ByteBuffer buffer;
-
-  private ImmutableSegment(SeekableByteChannel channel,
-      Footer footer, Key firstKey, Encoding.Key nextKey, long limit) {
+  private ImmutableSegment(
+      BufferedReadableChannel channel,
+      Metadata metadata,
+      long limit,
+      Encoding.Key nextKey
+  ) {
     this.channel = channel;
-    this.footer = footer;
-    this.firstKey = firstKey;
-    this.nextKey = nextKey;
+    this.metadata = metadata;
     this.limit = limit;
-    // TODO: Maybe use a growable buffer and/or main the buffer with a weak reference?
-    buffer = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN);
+    this.nextKey = nextKey;
+  }
+
+  private void checkOpen() {
+    Preconditions.checkState(!closed, "closed");
   }
 
   @Override
   public Metadata getMetadata() {
-    return SegmentMetadata.fromFooterAndFirstKey(footer, firstKey);
-  }
-
-  public long size() {
-    return footer.getPendingCount() + footer.getTombstoneCount();
-  }
-
-  private static Encoding.Key readNextKey(
-      SeekableByteChannel channel,
-      long limit,
-      ByteBuffer buffer
-  ) throws IOException {
-    if (channel.position() < limit) {
-      buffer.position(0).limit(Encoding.Key.SIZE);
-      channel.read(buffer);
-      buffer.flip();
-      return Encoding.Key.read(buffer);
-    }
-
-    return null;
-  }
-
-  private ByteBuffer getPreparedBuffer(int size) {
-    if (size <= buffer.capacity()) {
-      return buffer.position(0).limit(size);
-    } else {
-      return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
-    }
+    return metadata;
   }
 
   @Override
   public Key peek() {
-    Preconditions.checkState(!closed, "closed");
-    return nextKey == null ? null : nextKey.toEntryKey();
+    checkOpen();
+    var key = nextKey;
+    return key == null ? null : key.toEntryKey();
   }
 
-  @Override
-  public Entry next() throws IOException {
-    Preconditions.checkState(!closed, "closed");
+  private Entry readNextEntry() throws IOException {
     if (nextKey == null) {
       return null;
     }
 
-    Entry entry;
     if (nextKey.type == Type.PENDING) {
-      buffer.position(0).limit(PendingPreamble.SIZE);
-      channel.read(buffer);
-      buffer.flip();
-      var preamble = PendingPreamble.read(buffer);
-      var buf = getPreparedBuffer(preamble.valueLength);
-      channel.read(buf);
-      buf.flip();
-      var val = ByteString.copyFrom(buf);
-      entry = Entry.newBuilder()
+      channel.ensureReadableBytes(PendingPreamble.SIZE);
+      var preamble = PendingPreamble.read(channel.buffer);
+      channel.ensureReadableBytes(preamble.valueLength);
+      var value = ByteString.copyFrom(channel.buffer, preamble.valueLength);
+
+      return Entry.newBuilder()
           .setPending(Item.newBuilder()
-              .setId(nextKey.id)
               .setDeadline(Encoding.fromTimestamp(nextKey.deadline))
+              .setId(nextKey.id)
               .setStats(preamble.stats.toApiStats())
-              .setValue(val))
+              .setValue(value))
           .build();
-    } else {
-      Verify.verify(nextKey.type == Type.TOMBSTONE);
-      entry = Entry.newBuilder()
+    }
+
+    if (nextKey.type == Type.TOMBSTONE) {
+      return Entry.newBuilder()
           .setTombstone(nextKey.toEntryKey())
           .build();
     }
 
-    nextKey = readNextKey(channel, limit, buffer);
-
-    if (nextKey == null) {
-      channel.close();
-    }
-
-    return entry;
+    throw new IllegalStateException("unrecognized entry type");
   }
 
-  public long getMaxId() {
-    return footer.getMaxId();
+  private Encoding.Key readNextKey() throws IOException {
+    if (position() < limit) {
+      channel.ensureReadableBytes(Encoding.Key.SIZE);
+      return Encoding.Key.read(channel.buffer);
+    }
+    return null;
+  }
+
+  @Override
+  public Entry next() throws IOException {
+    checkOpen();
+    var entry = readNextEntry();
+    nextKey = readNextKey();
+    return entry;
   }
 
   @Override
   public void close() throws IOException {
     closed = true;
     nextKey = null;
-    channel.close();
+    channel.channel.close();
   }
 
-  public static ImmutableSegment newReader(SeekableByteChannel input, long offset)
-      throws IOException {
-    var footer = readFooter(input);
-    var limit = input.size() - FOOTER_SIZE;
-    var buffer = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN);
-    var firstKey = readNextKey(input, limit, buffer);
-    var nextKey = firstKey;
-    if (offset > 0) {
-      input.position(offset);
-      nextKey = readNextKey(input, limit, buffer);
-    }
-    if (nextKey == null) {
-      input.close();
-    }
-    return new ImmutableSegment(input, footer, firstKey == null ? null : firstKey.toEntryKey(),
-        nextKey, limit);
+  public long position() throws IOException {
+    return channel.channel.position() - channel.buffer.remaining();
   }
 
-  private static Footer readFooter(SeekableByteChannel input) throws IOException {
-    long original = input.position();
-    try {
-      input.position(input.size() - FOOTER_SIZE);
-      var bytes = new byte[FOOTER_SIZE];
-      var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-      input.read(buffer);
-      buffer.flip();
-      return Encoding.Footer.read(buffer).toApiFooter();
-    } finally {
-      input.position(original);
-    }
-  }
-
-  public static ImmutableSegment open(Path path, long offset) throws IOException {
-    return newReader(FileChannel.open(path), offset);
+  public void position(long newPosition) throws IOException {
+    channel.position(newPosition);
+    // Read next key at new offset
+    nextKey = readNextKey();
   }
 
   public static ImmutableSegment open(Path path) throws IOException {
-    return open(path, 0);
+    return newReader(FileChannel.open(path));
   }
 
-  public static void write(OutputStream output, Segment segment) throws IOException {
-    write(output, segment, false);
+  public static ImmutableSegment newReader(SeekableByteChannel source) throws IOException {
+    var channel = new BufferedReadableChannel(source);
+
+    // Read footer
+    var footerPosition = channel.channel.size() - Footer.SIZE;
+    channel.position(footerPosition);
+    channel.ensureReadableBytes(Footer.SIZE);
+    var footer = Footer.read(channel.buffer);
+
+    // Put position back to beginning of channel
+    channel.position(0);
+
+    // Read first key (if any)
+    Encoding.Key firstKey = null;
+    if (channel.channel.size() > Footer.SIZE) {
+      channel.ensureReadableBytes(Encoding.Key.SIZE);
+      firstKey = Encoding.Key.read(channel.buffer);
+    } else {
+      channel.channel.close();
+    }
+
+    // Build metadata from first key and data in footer
+    var metadata = Metadata.newBuilder()
+        .setPendingCount(footer.pendingCount)
+        .setTombstoneCount(footer.tombstoneCount)
+        .setFirstKey(firstKey == null ? Key.getDefaultInstance() : firstKey.toEntryKey())
+        .setLastKey(footer.lastKey.toEntryKey())
+        .setMaxId(footer.maxId)
+        .build();
+
+    return new ImmutableSegment(channel, metadata, footerPosition, firstKey);
   }
 
-  public static void write(Path path, Segment segment) throws IOException {
-    try (var output = new FileOutputStream(path.toFile())) {
-      write(output, segment);
-      output.getFD().sync();
+  static class BufferedReadableChannel {
+    private final SeekableByteChannel channel;
+    private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
+
+    BufferedReadableChannel(SeekableByteChannel channel) {
+      this.channel = channel;
+    }
+
+    void position(long newPosition) throws IOException {
+      channel.position(newPosition);
+      // Discard all data in buffer
+      buffer.position(0).limit(0);
+    }
+
+    void ensureReadableBytes(int required) throws IOException {
+      if (buffer.remaining() < required) {
+        if (buffer.capacity() >= required) {
+          buffer.compact();
+        } else {
+          var oldBuffer = buffer;
+          buffer = newByteBuffer(required);
+          buffer.put(oldBuffer.flip());
+        }
+
+        // Do the read
+        channel.read(buffer);
+
+        // Ensure we read as many bytes as were requested
+        if (buffer.position() < required) {
+          throw new EOFException();
+        }
+
+        // Prepare for reading
+        buffer.flip();
+      }
     }
   }
 
-  public static Map<Key, Long> writeWithOffsetTracking(Path path, Segment segment)
-      throws IOException {
-    try (var output = new FileOutputStream(path.toFile())) {
-      var offsets = write(output, segment, true);
-      output.getFD().sync();
+  static class Writer {
+    private final SeekableByteChannel channel;
+    private final Segment source;
+    private final ImmutableMap.Builder<Key, Long> offsets;
+    private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
+    private long position = 0;
+
+    private Writer(
+        SeekableByteChannel channel,
+        Segment source,
+        ImmutableMap.Builder<Key, Long> offsets
+    ) {
+      this.channel = channel;
+      this.source = source;
+      this.offsets = offsets;
+    }
+
+    private void recordOffset(Entry entry) {
+      if (offsets != null) {
+        offsets.put(Segment.entryKey(entry), position);
+      }
+    }
+
+    private void flushBuffer() throws IOException {
+      // Flush whatever data is currently in the buffer
+      channel.write(buffer.flip());
+
+      // Compact the buffer and ensure position is reset to 0 (i.e. the write
+      // flushed all of the data in the buffer). WritableByteChannel specifies
+      // that this should be the case unless the concrete type specifies
+      // otherwise (e.g. non-blocking socket channel).
+      buffer.compact();
+      Verify.verifyNotNull(buffer.position() == 0,
+          "short write (unsupported channel type?)");
+    }
+
+    // Ensure there is capacity to write the requested number of bytes
+    private void ensureBufferCapacity(int required) throws IOException {
+      if (buffer.remaining() < required) {
+        // Flush buffer if non-empty
+        if (buffer.position() > 0) {
+          flushBuffer();
+        }
+
+        // New, bigger buffer required
+        if (buffer.capacity() < required) {
+          buffer = newByteBuffer(required);
+        }
+      }
+    }
+
+    private void writeKey(Encoding.Key key) throws IOException {
+      ensureBufferCapacity(Encoding.Key.SIZE);
+      position += key.write(buffer);
+    }
+
+    private void writePendingItem(Item item) throws IOException {
+      // Write preamble
+      ensureBufferCapacity(Encoding.PendingPreamble.SIZE);
+      position += PendingPreamble.fromPending(item).write(buffer);
+
+      // Write value
+      var value = item.getValue();
+      ensureBufferCapacity(value.size());
+      value.copyTo(buffer);
+      position += value.size();
+    }
+
+    private void write() throws IOException {
+      // Footer fields
+      var pendingCount = 0;
+      var tombstoneCount = 0;
+      var lastKey = new Encoding.Key(0, 0, Type.PENDING);
+      var maxId = Long.MIN_VALUE;
+
+      for (Entry entry = source.next(); entry != null; entry = source.next()) {
+        // Record offset to entry
+        recordOffset(entry);
+
+        // Write key and pending item data
+        var key = Encoding.Key.fromEntry(entry);
+        writeKey(key);
+
+        if (entry.hasPending()) {
+          writePendingItem(entry.getPending());
+        }
+
+        // Track metadata for footer
+        if (entry.hasPending()) {
+          pendingCount++;
+        } else if (entry.hasTombstone()) {
+          tombstoneCount++;
+        }
+
+        if (key.id > maxId) {
+          maxId = key.id;
+        }
+
+        lastKey = key;
+      }
+
+      // TODO: Consider versioning the footer
+
+      // Write footer
+      ensureBufferCapacity(Footer.SIZE);
+      new Footer(pendingCount, tombstoneCount, lastKey, maxId).write(buffer);
+      flushBuffer();
+    }
+  }
+
+  public static void write(Path path, Segment segment) throws IOException {
+    try (var output = FileChannel.open(path, WRITE, CREATE)) { // TODO:
+      write(output, segment);
+      output.force(false);
+    }
+  }
+
+  public static void write(SeekableByteChannel channel, Segment source) throws IOException {
+    new Writer(channel, source, null).write();
+  }
+
+  public static Map<Key, Long> writeWithOffsetTracking(
+      Path path,
+      Segment source
+  ) throws IOException {
+    try (var output = FileChannel.open(path, WRITE, CREATE)) {
+      var offsets = writeWithOffsetTracking(output, source);
+      output.force(false);
       return offsets;
     }
   }
 
-  private static Map<Key, Long> write(OutputStream output, Segment segment, boolean trackOffsets)
-      throws IOException {
-    var bufferSize = 4 * 1024;
+  public static Map<Key, Long> writeWithOffsetTracking(
+      SeekableByteChannel channel,
+      Segment source
+  ) throws IOException {
+    var writer = new Writer(channel, source, ImmutableMap.builder());
+    writer.write();
+    return writer.offsets.build();
+  }
 
-    var buffer = new ByteArrayOutputStream(bufferSize);
-
-    var offsets = trackOffsets ? new HashMap<Key, Long>() : null;
-    var offsetBase = 0L;
-
-    // Footer fields
-    var lastEntry = Entry.getDefaultInstance();
-    long maxId = Long.MIN_VALUE;
-    long pendingCount = 0;
-    long tombstoneCount = 0;
-
-    // TODO: Naming...?
-    var bb = ByteBuffer.wrap(new byte[128]).order(ByteOrder.LITTLE_ENDIAN);
-
-    for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
-
-      // Reset
-      bb.position(0);
-      bb.limit(bb.capacity());
-
-      var key = entryKey(entry);
-      if (trackOffsets) {
-        offsets.put(key, offsetBase + buffer.size());
-      }
-
-      Encoding.Key.fromEntry(entry).write(bb);
-      if (entry.hasPending()) {
-        PendingPreamble.fromPending(entry.getPending()).write(bb);
-
-        var val = entry.getPending().getValue();
-        if (bb.remaining() < val.size()) {
-          var newBB = ByteBuffer.wrap(new byte[bb.position() + val.size()])
-              .order(ByteOrder.LITTLE_ENDIAN);
-          bb.flip();
-          newBB.put(bb);
-          bb = newBB;
-        }
-        val.copyTo(bb);
-      }
-
-      // Copy bb to buffer
-      bb.flip();
-      buffer.write(bb.array(), bb.arrayOffset() + bb.position(), bb.remaining());
-
-      if (buffer.size() > (bufferSize >> 1)) {
-        buffer.writeTo(output);
-        offsetBase += buffer.size();
-        buffer.reset();
-      }
-
-      lastEntry = entry;
-      maxId = Math.max(maxId, key.getId());
-      if (entry.hasPending()) {
-        pendingCount++;
-      }
-      if (entry.hasTombstone()) {
-        tombstoneCount++;
-      }
-    }
-
-    // Create buffer for fixed sized footer
-    var footerBytes = new byte[FOOTER_SIZE];
-    var footerBB = ByteBuffer.wrap(footerBytes).order(ByteOrder.LITTLE_ENDIAN);
-
-    new Encoding.Footer(
-        pendingCount,
-        tombstoneCount,
-        Encoding.Key.fromEntry(lastEntry),
-        maxId
-    ).write(footerBB);
-
-    // Write footer to output buffer
-    buffer.write(footerBytes);
-
-    // Flush buffer to output
-    buffer.writeTo(output);
-
-    return offsets;
+  private static ByteBuffer newByteBuffer(int capacity) {
+    return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
   }
 }

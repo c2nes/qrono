@@ -3,11 +3,9 @@ package com.brewtab.queue.server;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 
 import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Footer;
 import com.brewtab.queue.Api.Stats;
 import com.brewtab.queue.server.Encoding.Key;
 import com.brewtab.queue.server.Encoding.PendingPreamble;
@@ -17,9 +15,7 @@ import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Message;
 import com.google.protobuf.Message.Builder;
 import com.google.protobuf.util.Timestamps;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.sql.Time;
 import java.util.Comparator;
 import org.junit.Test;
 
@@ -57,30 +53,31 @@ public class ImmutableSegmentTest {
 
     // Item overhead
     var itemOverhead = Key.SIZE + PendingPreamble.SIZE;
-    var footerSize = ImmutableSegment.FOOTER_SIZE;
+    var footerSize = Encoding.Footer.SIZE;
 
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ImmutableSegment.write(baos, memSegment);
-    assertEquals(itemOverhead * 3 + footerSize, baos.size());
-    ImmutableSegment reader = ImmutableSegment.newReader(
-        new ByteArrayChannel(baos.toByteArray()), 0);
+    ByteArrayChannel channel = new ByteArrayChannel();
+    ImmutableSegment.write(channel, memSegment);
+    assertEquals(itemOverhead * 3 + footerSize, channel.position());
+
+    channel.position(0);
+    ImmutableSegment reader = ImmutableSegment.newReader(channel);
     assertEquals(3, reader.size());
     assertEquals(entry2, reader.next());
     assertEquals(entry1, reader.next());
     assertEquals(entry3, reader.next());
     assertNull(reader.next());
   }
-
-  @Test
-  public void testMaxFooterSize() {
-    Message maxFooter = buildMaximumMessage(Footer.newBuilder(), Footer.getDescriptor());
-    int maxFooterSize = maxFooter.toByteArray().length;
-    assertTrue(maxFooterSize < ImmutableSegment.FOOTER_SIZE);
-    System.out.printf(
-        "maxFooterSize(%d) < FOOTER_SIZE(%d)\n",
-        maxFooterSize,
-        ImmutableSegment.FOOTER_SIZE);
-  }
+//
+//  @Test
+//  public void testMaxFooterSize() {
+//    Message maxFooter = buildMaximumMessage(Footer.newBuilder(), Footer.getDescriptor());
+//    int maxFooterSize = maxFooter.toByteArray().length;
+//    assertTrue(maxFooterSize < ImmutableSegment.FOOTER_SIZE);
+//    System.out.printf(
+//        "maxFooterSize(%d) < FOOTER_SIZE(%d)\n",
+//        maxFooterSize,
+//        ImmutableSegment.FOOTER_SIZE);
+//  }
 
   private static Message buildMaximumMessage(Builder builder, Descriptor descriptor) {
     for (FieldDescriptor field : descriptor.getFields()) {
