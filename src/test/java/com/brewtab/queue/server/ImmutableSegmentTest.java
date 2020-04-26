@@ -47,7 +47,7 @@ public class ImmutableSegmentTest {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     ImmutableSegment.write(baos, memSegment);
     ImmutableSegment reader = ImmutableSegment.newReader(
-        new ByteArrayInputStream(baos.toByteArray()));
+        new ByteArrayChannel(baos.toByteArray()), 0);
     assertEquals(3, reader.size());
     assertEquals(entry2, reader.next());
     assertEquals(entry1, reader.next());

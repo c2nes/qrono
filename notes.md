@@ -91,15 +91,55 @@ TODO,
 - [DONE?] Persist queue metadata (definitions, locations, ids)
 - [DONE?] Persist ID generator information
 - [DONE] Handle deadlines in the past (advance them as needed)
+- [DONE] Implement queue size tracking
+- [DONE] Add concurrency support
+- [DONE] How do we merge segment headers when merging segments? We can't trivially
+  combine pending & tombstone counts because they may cancel one another out.
+    - Switched from header to footer (track metadata while writing)
 
+- (NEXT) Write segment merger
+
+- IO batching (put lock waiters into queue; lock acquirer operates on batch)
 - Online segment merging
-- Implement queue size tracking
 - Switch to more efficient segment and log encoding
 - Do not keep working item values in memory (just IDs)
     - Add ID lookup index to segments?
 - Requeue with new value?
 - How do we avoid re-reading large numbers of segment entries to cancel out
   tombstones?
-- Add concurrency support
-- How do we merge segment headers when merging segments? We can't trivially
-  combine pending & tombstone counts because they may cancel one another out.
+
+# 2020-04-26
+
+Custom SEGMENT format
+
+```
+Entry:
+  key          EntryKey(128)
+ [Type:Pending]
+  stats        Stats(128)
+  value_length uint32
+  value        bytes(value_length)
+
+EntryKey(128):
+  <reserved> bits(14)
+  deadline   Timestamp(48)
+  id         uint64
+  type       bits(2) {00: Pending,
+                      01: Reserved,
+                      10: Reserved,
+                      11: Tombstone}
+
+Timestamp(48):
+    48 millis
+
+Stats(128):
+  enqueue_time  Timestamp(48)
+  requeue_time  Timestamp(48)
+  dequeue_count uint32
+
+Footer:
+  pending_count   uint64
+  tombstone_count uint64
+  last_key        EntryKey(128)
+  max_id          uint64
+```

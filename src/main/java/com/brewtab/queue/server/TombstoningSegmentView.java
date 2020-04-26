@@ -37,6 +37,10 @@ public class TombstoningSegmentView implements Segment {
   }
 
   public Entry next() throws IOException {
+    if (next == null) {
+      next = next(delegate);
+    }
+
     Entry entry = next;
     next = next(delegate);
     return entry;

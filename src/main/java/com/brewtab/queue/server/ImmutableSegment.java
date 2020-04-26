@@ -12,11 +12,9 @@ import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
@@ -27,18 +25,25 @@ public final class ImmutableSegment implements Segment {
   @VisibleForTesting
   static final int FOOTER_SIZE = 128; // current actual max size 60 bytes
 
-  private final InputStream input;
+  private final SeekableByteChannel channel;
   private final Footer footer;
   private final Entry.Key firstKey;
+  private final long limit;
 
   private Entry.Key nextKey;
   private boolean closed = false;
 
-  private ImmutableSegment(InputStream input, Footer footer, Key firstKey, Key nextKey) {
-    this.input = input;
+  private final ByteBuffer buffer;
+
+  private ImmutableSegment(SeekableByteChannel channel,
+      Footer footer, Key firstKey, Key nextKey, long limit) {
+    this.channel = channel;
     this.footer = footer;
     this.firstKey = firstKey;
     this.nextKey = nextKey;
+    this.limit = limit;
+    // TODO: Maybe use a growable buffer and/or main the buffer with a weak reference?
+    buffer = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN);
   }
 
   @Override
@@ -48,6 +53,34 @@ public final class ImmutableSegment implements Segment {
 
   public long size() {
     return footer.getPendingCount() + footer.getTombstoneCount();
+  }
+
+  private static int readSize(SeekableByteChannel channel, ByteBuffer buffer) throws IOException {
+    buffer.position(0).limit(4);
+    channel.read(buffer);
+    return buffer.getInt(0);
+  }
+
+  private static Key readNextKey(SeekableByteChannel channel, long limit, ByteBuffer buffer)
+      throws IOException {
+    if (channel.position() < limit) {
+      int size = readSize(channel, buffer);
+      buffer.position(0).limit(size);
+      channel.read(buffer);
+      buffer.flip();
+
+      return Key.parser().parseFrom(buffer);
+    }
+
+    return null;
+  }
+
+  private ByteBuffer getPreparedBuffer(int size) {
+    if (size <= buffer.capacity()) {
+      return buffer.position(0).limit(size);
+    } else {
+      return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+    }
   }
 
   @Override
@@ -63,11 +96,15 @@ public final class ImmutableSegment implements Segment {
       return null;
     }
 
-    Entry entry = Entry.parseDelimitedFrom(input);
-    nextKey = Entry.Key.parseDelimitedFrom(input);
+    var size = readSize(channel, buffer);
+    var buf = getPreparedBuffer(size);
+    channel.read(buf);
+    buf.flip();
+    var entry = Entry.parseFrom(buf);
+    nextKey = readNextKey(channel, limit, buffer);
 
     if (nextKey == null) {
-      input.close();
+      channel.close();
     }
 
     return entry;
@@ -81,29 +118,24 @@ public final class ImmutableSegment implements Segment {
   public void close() throws IOException {
     closed = true;
     nextKey = null;
-    input.close();
-  }
-
-  public static ImmutableSegment newReader(InputStream input) throws IOException {
-    Footer footer = Footer.parseDelimitedFrom(input);
-    Key firstKey = Key.parseDelimitedFrom(input);
-    return new ImmutableSegment(input, footer, firstKey, firstKey);
+    channel.close();
   }
 
   public static ImmutableSegment newReader(SeekableByteChannel input, long offset)
       throws IOException {
     var footer = readFooter(input);
-    var inputStream = Channels.newInputStream(input);
-    var firstKey = Key.parseDelimitedFrom(inputStream);
+    var limit = input.size() - FOOTER_SIZE;
+    var buffer = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN);
+    var firstKey = readNextKey(input, limit, buffer);
     var nextKey = firstKey;
     if (offset > 0) {
       input.position(offset);
-      nextKey = Key.parseDelimitedFrom(inputStream);
-      if (nextKey == null) {
-        inputStream.close();
-      }
+      nextKey = readNextKey(input, limit, buffer);
     }
-    return new ImmutableSegment(inputStream, footer, firstKey, nextKey);
+    if (nextKey == null) {
+      input.close();
+    }
+    return new ImmutableSegment(input, footer, firstKey, nextKey, limit);
   }
 
   private static Footer readFooter(SeekableByteChannel input) throws IOException {
@@ -158,18 +190,29 @@ public final class ImmutableSegment implements Segment {
     var offsetBase = 0L;
 
     // Footer fields
-    Key lastKey = null;
+    Key lastKey = Key.getDefaultInstance();
     long maxId = Long.MIN_VALUE;
     long pendingCount = 0;
     long tombstoneCount = 0;
+
+    var sizePrefix = ByteBuffer.wrap(new byte[4]).order(ByteOrder.LITTLE_ENDIAN);
 
     for (Entry entry = segment.next(); entry != null; entry = segment.next()) {
       var key = entryKey(entry);
       if (trackOffsets) {
         offsets.put(key, offsetBase + buffer.size());
       }
-      key.writeDelimitedTo(buffer);
-      entry.writeDelimitedTo(buffer);
+
+      // Write key
+      sizePrefix.putInt(0, key.getSerializedSize());
+      buffer.write(sizePrefix.array());
+      key.writeTo(buffer);
+
+      // Write entry
+      sizePrefix.putInt(0, entry.getSerializedSize());
+      buffer.write(sizePrefix.array());
+      entry.writeTo(buffer);
+
       if (buffer.size() > (bufferSize >> 1)) {
         buffer.writeTo(output);
         offsetBase += buffer.size();

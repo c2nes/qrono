@@ -9,6 +9,7 @@ import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.SegmentWriter.Opener;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.TextFormat;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -90,6 +91,26 @@ public class QueueData implements Closeable {
     }
 
     segmentCounter.set(maxSegmentId + 1);
+
+    for (int i = 0; i < 15; i++) {
+      var pendingMerge = new MergedSegmentView<ImmutableSegment>();
+      for (File file : requireNonNull(directory.toFile().listFiles())) {
+        Path path = file.toPath();
+        if (SegmentFiles.isAnyIndexPath(path)) {
+          pendingMerge.addSegment(ImmutableSegment.open(path));
+        }
+      }
+      var start = Instant.now();
+      var mergedPath = SegmentFiles.getCombinedIndexPath(directory, "merged");
+      ImmutableSegment.write(
+          mergedPath,
+          new TombstoningSegmentView(pendingMerge));
+      logger.info("Merged {} segments; metadata={}, duration={}",
+          pendingMerge.getSegments().size(),
+          TextFormat.printer().shortDebugString(pendingMerge.getMetadata()),
+          Duration.between(start, Instant.now()));
+      Files.delete(mergedPath);
+    }
 
     return new QueueLoadSummary(maxId);
   }
