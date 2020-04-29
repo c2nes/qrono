@@ -1,20 +1,24 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.itemKey;
+import static com.brewtab.queue.server.Segment.pendingItemKey;
+import static com.brewtab.queue.server.Segment.tombstoneItemKey;
+import static com.google.protobuf.util.Timestamps.fromMillis;
+import static com.google.protobuf.util.Timestamps.toMillis;
 
+import com.brewtab.queue.Api;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.GetQueueInfoRequest;
-import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.QueueInfo;
 import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.Api.Stats;
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
+import com.brewtab.queue.server.data.ImmutableEntry;
+import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableTimestamp;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
+import com.brewtab.queue.server.data.Timestamp;
 import io.grpc.Status;
 import java.io.IOException;
 import java.time.Clock;
@@ -42,9 +46,9 @@ public class Queue {
     return data.load();
   }
 
-  public synchronized Item enqueue(EnqueueRequest request) throws IOException {
-    Timestamp enqueueTime = Timestamps.fromMillis(clock.millis());
-    Timestamp deadline = request.hasDeadline() ? request.getDeadline() : enqueueTime;
+  public synchronized Api.Item enqueue(EnqueueRequest request) throws IOException {
+    var enqueueTime = clock.millis();
+    var deadline = request.hasDeadline() ? toMillis(request.getDeadline()) : enqueueTime;
 
     // Invariant: Entries must be written in ID order.
     //
@@ -53,62 +57,110 @@ public class Queue {
 
     long id = idGenerator.generateId();
 
-    Item item = Item.newBuilder()
-        .setId(id)
-        .setDeadline(deadline)
-        .setValue(request.getValue())
-        .setStats(Stats.newBuilder().setEnqueueTime(enqueueTime))
+//    Api.Item item = Api.Item.newBuilder()
+//        .setId(id)
+//        .setDeadline(deadline)
+//        .setValue(request.getValue())
+//        .setStats(Stats.newBuilder().setEnqueueTime(enqueueTime))
+//        .build();
+//
+//    Entry entry = Entry.newBuilder()
+//        .setPending(item)
+//        .build();
+
+    var requestedItem = ImmutableItem.builder()
+        .deadline(ImmutableTimestamp.of(deadline))
+        .id(id)
+        .stats(ImmutableItem.Stats.builder()
+            .dequeueCount(0)
+            .enqueueTime(ImmutableTimestamp.of(enqueueTime))
+            .requeueTime(Timestamp.ZERO)
+            .build())
+        .value(request.getValue())
         .build();
 
-    Entry entry = Entry.newBuilder()
-        .setPending(item)
-        .build();
+    var entry = data.write(ImmutableEntry.builder()
+        .key(pendingItemKey(requestedItem))
+        .item(requestedItem)
+        .build());
 
-    return data.write(entry).getPending();
+    // data.write() may adjust the item deadline
+    var item = entry.item();
+
+    // Help out the linter
+    assert item != null : "pending entries have non-null items";
+
+    // Build API response object
+    return Api.Item.newBuilder()
+        .setDeadline(fromMillis(item.deadline().millis()))
+        .setId(item.id())
+        .setStats(Stats.newBuilder()
+            .setDequeueCount(item.stats().dequeueCount())
+            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+            .build())
+        .setValue(item.value())
+        .build();
   }
 
-  public synchronized Item dequeue() throws IOException {
-    Key key = data.peek();
+  public synchronized Api.Item dequeue() throws IOException {
+    var key = data.peek();
     if (key == null) {
       return null;
     }
 
     long now = clock.millis();
-    long deadline = Timestamps.toMillis(key.getDeadline());
+    long deadline = key.deadline().millis();
     if (now < deadline) {
       // Deadline is in the future.
       return null;
     }
 
-    Entry entry = data.next();
-    if (!entry.hasPending()) {
+    var entry = data.next();
+    var item = entry.item();
+    if (item == null) {
       throw new UnsupportedOperationException("tombstone dequeue handling not implemented");
     }
-    Item item = entry.getPending();
+
     // Increment dequeue count
-    item = item.toBuilder()
-        .setStats(item.getStats().toBuilder()
-            .setDequeueCount(item.getStats().getDequeueCount() + 1))
+    item = ImmutableItem.builder()
+        .from(item)
+        .stats(ImmutableItem.Stats.builder()
+            .from(item.stats())
+            .dequeueCount(item.stats().dequeueCount() + 1)
+            .build())
         .build();
-    dequeued.put(item.getId(), item);
-    return item;
+
+    dequeued.put(item.id(), item);
+
+    // Convert to API model
+    return Api.Item.newBuilder()
+        .setDeadline(fromMillis(item.deadline().millis()))
+        .setId(item.id())
+        .setStats(Stats.newBuilder()
+            .setDequeueCount(item.stats().dequeueCount())
+            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+            .build())
+        .setValue(item.value())
+        .build();
   }
 
   public synchronized void release(ReleaseRequest request) throws IOException {
-    Item released = dequeued.remove(request.getId());
+    var released = dequeued.remove(request.getId());
     if (released == null) {
       throw Status.FAILED_PRECONDITION
           .withDescription("item not dequeued")
           .asRuntimeException();
     }
 
-    data.write(Entry.newBuilder()
-        .setTombstone(itemKey(released))
+    data.write(ImmutableEntry.builder()
+        .key(tombstoneItemKey(released))
         .build());
   }
 
   public synchronized RequeueResponse requeue(RequeueRequest request) throws IOException {
-    Item item = dequeued.remove(request.getId());
+    var item = dequeued.remove(request.getId());
 
     if (item == null) {
       throw Status.FAILED_PRECONDITION
@@ -116,31 +168,43 @@ public class Queue {
           .asRuntimeException();
     }
 
-    Key originalKey = itemKey(item);
-    Timestamp requeueTime = Timestamps.fromMillis(clock.millis());
-    Timestamp deadline = request.hasDeadline() ? request.getDeadline() : requeueTime;
-    Stats stats = item.getStats();
-    item = item.toBuilder()
-        .setStats(stats.toBuilder().setRequeueTime(requeueTime))
-        .setDeadline(deadline)
+    var tombstone = ImmutableEntry.builder()
+        .key(tombstoneItemKey(item))
+        .build();
+
+    var requeueTime = clock.millis();
+    var deadline = request.hasDeadline() ? toMillis(request.getDeadline()) : requeueTime;
+
+    item = ImmutableItem.builder()
+        .from(item)
+        .deadline(ImmutableTimestamp.of(deadline))
+        .stats(ImmutableItem.Stats.builder()
+            .from(item.stats())
+            .requeueTime(ImmutableTimestamp.of(requeueTime))
+            .build())
         .build();
 
     // TODO: Commit these atomically
-    data.write(Entry.newBuilder()
-        .setPending(item)
+    data.write(ImmutableEntry.builder()
+        .key(pendingItemKey(item))
+        .item(item)
         .build());
-    data.write(Entry.newBuilder()
-        .setTombstone(originalKey)
-        .build());
+    data.write(tombstone);
 
     return RequeueResponse.newBuilder().build();
   }
 
   public synchronized QueueInfo getQueueInfo(GetQueueInfoRequest request) {
-    Metadata meta = data.getMetadata();
+    SegmentMetadata meta = data.getMetadata();
+
+    // Queue is totally empty
+    if (meta == null) {
+      return QueueInfo.getDefaultInstance();
+    }
+
     // Our definition of pending excludes dequeued items, but at the data layer an
     // item is pending until it is released / requeued.
-    long totalSize = meta.getPendingCount() - meta.getTombstoneCount();
+    long totalSize = meta.pendingCount() - meta.tombstoneCount();
     long dequeuedSize = dequeued.size();
     long pendingSize = totalSize - dequeuedSize;
     return QueueInfo.newBuilder()

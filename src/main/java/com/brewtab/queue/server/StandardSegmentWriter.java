@@ -1,14 +1,14 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
 import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
 
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Item;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Map;
 
 public class StandardSegmentWriter implements SegmentWriter {
@@ -21,12 +21,12 @@ public class StandardSegmentWriter implements SegmentWriter {
   @Override
   public Opener write(String segmentName, Collection<Entry> entries) throws IOException {
     var tombstoneSegment = new InMemorySegment(entries.stream()
-        .filter(Entry::hasTombstone)
-        .collect(toImmutableSortedSet(entryComparator())));
+        .filter(entry -> entry.item() == null)
+        .collect(toImmutableSortedSet(Comparator.naturalOrder())));
 
     var pendingSegment = new InMemorySegment(entries.stream()
-        .filter(Entry::hasPending)
-        .collect(toImmutableSortedSet(entryComparator())));
+        .filter(entry -> entry.item() != null)
+        .collect(toImmutableSortedSet(Comparator.naturalOrder())));
 
     if (tombstoneSegment.size() > 0) {
       var tombstoneIdxPath = SegmentFiles.getTombstoneIndexPath(directory, segmentName);
@@ -56,7 +56,7 @@ public class StandardSegmentWriter implements SegmentWriter {
     ImmutableSegment.write(path, source);
   }
 
-  private Map<Key, Long> writeIfNonEmpty(Path path, Segment segment) throws IOException {
+  private Map<Entry.Key, Long> writeIfNonEmpty(Path path, Segment segment) throws IOException {
     if (segment.size() == 0) {
       return Collections.emptyMap();
     }

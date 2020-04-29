@@ -1,16 +1,16 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.itemKey;
-import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparator;
-import static com.brewtab.queue.server.SegmentEntryComparators.itemComparator;
+import static com.brewtab.queue.server.Segment.pendingItemKey;
 
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.EntryCase;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableEntry;
+import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
+import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -25,8 +25,8 @@ public class StandardWritableSegment implements WritableSegment {
   private final String name;
   private final WriteAheadLog wal;
 
-  private final PriorityQueue<Item> pending = new PriorityQueue<>(itemComparator());
-  private final SortedSet<Key> tombstones = new TreeSet<>(entryKeyComparator());
+  private final PriorityQueue<Item> pending = new PriorityQueue<>();
+  private final SortedSet<Entry.Key> tombstones = new TreeSet<>();
 
   // Pending items are moved here after being returned by next().
   //
@@ -35,7 +35,7 @@ public class StandardWritableSegment implements WritableSegment {
   // pending item and the tombstone cancel one another out). We don't check "entries"
   // because a tombstone should only be produced for items in the "working" state which
   // requires that it was returned by a next() call.
-  private final LinkedHashMap<Key, Item> removed = new LinkedHashMap<>();
+  private final LinkedHashMap<Entry.Key, Item> removed = new LinkedHashMap<>();
   private Item lastRemoved = null;
 
   private boolean frozen = false;
@@ -47,21 +47,31 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   private Entry adjustEntryDeadline(Entry entry) {
-    if (entry.getEntryCase() == EntryCase.PENDING && lastRemoved != null) {
-      Item item = entry.getPending();
-      if (itemComparator().compare(item, lastRemoved) < 0) {
-        var withAdjustedDeadline = item.toBuilder()
-            .setDeadline(lastRemoved.getDeadline())
+    var item = entry.item();
+    if (item != null && lastRemoved != null) {
+      if (item.compareTo(lastRemoved) < 0) {
+        var newDeadline = lastRemoved.deadline();
+        var newKey = ImmutableEntry.Key.builder()
+            .from(entry.key())
+            .deadline(newDeadline)
+            .build();
+
+        var newItem = ImmutableItem.builder()
+            .from(item)
+            .deadline(newDeadline)
             .build();
 
         // If the item still compares less after adjusting the deadline then the item
         // ID must have gone backwards (which should never happen).
-        Verify.verify(itemComparator().compare(lastRemoved, withAdjustedDeadline) < 0,
+        Verify.verify(lastRemoved.compareTo(newItem) < 0,
             "Pending item ID went backwards! %s < %s",
-            withAdjustedDeadline.getId(),
-            lastRemoved.getId());
+            newDeadline, lastRemoved.deadline());
 
-        return entry.toBuilder().setPending(item).build();
+        return ImmutableEntry.builder()
+            .from(entry)
+            .key(newKey)
+            .item(newItem)
+            .build();
       }
     }
 
@@ -80,20 +90,14 @@ public class StandardWritableSegment implements WritableSegment {
     var entry = adjustEntryDeadline(originalEntry);
     wal.append(entry);
 
-    switch (entry.getEntryCase()) {
-      case PENDING:
-        pending.add(entry.getPending());
-        break;
-
-      case TOMBSTONE:
-        Key tombstone = entry.getTombstone();
-        if (removed.remove(tombstone) == null) {
-          tombstones.add(tombstone);
-        }
-        break;
-
-      default:
-        throw new IllegalArgumentException("invalid entry case: " + entry.getEntryCase());
+    var item = entry.item();
+    if (item != null) {
+      pending.add(item);
+    } else {
+      Entry.Key tombstone = entry.key();
+      if (removed.remove(tombstone) == null) {
+        tombstones.add(tombstone);
+      }
     }
 
     return entry;
@@ -110,25 +114,28 @@ public class StandardWritableSegment implements WritableSegment {
   public synchronized Collection<Entry> entries() {
     Preconditions.checkState(frozen, "must be frozen");
     var entries = new ArrayList<Entry>();
-    for (Key tombstone : tombstones) {
-      entries.add(Entry.newBuilder().setTombstone(tombstone).build());
+    for (Entry.Key tombstone : tombstones) {
+      entries.add(ImmutableEntry.builder().key(tombstone).build());
     }
-    for (Item pending : pending) {
-      entries.add(Entry.newBuilder().setPending(pending).build());
+
+    var pendingAndRemoved = Iterables.concat(pending, removed.values());
+    for (Item item : pendingAndRemoved) {
+      entries.add(ImmutableEntry.builder()
+          .key(pendingItemKey(item))
+          .item(item)
+          .build());
     }
-    for (Item pending : removed.values()) {
-      entries.add(Entry.newBuilder().setPending(pending).build());
-    }
+
     return Collections.unmodifiableList(entries);
   }
 
   @Override
-  public synchronized Metadata getMetadata() {
-    var builder = Metadata.newBuilder();
-    builder.setPendingCount(pending.size() + removed.size());
-    builder.setTombstoneCount(tombstones.size());
-    builder.setMaxId(Stream.concat(pending.stream(), removed.values().stream())
-        .mapToLong(Item::getId)
+  public synchronized SegmentMetadata getMetadata() {
+    var builder = ImmutableSegmentMetadata.builder();
+    builder.pendingCount(pending.size() + removed.size());
+    builder.tombstoneCount(tombstones.size());
+    builder.maxId(Stream.concat(pending.stream(), removed.values().stream())
+        .mapToLong(item -> item.id())
         .max()
         .orElse(0));
     // TODO: Set firstKey & lastKey
@@ -142,10 +149,10 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public synchronized Key peek() {
+  public synchronized Entry.Key peek() {
     Preconditions.checkState(!closed, "closed");
     Item item = pending.peek();
-    return item == null ? null : itemKey(item);
+    return item == null ? null : pendingItemKey(item);
   }
 
   @Override
@@ -157,8 +164,10 @@ public class StandardWritableSegment implements WritableSegment {
     }
 
     lastRemoved = item;
-    removed.put(itemKey(item), item);
-    return Entry.newBuilder().setPending(item).build();
+    removed.put(pendingItemKey(item), item);
+    return ImmutableEntry.builder()
+        .key(pendingItemKey(item))
+        .item(item).build();
   }
 
   @Override

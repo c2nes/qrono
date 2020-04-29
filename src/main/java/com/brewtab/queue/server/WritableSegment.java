@@ -1,6 +1,6 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api.Segment.Entry;
+import com.brewtab.queue.server.data.Entry;
 import java.io.IOException;
 import java.util.Collection;
 

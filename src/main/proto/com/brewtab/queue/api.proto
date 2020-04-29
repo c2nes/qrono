@@ -115,36 +115,6 @@ message DropQueueRequest {
   string queue = 1;
 }
 
-// A segment is an ordered sequence of pending items and tombstones
-message Segment {
-  message Footer {
-    uint64 pending_count = 1;
-    uint64 tombstone_count = 2;
-    Entry.Key last_key = 3;
-    uint64 max_id = 4;
-  }
-
-  message Entry {
-    oneof entry {
-      Item pending = 1;
-      Key tombstone = 2;
-    }
-
-    message Key {
-      uint64 id = 1;
-      google.protobuf.Timestamp deadline = 2;
-    }
-  }
-
-  message Metadata {
-    uint64 pending_count = 1;
-    uint64 tombstone_count = 2;
-    Entry.Key first_key = 3;
-    Entry.Key last_key = 4;
-    uint64 max_id = 5;
-  }
-}
-
 message GlobalState {
   google.protobuf.Timestamp epoch = 1;
 }

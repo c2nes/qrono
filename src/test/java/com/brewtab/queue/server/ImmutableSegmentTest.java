@@ -4,17 +4,16 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Stats;
-import com.brewtab.queue.server.Encoding.Key;
-import com.brewtab.queue.server.Encoding.PendingPreamble;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableTimestamp;
+import com.brewtab.queue.server.data.Item.Stats;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors.Descriptor;
 import com.google.protobuf.Descriptors.EnumValueDescriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Message;
 import com.google.protobuf.Message.Builder;
-import com.google.protobuf.util.Timestamps;
 import java.io.IOException;
 import java.util.Comparator;
 import org.junit.Test;
@@ -25,39 +24,46 @@ public class ImmutableSegmentTest {
     long baseTime = System.currentTimeMillis();
     StandardIdGenerator generator = new StandardIdGenerator(baseTime, 0);
 
-    Stats stats = Stats.newBuilder()
-        .setEnqueueTime(Timestamps.fromMillis(baseTime))
-        .setRequeueTime(Timestamps.fromMillis(baseTime))
+    Stats stats = ImmutableItem.Stats.builder()
+        .enqueueTime(ImmutableTimestamp.of(baseTime))
+        .requeueTime(ImmutableTimestamp.of(baseTime))
+        .dequeueCount(0)
         .build();
 
-    Entry entry1 = Entry.newBuilder()
-        .setPending(Item.newBuilder()
-            .setDeadline(Timestamps.fromMillis(baseTime))
-            .setId(generator.generateId())
-            .setStats(stats))
-        .build();
-    Entry entry2 = Entry.newBuilder()
-        .setPending(Item.newBuilder()
-            .setDeadline(Timestamps.fromMillis(baseTime - 5))
-            .setId(generator.generateId())
-            .setStats(stats))
-        .build();
-    Entry entry3 = Entry.newBuilder()
-        .setPending(Item.newBuilder()
-            .setDeadline(Timestamps.fromMillis(baseTime + 5))
-            .setId(generator.generateId())
-            .setStats(stats))
-        .build();
+    ByteString value = ByteString.copyFromUtf8("Hello, world!");
+
+    Entry entry1 = Entry.pendingFrom(
+        ImmutableItem.builder()
+            .deadline(ImmutableTimestamp.of(baseTime))
+            .id(generator.generateId())
+            .stats(stats)
+            .value(value)
+            .build());
+    Entry entry2 = Entry.pendingFrom(
+        ImmutableItem.builder()
+            .deadline(ImmutableTimestamp.of(baseTime - 5))
+            .id(generator.generateId())
+            .stats(stats)
+            .value(value)
+            .build());
+    Entry entry3 = Entry.pendingFrom(
+        ImmutableItem.builder()
+            .deadline(ImmutableTimestamp.of(baseTime + 5))
+            .id(generator.generateId())
+            .stats(stats)
+            .value(value)
+            .build());
 
     InMemorySegment memSegment = new InMemorySegment(entry1, entry2, entry3);
 
     // Item overhead
-    var itemOverhead = Key.SIZE + PendingPreamble.SIZE;
-    var footerSize = Encoding.Footer.SIZE;
+    var itemOverhead = Encoding.KEY_SIZE + Encoding.STATS_SIZE + 4;
+    var itemSize = itemOverhead + value.size();
+    var footerSize = Encoding.FOOTER_SIZE;
 
     ByteArrayChannel channel = new ByteArrayChannel();
     ImmutableSegment.write(channel, memSegment);
-    assertEquals(itemOverhead * 3 + footerSize, channel.position());
+    assertEquals(itemSize * 3 + footerSize, channel.position());
 
     channel.position(0);
     ImmutableSegment reader = ImmutableSegment.newReader(channel);

@@ -1,12 +1,9 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.entryKey;
-import static com.brewtab.queue.server.SegmentEntryComparators.entryComparator;
-
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
@@ -14,6 +11,7 @@ import com.google.common.collect.PeekingIterator;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Objects;
 
 public class InMemorySegment implements Segment {
   private final ImmutableSortedSet<Entry> entries;
@@ -25,26 +23,28 @@ public class InMemorySegment implements Segment {
   }
 
   public InMemorySegment(Collection<Entry> entries) {
-    this.entries = ImmutableSortedSet.copyOf(entryComparator(), entries);
+    this.entries = ImmutableSortedSet.copyOf(entries);
     it = Iterators.peekingIterator(this.entries.iterator());
   }
 
   @Override
-  public Metadata getMetadata() {
-    var builder = Metadata.newBuilder();
-    builder.setPendingCount(entries.stream().filter(Entry::hasPending).count());
-    builder.setTombstoneCount(entries.stream().filter(Entry::hasTombstone).count());
-    if (!entries.isEmpty()) {
-      builder.setFirstKey(entryKey(entries.iterator().next()));
-      builder.setLastKey(entryKey(entries.descendingIterator().next()));
+  public SegmentMetadata getMetadata() {
+    if (entries.isEmpty()) {
+      return null;
     }
-    builder.setMaxId(entries.stream()
-        .filter(Entry::hasPending)
-        .map(Entry::getPending)
-        .mapToLong(Item::getId)
-        .max()
-        .orElse(0));
-    return builder.build();
+
+    return ImmutableSegmentMetadata.builder()
+        .pendingCount(entries.stream().filter(Entry::isPending).count())
+        .tombstoneCount(entries.stream().filter(Entry::isTombstone).count())
+        .firstKey(entries.iterator().next().key())
+        .lastKey(entries.descendingIterator().next().key())
+        .maxId(entries.stream()
+            .map(Entry::item)
+            .filter(Objects::nonNull)
+            .mapToLong(Item::id)
+            .max()
+            .orElse(0))
+        .build();
   }
 
   public long size() {
@@ -52,9 +52,9 @@ public class InMemorySegment implements Segment {
   }
 
   @Override
-  public Key peek() {
+  public Entry.Key peek() {
     Preconditions.checkState(!closed, "closed");
-    return it.hasNext() ? entryKey(it.peek()) : null;
+    return it.hasNext() ? it.peek().key() : null;
   }
 
   @Override

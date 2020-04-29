@@ -1,10 +1,7 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparator;
-
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -13,12 +10,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.PriorityQueue;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 public class MergedSegmentView<E extends Segment> implements Segment {
-  // TODO: Optimize for segment staying at head and dequeueing multiple elements from it
-  private static final Comparator<Segment> COMPARATOR =
-      Comparator.comparing(Segment::peek, entryKeyComparator());
+  // TODO: This comparator does not order between tombstone and pending
+  //  Should we update the Segment interface so peek returns a new "Entry.Key"?
+  private static final Comparator<Segment> COMPARATOR = Comparator.comparing(Segment::peek);
 
   private final PriorityQueue<E> segments = new PriorityQueue<>(COMPARATOR);
   private final List<E> retired = new ArrayList<>();
@@ -61,18 +59,17 @@ public class MergedSegmentView<E extends Segment> implements Segment {
   }
 
   @Override
-  public synchronized Metadata getMetadata() {
+  public synchronized SegmentMetadata getMetadata() {
     // TODO: This doesn't cancel out tombstones and pending entries
-    return Stream.concat(
-        Stream.concat(segments.stream(), retired.stream()),
-        Optional.ofNullable(head).stream()
-    )
+    var maybeHead = Optional.ofNullable(head);
+    return Stream.of(segments.stream(), retired.stream(), maybeHead.stream())
+        .flatMap(Function.identity())
         .map(Segment::getMetadata)
         .collect(SegmentMetadata.merge());
   }
 
   @Override
-  public synchronized Key peek() {
+  public synchronized Entry.Key peek() {
     Preconditions.checkState(!closed, "closed");
     return head == null ? null : head.peek();
   }

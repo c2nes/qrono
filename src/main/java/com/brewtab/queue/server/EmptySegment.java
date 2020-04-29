@@ -1,8 +1,8 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 
@@ -10,13 +10,12 @@ public class EmptySegment implements Segment {
   private boolean closed = false;
 
   @Override
-  public Metadata getMetadata() {
-    // TODO: "hasFoo" required -- never null
-    return Metadata.getDefaultInstance();
+  public SegmentMetadata getMetadata() {
+    return null;
   }
 
   @Override
-  public Key peek() {
+  public Entry.Key peek() {
     Preconditions.checkState(!closed, "closed");
     return null;
   }

@@ -3,13 +3,12 @@ package com.brewtab.queue.server;
 import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
-import com.brewtab.queue.server.Encoding.Footer;
-import com.brewtab.queue.server.Encoding.Key.Type;
-import com.brewtab.queue.server.Encoding.PendingPreamble;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableEntry;
+import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableMap;
@@ -27,17 +26,17 @@ public class ImmutableSegment implements Segment {
   private static final int DEFAULT_BUFFER_SIZE = 4096;
 
   private final BufferedReadableChannel channel;
-  private final Metadata metadata;
+  private final SegmentMetadata metadata;
   private final long limit;
-  private Encoding.Key nextKey;
+  private Entry.Key nextKey;
 
   private boolean closed = false;
 
   private ImmutableSegment(
       BufferedReadableChannel channel,
-      Metadata metadata,
+      SegmentMetadata metadata,
       long limit,
-      Encoding.Key nextKey
+      Entry.Key nextKey
   ) {
     this.channel = channel;
     this.metadata = metadata;
@@ -50,15 +49,14 @@ public class ImmutableSegment implements Segment {
   }
 
   @Override
-  public Metadata getMetadata() {
+  public SegmentMetadata getMetadata() {
     return metadata;
   }
 
   @Override
-  public Key peek() {
+  public Entry.Key peek() {
     checkOpen();
-    var key = nextKey;
-    return key == null ? null : key.toEntryKey();
+    return nextKey;
   }
 
   private Entry readNextEntry() throws IOException {
@@ -66,34 +64,39 @@ public class ImmutableSegment implements Segment {
       return null;
     }
 
-    if (nextKey.type == Type.PENDING) {
-      channel.ensureReadableBytes(PendingPreamble.SIZE);
-      var preamble = PendingPreamble.read(channel.buffer);
-      channel.ensureReadableBytes(preamble.valueLength);
-      var value = ByteString.copyFrom(channel.buffer, preamble.valueLength);
+    if (nextKey.entryType() == Entry.Type.PENDING) {
+      channel.ensureReadableBytes(Encoding.STATS_SIZE + 4);
+      var stats = Encoding.readStats(channel.buffer);
+      var valueLength = channel.buffer.getInt();
+      channel.ensureReadableBytes(valueLength);
+      var value = ByteString.copyFrom(channel.buffer, valueLength);
 
-      return Entry.newBuilder()
-          .setPending(Item.newBuilder()
-              .setDeadline(Encoding.fromTimestamp(nextKey.deadline))
-              .setId(nextKey.id)
-              .setStats(preamble.stats.toApiStats())
-              .setValue(value))
+      var item = ImmutableItem.builder()
+          .deadline(nextKey.deadline())
+          .id(nextKey.id())
+          .stats(stats)
+          .value(value)
+          .build();
+
+      return ImmutableEntry.builder()
+          .key(nextKey)
+          .item(item)
           .build();
     }
 
-    if (nextKey.type == Type.TOMBSTONE) {
-      return Entry.newBuilder()
-          .setTombstone(nextKey.toEntryKey())
+    if (nextKey.entryType() == Entry.Type.TOMBSTONE) {
+      return ImmutableEntry.builder()
+          .key(nextKey)
           .build();
     }
 
     throw new IllegalStateException("unrecognized entry type");
   }
 
-  private Encoding.Key readNextKey() throws IOException {
+  private Entry.Key readNextKey() throws IOException {
     if (position() < limit) {
-      channel.ensureReadableBytes(Encoding.Key.SIZE);
-      return Encoding.Key.read(channel.buffer);
+      channel.ensureReadableBytes(Encoding.KEY_SIZE);
+      return Encoding.readKey(channel.buffer);
     }
     return null;
   }
@@ -131,30 +134,25 @@ public class ImmutableSegment implements Segment {
     var channel = new BufferedReadableChannel(source);
 
     // Read footer
-    var footerPosition = channel.channel.size() - Footer.SIZE;
+    var footerPosition = channel.channel.size() - Encoding.FOOTER_SIZE;
     channel.position(footerPosition);
-    channel.ensureReadableBytes(Footer.SIZE);
-    var footer = Footer.read(channel.buffer);
+    channel.ensureReadableBytes(Encoding.FOOTER_SIZE);
+    var footer = Encoding.readFooter(channel.buffer);
 
     // Put position back to beginning of channel
     channel.position(0);
 
-    // Read first key (if any)
-    Encoding.Key firstKey = null;
-    if (channel.channel.size() > Footer.SIZE) {
-      channel.ensureReadableBytes(Encoding.Key.SIZE);
-      firstKey = Encoding.Key.read(channel.buffer);
-    } else {
-      channel.channel.close();
-    }
+    // Read first key
+    channel.ensureReadableBytes(Encoding.KEY_SIZE);
+    var firstKey = Encoding.readKey(channel.buffer);
 
     // Build metadata from first key and data in footer
-    var metadata = Metadata.newBuilder()
-        .setPendingCount(footer.pendingCount)
-        .setTombstoneCount(footer.tombstoneCount)
-        .setFirstKey(firstKey == null ? Key.getDefaultInstance() : firstKey.toEntryKey())
-        .setLastKey(footer.lastKey.toEntryKey())
-        .setMaxId(footer.maxId)
+    var metadata = ImmutableSegmentMetadata.builder()
+        .pendingCount(footer.pendingCount())
+        .tombstoneCount(footer.tombstoneCount())
+        .firstKey(firstKey)
+        .lastKey(footer.lastKey())
+        .maxId(footer.maxId())
         .build();
 
     return new ImmutableSegment(channel, metadata, footerPosition, firstKey);
@@ -201,14 +199,14 @@ public class ImmutableSegment implements Segment {
   static class Writer {
     private final SeekableByteChannel channel;
     private final Segment source;
-    private final ImmutableMap.Builder<Key, Long> offsets;
+    private final ImmutableMap.Builder<Entry.Key, Long> offsets;
     private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
     private long position = 0;
 
     private Writer(
         SeekableByteChannel channel,
         Segment source,
-        ImmutableMap.Builder<Key, Long> offsets
+        ImmutableMap.Builder<Entry.Key, Long> offsets
     ) {
       this.channel = channel;
       this.source = source;
@@ -217,7 +215,7 @@ public class ImmutableSegment implements Segment {
 
     private void recordOffset(Entry entry) {
       if (offsets != null) {
-        offsets.put(Segment.entryKey(entry), position);
+        offsets.put(entry.key(), position);
       }
     }
 
@@ -249,61 +247,75 @@ public class ImmutableSegment implements Segment {
       }
     }
 
-    private void writeKey(Encoding.Key key) throws IOException {
-      ensureBufferCapacity(Encoding.Key.SIZE);
-      position += key.write(buffer);
+    private void writeKey(Entry.Key key) throws IOException {
+      ensureBufferCapacity(Encoding.KEY_SIZE);
+      position += Encoding.writeKey(buffer, key);
     }
 
     private void writePendingItem(Item item) throws IOException {
-      // Write preamble
-      ensureBufferCapacity(Encoding.PendingPreamble.SIZE);
-      position += PendingPreamble.fromPending(item).write(buffer);
+      var value = item.value();
+      ensureBufferCapacity(Encoding.STATS_SIZE + 4 + value.size());
 
-      // Write value
-      var value = item.getValue();
-      ensureBufferCapacity(value.size());
+      // stats (Encoding.STATS_SIZE bytes)
+      position += Encoding.writeStats(buffer, item.stats());
+
+      // value_length (4 bytes)
+      buffer.putInt(value.size());
+      position += 4;
+
+      // value (value_length bytes)
       value.copyTo(buffer);
       position += value.size();
     }
 
     private void write() throws IOException {
+      // Get first entry
+      var entry = source.next();
+
+      if (entry == null) {
+        throw new IllegalArgumentException("source segment must be non-empty");
+      }
+
       // Footer fields
       var pendingCount = 0;
       var tombstoneCount = 0;
-      var lastKey = new Encoding.Key(0, 0, Type.PENDING);
+      Entry.Key lastKey = null;
       var maxId = Long.MIN_VALUE;
 
-      for (Entry entry = source.next(); entry != null; entry = source.next()) {
+      while (entry != null) {
         // Record offset to entry
         recordOffset(entry);
 
         // Write key and pending item data
-        var key = Encoding.Key.fromEntry(entry);
-        writeKey(key);
+        var key = entry.key();
+        writeKey(entry.key());
 
-        if (entry.hasPending()) {
-          writePendingItem(entry.getPending());
-        }
-
-        // Track metadata for footer
-        if (entry.hasPending()) {
+        var item = entry.item();
+        if (item != null) {
+          writePendingItem(item);
           pendingCount++;
-        } else if (entry.hasTombstone()) {
+        } else {
           tombstoneCount++;
         }
 
-        if (key.id > maxId) {
-          maxId = key.id;
+        if (key.id() > maxId) {
+          maxId = key.id();
         }
 
         lastKey = key;
+        entry = source.next();
       }
 
       // TODO: Consider versioning the footer
 
       // Write footer
-      ensureBufferCapacity(Footer.SIZE);
-      new Footer(pendingCount, tombstoneCount, lastKey, maxId).write(buffer);
+      ensureBufferCapacity(Encoding.FOOTER_SIZE);
+      Encoding.writeFooter(buffer, ImmutableEncoding.Footer.builder()
+          .pendingCount(pendingCount)
+          .tombstoneCount(tombstoneCount)
+          .lastKey(lastKey)
+          .maxId(maxId)
+          .build());
       flushBuffer();
     }
   }
@@ -319,7 +331,7 @@ public class ImmutableSegment implements Segment {
     new Writer(channel, source, null).write();
   }
 
-  public static Map<Key, Long> writeWithOffsetTracking(
+  public static Map<Entry.Key, Long> writeWithOffsetTracking(
       Path path,
       Segment source
   ) throws IOException {
@@ -330,7 +342,7 @@ public class ImmutableSegment implements Segment {
     }
   }
 
-  public static Map<Key, Long> writeWithOffsetTracking(
+  public static Map<Entry.Key, Long> writeWithOffsetTracking(
       SeekableByteChannel channel,
       Segment source
   ) throws IOException {

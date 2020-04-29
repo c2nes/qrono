@@ -1,11 +1,7 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.entryKey;
-
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.EntryCase;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Verify;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -19,13 +15,13 @@ public class TombstoningSegmentView implements Segment {
   }
 
   @Override
-  public Metadata getMetadata() {
+  public SegmentMetadata getMetadata() {
     // TODO: This lies
     return delegate.getMetadata();
   }
 
   @Override
-  public Key peek() {
+  public Entry.Key peek() {
     if (next == null) {
       try {
         next = next(delegate);
@@ -33,7 +29,7 @@ public class TombstoningSegmentView implements Segment {
         throw new UncheckedIOException(e);
       }
     }
-    return next == null ? null : entryKey(next);
+    return next == null ? null : next.key();
   }
 
   public Entry next() throws IOException {
@@ -49,15 +45,15 @@ public class TombstoningSegmentView implements Segment {
   private static Entry next(Segment delegate) throws IOException {
     while (true) {
       var entry = delegate.next();
-      if (entry == null || !entry.hasTombstone()) {
+      if (entry == null || entry.isPending()) {
         return entry;
       }
 
-      var key = entryKey(entry);
+      var key = entry.key();
       var nextKey = delegate.peek();
 
       // Next key is different so this must be an unpaired tombstone
-      if (!key.equals(nextKey)) {
+      if (!matches(key, nextKey)) {
         return entry;
       }
 
@@ -65,18 +61,24 @@ public class TombstoningSegmentView implements Segment {
       var nextEntry = Verify.verifyNotNull(delegate.next());
 
       // Next entry should be the pending item our tombstone is shadowing
-      Verify.verify(nextEntry.getEntryCase() == EntryCase.PENDING,
+      Verify.verify(nextEntry.isPending(),
           "duplicate non-tombstone segment entries found");
 
-      // At most two entries (a pending item and it's tombstone) may share a pending key.
+      // At most two entries (a pending item and it's tombstone) may share a deadline & id
       // Validate that the next key (if any) is different
-      Verify.verifyNotNull(!entryKey(entry).equals(delegate.peek()),
-          "duplicate segment entries found; key=");
+      var nextNextKey = delegate.peek();
+      Verify.verify(nextNextKey == null || !matches(key, nextNextKey),
+          "duplicate segment entries found; key=%s", key);
     }
   }
 
   @Override
   public void close() throws IOException {
     delegate.close();
+  }
+
+  static boolean matches(Entry.Key k1, Entry.Key k2) {
+    return k1.id() == k2.id()
+        && k1.deadline().equals(k2.deadline());
   }
 }

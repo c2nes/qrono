@@ -1,11 +1,11 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Stats;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableTimestamp;
+import com.brewtab.queue.server.data.Timestamp;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.util.Timestamps;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -25,16 +25,19 @@ public class StandardWriteAheadLogTest {
     var baseTime = System.currentTimeMillis();
     var generator = new StandardIdGenerator(baseTime, 0);
     var id = generator.generateId();
-    var deadline = Timestamps.fromMillis(baseTime);
+    var deadline = ImmutableTimestamp.of(baseTime);
     var value = ByteString.copyFromUtf8(Strings.repeat("0", valueSize));
-    Supplier<Entry> entrySupplier = () -> Entry.newBuilder()
-        .setPending(Item.newBuilder()
-            .setDeadline(deadline)
-            .setId(id)
-            .setStats(Stats.newBuilder()
-                .setEnqueueTime(deadline))
-            .setValue(value))
-        .build();
+    Supplier<Entry> entrySupplier = () -> Entry.pendingFrom(
+        ImmutableItem.builder()
+            .deadline(deadline)
+            .id(id)
+            .stats(ImmutableItem.Stats.builder()
+                .enqueueTime(deadline)
+                .requeueTime(Timestamp.ZERO)
+                .dequeueCount(0)
+                .build())
+            .value(value)
+            .build());
 
     if (memoizeValue) {
       entrySupplier = new Memoize<>(entrySupplier);

@@ -1,15 +1,12 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.SegmentEntryComparators.entryKeyComparator;
 import static java.util.Objects.requireNonNull;
 
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
 import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.SegmentWriter.Opener;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.TextFormat;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -75,11 +72,10 @@ public class QueueData implements Closeable {
       Path path = file.toPath();
       if (SegmentFiles.isAnyIndexPath(path)) {
         var segment = ImmutableSegment.open(path);
-        logger.debug("Opening segment {}; meta={}", path,
-            TextFormat.shortDebugString(segment.getMetadata()));
+        logger.debug("Opening segment {}; meta={}", path, segment.getMetadata());
         immutableSegments.addSegment(segment);
-        if (segment.getMetadata().getMaxId() > maxId) {
-          maxId = segment.getMetadata().getMaxId();
+        if (segment.getMetadata().maxId() > maxId) {
+          maxId = segment.getMetadata().maxId();
         }
 
         var segmentName = SegmentFiles.getSegmentNameFromPath(path);
@@ -93,7 +89,7 @@ public class QueueData implements Closeable {
     segmentCounter.set(maxSegmentId + 1);
 
     // TODO: Remove this
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < 10; i++) {
       var pendingMerge = new MergedSegmentView<ImmutableSegment>();
       for (File file : requireNonNull(directory.toFile().listFiles())) {
         Path path = file.toPath();
@@ -108,9 +104,9 @@ public class QueueData implements Closeable {
           new TombstoningSegmentView(pendingMerge));
       logger.info("Merged {} segments; metadata={}, duration={}",
           pendingMerge.getSegments().size(),
-          TextFormat.printer().shortDebugString(pendingMerge.getMetadata()),
+          pendingMerge.getMetadata(),
           Duration.between(start, Instant.now()));
-      //Files.delete(mergedPath);
+      Files.delete(mergedPath);
     }
 
     return new QueueLoadSummary(maxId);
@@ -214,18 +210,28 @@ public class QueueData implements Closeable {
       return new KeySegmentPair(currentSegmentKey, currentSegment);
     }
 
-    if (entryKeyComparator().compare(currentSegmentKey, tombstoningSegmentViewKey) < 0) {
+    if (currentSegmentKey.compareTo(tombstoningSegmentViewKey) < 0) {
       return new KeySegmentPair(currentSegmentKey, currentSegment);
     } else {
       return new KeySegmentPair(tombstoningSegmentViewKey, tombstoningSegmentView);
     }
   }
 
-  public synchronized Metadata getMetadata() {
-    var memMeta = currentSegment == null
-        ? Metadata.getDefaultInstance()
-        : currentSegment.getMetadata();
+  public synchronized SegmentMetadata getMetadata() {
     var immutableMeta = tombstoningSegmentView.getMetadata();
+    if (currentSegment == null) {
+      return immutableMeta;
+    }
+
+    var memMeta = currentSegment.getMetadata();
+    if (memMeta == null) {
+      return immutableMeta;
+    }
+
+    if (immutableMeta == null) {
+      return memMeta;
+    }
+
     return SegmentMetadata.merge(memMeta, immutableMeta);
   }
 
@@ -238,10 +244,10 @@ public class QueueData implements Closeable {
   }
 
   private static class KeySegmentPair {
-    private final Key key;
+    private final Entry.Key key;
     private final Segment segment;
 
-    private KeySegmentPair(Key key, Segment segment) {
+    private KeySegmentPair(Entry.Key key, Segment segment) {
       this.key = key;
       this.segment = segment;
     }
@@ -258,12 +264,12 @@ public class QueueData implements Closeable {
     }
 
     @Override
-    public Metadata getMetadata() {
+    public SegmentMetadata getMetadata() {
       return active.getMetadata();
     }
 
     @Override
-    public Key peek() {
+    public Entry.Key peek() {
       return active.peek();
     }
 

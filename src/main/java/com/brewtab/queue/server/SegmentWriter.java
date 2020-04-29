@@ -1,7 +1,7 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Item;
 import java.io.IOException;
 import java.util.Collection;
 
@@ -19,6 +19,6 @@ public interface SegmentWriter {
   void copy(String segmentName, Segment source) throws IOException;
 
   interface Opener {
-    Segment open(Key position) throws IOException;
+    Segment open(Entry.Key position) throws IOException;
   }
 }

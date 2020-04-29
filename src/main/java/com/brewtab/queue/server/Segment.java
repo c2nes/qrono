@@ -1,14 +1,15 @@
 package com.brewtab.queue.server;
 
-import com.brewtab.queue.Api.Item;
-import com.brewtab.queue.Api.Segment.Entry;
-import com.brewtab.queue.Api.Segment.Entry.Key;
-import com.brewtab.queue.Api.Segment.Metadata;
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Entry.Type;
+import com.brewtab.queue.server.data.ImmutableEntry;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.SegmentMetadata;
 import java.io.Closeable;
 import java.io.IOException;
 
 public interface Segment extends Closeable {
-  Metadata getMetadata();
+  SegmentMetadata getMetadata();
 
   Entry.Key peek();
 
@@ -18,27 +19,23 @@ public interface Segment extends Closeable {
    * Size without other metadata
    */
   default long size() {
-    Metadata meta = getMetadata();
-    return meta.getPendingCount() + meta.getTombstoneCount();
+    var meta = getMetadata();
+    return meta == null ? 0 : meta.pendingCount() + meta.tombstoneCount();
   }
 
-  static Entry.Key itemKey(Item item) {
-    return Key.newBuilder()
-        .setDeadline(item.getDeadline())
-        .setId(item.getId())
+  static Entry.Key pendingItemKey(Item item) {
+    return ImmutableEntry.Key.builder()
+        .deadline(item.deadline())
+        .id(item.id())
+        .entryType(Type.PENDING)
         .build();
   }
 
-  static Entry.Key entryKey(Entry entry) {
-    switch (entry.getEntryCase()) {
-      case PENDING:
-        return itemKey(entry.getPending());
-
-      case TOMBSTONE:
-        return entry.getTombstone();
-
-      default:
-        throw new IllegalArgumentException("invalid entry type: " + entry.getEntryCase());
-    }
+  static Entry.Key tombstoneItemKey(Item item) {
+    return ImmutableEntry.Key.builder()
+        .deadline(item.deadline())
+        .id(item.id())
+        .entryType(Type.TOMBSTONE)
+        .build();
   }
 }
