@@ -27,7 +27,7 @@ public class StandardWriteAheadLogTest {
     var id = generator.generateId();
     var deadline = ImmutableTimestamp.of(baseTime);
     var value = ByteString.copyFromUtf8(Strings.repeat("0", valueSize));
-    Supplier<Entry> entrySupplier = () -> Entry.pendingFrom(
+    Supplier<Entry> entrySupplier = () -> Entry.newPendingEntry(
         ImmutableItem.builder()
             .deadline(deadline)
             .id(id)

@@ -1,7 +1,5 @@
 package com.brewtab.queue.server;
 
-import static com.brewtab.queue.server.Segment.pendingItemKey;
-import static com.brewtab.queue.server.Segment.tombstoneItemKey;
 import static com.google.protobuf.util.Timestamps.fromMillis;
 import static com.google.protobuf.util.Timestamps.toMillis;
 
@@ -13,7 +11,7 @@ import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
 import com.brewtab.queue.Api.Stats;
-import com.brewtab.queue.server.data.ImmutableEntry;
+import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
@@ -57,17 +55,6 @@ public class Queue {
 
     long id = idGenerator.generateId();
 
-//    Api.Item item = Api.Item.newBuilder()
-//        .setId(id)
-//        .setDeadline(deadline)
-//        .setValue(request.getValue())
-//        .setStats(Stats.newBuilder().setEnqueueTime(enqueueTime))
-//        .build();
-//
-//    Entry entry = Entry.newBuilder()
-//        .setPending(item)
-//        .build();
-
     var requestedItem = ImmutableItem.builder()
         .deadline(ImmutableTimestamp.of(deadline))
         .id(id)
@@ -79,10 +66,7 @@ public class Queue {
         .value(request.getValue())
         .build();
 
-    var entry = data.write(ImmutableEntry.builder()
-        .key(pendingItemKey(requestedItem))
-        .item(requestedItem)
-        .build());
+    var entry = data.write(Entry.newPendingEntry(requestedItem));
 
     // data.write() may adjust the item deadline
     var item = entry.item();
@@ -154,9 +138,7 @@ public class Queue {
           .asRuntimeException();
     }
 
-    data.write(ImmutableEntry.builder()
-        .key(tombstoneItemKey(released))
-        .build());
+    data.write(Entry.newTombstoneEntry(released));
   }
 
   public synchronized RequeueResponse requeue(RequeueRequest request) throws IOException {
@@ -168,10 +150,7 @@ public class Queue {
           .asRuntimeException();
     }
 
-    var tombstone = ImmutableEntry.builder()
-        .key(tombstoneItemKey(item))
-        .build();
-
+    var tombstone = Entry.newTombstoneEntry(item);
     var requeueTime = clock.millis();
     var deadline = request.hasDeadline() ? toMillis(request.getDeadline()) : requeueTime;
 
@@ -185,10 +164,7 @@ public class Queue {
         .build();
 
     // TODO: Commit these atomically
-    data.write(ImmutableEntry.builder()
-        .key(pendingItemKey(item))
-        .item(item)
-        .build());
+    data.write(Entry.newPendingEntry(item));
     data.write(tombstone);
 
     return RequeueResponse.newBuilder().build();

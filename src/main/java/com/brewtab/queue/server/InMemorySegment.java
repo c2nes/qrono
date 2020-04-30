@@ -8,7 +8,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Objects;
@@ -64,7 +63,7 @@ public class InMemorySegment implements Segment {
   }
 
   @Override
-  public void close() throws IOException {
+  public void close() {
     closed = true;
   }
 }

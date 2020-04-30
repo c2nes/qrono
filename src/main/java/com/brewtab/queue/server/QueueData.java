@@ -144,7 +144,8 @@ public class QueueData implements Closeable {
     var start = Instant.now();
     // Freeze and flush current segment to disk
     flush(currentSegment);
-    System.out.println("xfrSegmentWriter: " + Duration.between(start, Instant.now()));
+    logger.debug("Scheduled in-memory segment for compaction; waitTime={}",
+        Duration.between(start, Instant.now()));
 
     // Start new writable segment
     currentSegment = nextWritableSegment();

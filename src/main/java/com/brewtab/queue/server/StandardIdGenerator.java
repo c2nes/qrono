@@ -2,8 +2,6 @@ package com.brewtab.queue.server;
 
 import java.time.Clock;
 
-// TODO: Persist state
-// TODO: Standardize interface for creating new generator vs restoring state of existing generator.
 public class StandardIdGenerator implements IdGenerator {
   // ID:       64 bits
   // Ticks:    38 bits, 16 ms step, offset from configured epoch, ~139 years range

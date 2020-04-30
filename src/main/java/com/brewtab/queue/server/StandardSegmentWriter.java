@@ -3,7 +3,6 @@ package com.brewtab.queue.server;
 import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
 
 import com.brewtab.queue.server.data.Entry;
-import com.brewtab.queue.server.data.Item;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;

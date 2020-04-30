@@ -35,7 +35,15 @@ public interface Entry extends Comparable<Entry> {
     return key().compareTo(o.key());
   }
 
-  static Entry tombstoneFrom(Key key) {
+  static Key newTombstoneKey(Item item) {
+    return ImmutableEntry.Key.builder()
+        .deadline(item.deadline())
+        .id(item.id())
+        .entryType(Type.TOMBSTONE)
+        .build();
+  }
+
+  static Entry newTombstoneEntry(Key key) {
     return ImmutableEntry.builder()
         .key(ImmutableEntry.Key.builder()
             .from(key)
@@ -44,23 +52,23 @@ public interface Entry extends Comparable<Entry> {
         .build();
   }
 
-  static Entry tombstoneFrom(Item item) {
+  static Entry newTombstoneEntry(Item item) {
     return ImmutableEntry.builder()
-        .key(ImmutableEntry.Key.builder()
-            .deadline(item.deadline())
-            .id(item.id())
-            .entryType(Type.TOMBSTONE)
-            .build())
+        .key(newTombstoneKey(item))
         .build();
   }
 
-  static Entry pendingFrom(Item item) {
+  static Key newPendingKey(Item item) {
+    return ImmutableEntry.Key.builder()
+        .deadline(item.deadline())
+        .id(item.id())
+        .entryType(Type.PENDING)
+        .build();
+  }
+
+  static Entry newPendingEntry(Item item) {
     return ImmutableEntry.builder()
-        .key(ImmutableEntry.Key.builder()
-            .deadline(item.deadline())
-            .id(item.id())
-            .entryType(Type.PENDING)
-            .build())
+        .key(newPendingKey(item))
         .item(item)
         .build();
   }
@@ -71,9 +79,6 @@ public interface Entry extends Comparable<Entry> {
 
     long id();
 
-    // TODO: Should this be excluded from equals/hashCode/toString?
-    //  Currently its difficult to compare corresponding PENDING/TOMBSTONE keys for equality.
-    // @Value.Auxiliary
     Type entryType();
 
     @Override

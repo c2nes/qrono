@@ -35,6 +35,13 @@ final class SegmentMetadataUtils {
     public long tombstoneCount() {
       return tombstoneCount;
     }
+
+    public SegmentMetadata toImmutable() {
+      if (firstKey == null || lastKey == null) {
+        return null;
+      }
+      return ImmutableSegmentMetadata.copyOf(this);
+    }
   }
 
   private static <C extends Comparable<C>> C min(C a, C b) {
@@ -78,7 +85,7 @@ final class SegmentMetadataUtils {
         Accumulator::new,
         SegmentMetadataUtils::accumulate,
         SegmentMetadataUtils::accumulate,
-        ImmutableSegmentMetadata::copyOf
+        Accumulator::toImmutable
     );
   }
 }

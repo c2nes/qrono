@@ -98,5 +98,6 @@ public class MergedSegmentView<E extends Segment> implements Segment {
     if (head != null) {
       head.close();
     }
+    closed = true;
   }
 }

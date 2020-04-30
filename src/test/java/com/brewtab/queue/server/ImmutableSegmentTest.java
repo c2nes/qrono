@@ -32,21 +32,21 @@ public class ImmutableSegmentTest {
 
     ByteString value = ByteString.copyFromUtf8("Hello, world!");
 
-    Entry entry1 = Entry.pendingFrom(
+    Entry entry1 = Entry.newPendingEntry(
         ImmutableItem.builder()
             .deadline(ImmutableTimestamp.of(baseTime))
             .id(generator.generateId())
             .stats(stats)
             .value(value)
             .build());
-    Entry entry2 = Entry.pendingFrom(
+    Entry entry2 = Entry.newPendingEntry(
         ImmutableItem.builder()
             .deadline(ImmutableTimestamp.of(baseTime - 5))
             .id(generator.generateId())
             .stats(stats)
             .value(value)
             .build());
-    Entry entry3 = Entry.pendingFrom(
+    Entry entry3 = Entry.newPendingEntry(
         ImmutableItem.builder()
             .deadline(ImmutableTimestamp.of(baseTime + 5))
             .id(generator.generateId())

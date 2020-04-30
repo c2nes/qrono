@@ -35,7 +35,7 @@ public class QueueDataTest {
             .build())
         .value(ByteString.EMPTY);
     for (int i = 0; i < 10 * 128 * 1024; i++) {
-      data.write(Entry.pendingFrom(item.id(i).build()));
+      data.write(Entry.newPendingEntry(item.id(i).build()));
     }
     data.close();
 
@@ -65,7 +65,7 @@ public class QueueDataTest {
         .value(ByteString.EMPTY);
 
     for (int i = 0; i < 10; i++) {
-      data.write(Entry.pendingFrom(item.id(i).build()));
+      data.write(Entry.newPendingEntry(item.id(i).build()));
     }
 
     // Force flush otherwise entry and tombstone will be merged
@@ -80,7 +80,7 @@ public class QueueDataTest {
     assertEquals(3, assertPending(entry).id());
 
     // Tombstone entry 3
-    data.write(Entry.tombstoneFrom(entry.key()));
+    data.write(Entry.newTombstoneEntry(entry.key()));
 
     // Close and re-open
     data.close();
