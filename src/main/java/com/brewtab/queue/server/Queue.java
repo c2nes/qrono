@@ -188,4 +188,8 @@ public class Queue {
         .setDequeued(dequeuedSize)
         .build();
   }
+
+  public void runTestCompaction() throws IOException {
+    data.runTestCompaction();
+  }
 }

@@ -1,5 +1,6 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.Api.CompactQueueRequest;
 import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
@@ -159,6 +160,18 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
         .toBuilder()
         .setName(queueName)
         .build();
+  }
+
+  @Override
+  public void compactQueue(CompactQueueRequest request, StreamObserver<Empty> responseObserver) {
+    process(responseObserver, () -> compactQueue(request));
+  }
+
+  Empty compactQueue(CompactQueueRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = getQueue(queueName);
+    queue.runTestCompaction();
+    return Empty.getDefaultInstance();
   }
 
   private static <R> void process(StreamObserver<R> observer, Callable<R> operation) {

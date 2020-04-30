@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.PriorityQueue;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
@@ -20,6 +21,7 @@ public class MergedSegmentView<E extends Segment> implements Segment {
 
   private final PriorityQueue<E> segments = new PriorityQueue<>(COMPARATOR);
   private final List<E> retired = new ArrayList<>();
+  private final LongAdder headSwitches = new LongAdder();
 
   private E head = null;
   private boolean closed = false;
@@ -27,16 +29,23 @@ public class MergedSegmentView<E extends Segment> implements Segment {
   private void updateHead() {
     if (head == null) {
       head = segments.poll();
+      headSwitches.increment();
     } else if (head.peek() == null) {
       retired.add(head);
       head = segments.poll();
+      headSwitches.increment();
     } else {
       var next = segments.peek();
       if (next != null && COMPARATOR.compare(next, head) < 0) {
         segments.add(head);
         head = segments.poll();
+        headSwitches.increment();
       }
     }
+  }
+
+  public long getHeadSwitchDebugCount() {
+    return headSwitches.sum();
   }
 
   public synchronized void addSegment(E segment) {

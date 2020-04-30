@@ -6,6 +6,7 @@ import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.SegmentWriter.Opener;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.SegmentMetadata;
+import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
 import java.io.Closeable;
 import java.io.File;
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,28 +90,37 @@ public class QueueData implements Closeable {
 
     segmentCounter.set(maxSegmentId + 1);
 
-    // TODO: Remove this
-    for (int i = 0; i < 10; i++) {
-      var pendingMerge = new MergedSegmentView<ImmutableSegment>();
-      for (File file : requireNonNull(directory.toFile().listFiles())) {
-        Path path = file.toPath();
-        if (SegmentFiles.isAnyIndexPath(path)) {
-          pendingMerge.addSegment(ImmutableSegment.open(path));
-        }
+    return new QueueLoadSummary(maxId);
+  }
+
+  public void runTestCompaction() throws IOException {
+    synchronized (this) {
+      if (currentSegment != null && currentSegment.size() > 0) {
+        flushCurrentSegment().join();
       }
-      var start = Instant.now();
-      var mergedPath = SegmentFiles.getCombinedIndexPath(directory, "merged");
-      ImmutableSegment.write(
-          mergedPath,
-          new TombstoningSegmentView(pendingMerge));
-      logger.info("Merged {} segments; metadata={}, duration={}",
-          pendingMerge.getSegments().size(),
-          pendingMerge.getMetadata(),
-          Duration.between(start, Instant.now()));
-      Files.delete(mergedPath);
     }
 
-    return new QueueLoadSummary(maxId);
+    var pendingMerge = new MergedSegmentView<ImmutableSegment>();
+    for (File file : requireNonNull(directory.toFile().listFiles())) {
+      Path path = file.toPath();
+      if (SegmentFiles.isAnyIndexPath(path)) {
+        pendingMerge.addSegment(ImmutableSegment.open(path));
+      }
+    }
+    var start = Instant.now();
+    var mergedPath = SegmentFiles.getCombinedIndexPath(directory, "merged");
+
+    try {
+      ImmutableSegment.write(mergedPath, new TombstoningSegmentView(pendingMerge));
+      logger.info("Merged {} segments; entries={}, size={}, duration={}, switches={}",
+          pendingMerge.getSegments().size(),
+          pendingMerge.size(),
+          DataSize.fromBytes(Files.size(mergedPath)),
+          Duration.between(start, Instant.now()),
+          pendingMerge.getHeadSwitchDebugCount());
+    } finally {
+      Files.delete(mergedPath);
+    }
   }
 
   private WritableSegment nextWritableSegment() throws IOException {
@@ -140,18 +151,20 @@ public class QueueData implements Closeable {
   }
 
   @VisibleForTesting
-  void flushCurrentSegment() throws IOException {
+  CompletableFuture<Void> flushCurrentSegment() throws IOException {
     var start = Instant.now();
     // Freeze and flush current segment to disk
-    flush(currentSegment);
+    var future = flush(currentSegment);
     logger.debug("Scheduled in-memory segment for compaction; waitTime={}",
         Duration.between(start, Instant.now()));
 
     // Start new writable segment
     currentSegment = nextWritableSegment();
+
+    return future;
   }
 
-  private void flush(WritableSegment segment) throws IOException {
+  private CompletableFuture<Void> flush(WritableSegment segment) throws IOException {
     // Freeze segment to close WAL and prevent future writes
     currentSegment.freeze();
 
@@ -167,7 +180,7 @@ public class QueueData implements Closeable {
     // TODO: Handle exceptional completion of the future
 
     // Replace the in-memory copy of the segment with the frozen on-disk copy.
-    writeFuture.thenAccept(opener -> {
+    return writeFuture.thenAccept(opener -> {
       try {
         replaceableSegment.replaceFrom(opener);
       } catch (IOException e) {

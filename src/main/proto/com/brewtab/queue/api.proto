@@ -51,6 +51,12 @@ service QueueServer {
       post: "/v1/queues/{queue}:drop"
     };
   }
+
+  rpc CompactQueue (CompactQueueRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:compact"
+    };
+  }
 }
 
 message EnqueueRequest {
@@ -112,6 +118,10 @@ message QueueInfo {
 }
 
 message DropQueueRequest {
+  string queue = 1;
+}
+
+message CompactQueueRequest {
   string queue = 1;
 }
 
