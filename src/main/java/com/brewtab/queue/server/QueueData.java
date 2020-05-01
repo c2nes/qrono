@@ -5,9 +5,11 @@ import static java.util.Objects.requireNonNull;
 import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.SegmentWriter.Opener;
 import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Verify;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -33,6 +35,9 @@ public class QueueData implements Closeable {
   private final TombstoningSegmentView tombstoningSegmentView =
       new TombstoningSegmentView(immutableSegments);
   private WritableSegment currentSegment = null;
+
+  // Last key dequeued by next()
+  private Entry.Key last = null;
 
   public QueueData(Path directory, IOScheduler ioScheduler, SegmentWriter segmentWriter) {
     this.directory = directory;
@@ -137,10 +142,36 @@ public class QueueData implements Closeable {
     return currentSegment;
   }
 
+  private Entry adjustEntryDeadline(Entry entry) {
+    // If item is non-null then this is a pending entry
+    var item = entry.item();
+    if (item != null && last != null && entry.key().compareTo(last) < 0) {
+      var newDeadline = last.deadline();
+      var newItem = ImmutableItem.builder()
+          .from(item)
+          .deadline(newDeadline)
+          .build();
+      var newEntry = Entry.newPendingEntry(newItem);
+
+      // If the item still compares less after adjusting the deadline then the item
+      // ID must have gone backwards (which should never happen).
+      // TODO: This could happen with a requeue, right? How should we handle it?
+      //  Advance the deadline by 1ms? Assign new IDs when requeueing?
+      Verify.verify(last.compareTo(newEntry.key()) < 0,
+          "Pending item ID went backwards! %s < %s",
+          newDeadline, last.deadline());
+
+      return newEntry;
+    }
+
+    return entry;
+  }
+
   public synchronized Entry write(Entry entry) throws IOException {
-    var updatedEntry = getCurrentSegment().add(entry);
+    entry = adjustEntryDeadline(entry);
+    getCurrentSegment().add(entry);
     checkFlushCurrentSegment();
-    return updatedEntry;
+    return entry;
   }
 
   private void checkFlushCurrentSegment() throws IOException {
@@ -204,7 +235,14 @@ public class QueueData implements Closeable {
 
   public synchronized Entry next() throws IOException {
     var segment = head().segment;
-    return segment == null ? null : segment.next();
+    if (segment == null) {
+      return null;
+    }
+    var entry = segment.next();
+    if (entry != null) {
+      last = entry.key();
+    }
+    return entry;
   }
 
   private KeySegmentPair head() {

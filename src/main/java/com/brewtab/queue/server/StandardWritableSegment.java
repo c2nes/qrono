@@ -43,36 +43,14 @@ public class StandardWritableSegment implements WritableSegment {
     this.wal = wal;
   }
 
-  private Entry adjustEntryDeadline(Entry entry) {
+  // QueueData is responsible for upholding this invariant for the queue overall.
+  // This check verifies that it is upheld within the current segment.
+  private void checkEntryDeadline(Entry entry) {
     var item = entry.item();
     if (item != null && lastRemoved != null) {
-      if (item.compareTo(lastRemoved) < 0) {
-        var newDeadline = lastRemoved.deadline();
-        var newKey = ImmutableEntry.Key.builder()
-            .from(entry.key())
-            .deadline(newDeadline)
-            .build();
-
-        var newItem = ImmutableItem.builder()
-            .from(item)
-            .deadline(newDeadline)
-            .build();
-
-        // If the item still compares less after adjusting the deadline then the item
-        // ID must have gone backwards (which should never happen).
-        Verify.verify(lastRemoved.compareTo(newItem) < 0,
-            "Pending item ID went backwards! %s < %s",
-            newDeadline, lastRemoved.deadline());
-
-        return ImmutableEntry.builder()
-            .from(entry)
-            .key(newKey)
-            .item(newItem)
-            .build();
-      }
+      Preconditions.checkArgument(item.compareTo(lastRemoved) > 0,
+          "pending item must not precede previously dequeued entries");
     }
-
-    return entry;
   }
 
   @Override
@@ -81,10 +59,10 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public Entry add(Entry originalEntry) throws IOException {
+  public Entry add(Entry entry) throws IOException {
     Preconditions.checkState(!frozen, "frozen");
 
-    var entry = adjustEntryDeadline(originalEntry);
+    checkEntryDeadline(entry);
     wal.append(entry);
 
     var item = entry.item();
