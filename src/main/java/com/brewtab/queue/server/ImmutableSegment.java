@@ -12,8 +12,6 @@ import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMap.Builder;
 import com.google.protobuf.ByteString;
 import java.io.EOFException;
 import java.io.IOException;
@@ -22,7 +20,6 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.function.Supplier;
 
 public class ImmutableSegment implements Segment {
@@ -202,29 +199,21 @@ public class ImmutableSegment implements Segment {
   static class Writer {
     private final SeekableByteChannel channel;
     private final Segment source;
-    private final ImmutableMap.Builder<Entry.Key, Long> offsets;
-    private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
-    private long position = 0;
 
     // Gets the current read offset. We can use this to more quickly seek to the required
     // offset in the newly written segment.
     private final Supplier<Entry.Key> liveReaderOffset;
 
+    private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
+    private long position = 0;
+
     private Writer(
         SeekableByteChannel channel,
         Segment source,
-        Builder<Key, Long> offsets,
         Supplier<Key> liveReaderOffset) {
       this.channel = channel;
       this.source = source;
-      this.offsets = offsets;
       this.liveReaderOffset = liveReaderOffset;
-    }
-
-    private void recordOffset(Entry entry) {
-      if (offsets != null) {
-        offsets.put(entry.key(), position);
-      }
     }
 
     private void flushBuffer() throws IOException {
@@ -292,7 +281,6 @@ public class ImmutableSegment implements Segment {
       var readerOffset = liveReaderOffset.get();
       var readerStartPosition = 0L;
       var readerStartKey = entry.key();
-      var readerOffsetTTL = 0;
 
       // Footer fields
       var pendingCount = 0;
@@ -301,19 +289,13 @@ public class ImmutableSegment implements Segment {
       var maxId = Long.MIN_VALUE;
 
       while (entry != null) {
-        // Record offset to entry
-        recordOffset(entry);
-
-        // Periodically update our copy of the reader's position, but only if we're ahead
-        // of where we last knew the reader to be. If we're behind where we last knew the
+        // Update our copy of the reader's position, but only if we're ahead of where
+        // we last knew the reader to be. If we're behind where we last knew the
         // reader to be we should just continue advancing the start position.
         var readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
-        if (readerOffsetTTL == 0 && !readerIsAhead) {
+        if (!readerIsAhead) {
           readerOffset = liveReaderOffset.get();
-          readerOffsetTTL = 100;
           readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
-        } else if (readerOffsetTTL > 0) {
-          readerOffsetTTL--;
         }
 
         // So long as the reader is ahead of us keep advancing the start position
@@ -358,11 +340,6 @@ public class ImmutableSegment implements Segment {
     }
   }
 
-  public static void write(Path path, Segment segment) throws IOException {
-    var firstKey = segment.getMetadata().firstKey();
-    write(path, segment, () -> firstKey);
-  }
-
   public static ReaderOffset write(
       Path path,
       Segment segment,
@@ -380,28 +357,7 @@ public class ImmutableSegment implements Segment {
       Segment source,
       Supplier<Key> liveReaderOffset
   ) throws IOException {
-    return new Writer(channel, source, null, liveReaderOffset).write();
-  }
-
-  public static Map<Entry.Key, Long> writeWithOffsetTracking(
-      Path path,
-      Segment source
-  ) throws IOException {
-    try (var output = FileChannel.open(path, WRITE, CREATE)) {
-      var offsets = writeWithOffsetTracking(output, source);
-      output.force(false);
-      return offsets;
-    }
-  }
-
-  public static Map<Entry.Key, Long> writeWithOffsetTracking(
-      SeekableByteChannel channel,
-      Segment source
-  ) throws IOException {
-    var firstKey = source.getMetadata().firstKey();
-    var writer = new Writer(channel, source, ImmutableMap.builder(), () -> firstKey);
-    writer.write();
-    return writer.offsets.build();
+    return new Writer(channel, source, liveReaderOffset).write();
   }
 
   private static ByteBuffer newByteBuffer(int capacity) {

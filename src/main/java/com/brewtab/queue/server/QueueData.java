@@ -59,7 +59,7 @@ public class QueueData implements Closeable {
         logger.debug("Writing segment from log file {}", path);
         String segmentName = SegmentFiles.getSegmentNameFromPath(path);
         List<Entry> entries = StandardWriteAheadLog.read(path);
-        segmentWriter.write(segmentName, entries);
+        segmentWriter.write(segmentName, new InMemorySegment(entries));
         Files.delete(path);
       }
 
@@ -68,7 +68,7 @@ public class QueueData implements Closeable {
         String segmentName = SegmentFiles.getSegmentNameFromPath(path);
         // TODO: Use lax read method here
         List<Entry> entries = StandardWriteAheadLog.read(path);
-        segmentWriter.write(segmentName, entries);
+        segmentWriter.write(segmentName, new InMemorySegment(entries));
         Files.delete(path);
       }
     }
