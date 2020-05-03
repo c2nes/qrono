@@ -98,6 +98,72 @@ public class QueueData implements Closeable {
     return new QueueLoadSummary(maxId);
   }
 
+  private void runCompaction(List<Path> paths) {
+    // Merge paths -> new path
+    // How do we name the paths to know what replaces what?
+    // 0-000 -> 1-000
+    // 0-001 -> 1-001
+    // ...
+    // 1-*   -> 2-*
+    // Level 0 = Written from in-memory segment
+    // Level 1 = Written from level 0 segments
+    // Level N = Written from level n-1 segments
+    //
+    // 0-000000000001.p-idx
+    // 0-000000000002.p-idx
+    // 0-000000000003.p-idx
+    // 0-000000000004.p-idx
+    // 0-000000000005.p-idx
+    //
+    // 1-000000000005.p-idx = Merged version of all level 0 segments <= 5
+    //
+    // 1-000000000010.p-idx = Merged version of all level 0, 5 < segments <= 10 ?
+    //
+    //
+    // .p-idx.tmp -> .p-idx
+    //
+    // Any new level zero segments will be > 5
+    // There will never be new level 0 segments <= 5
+    //
+    // Start compaction at level N,
+    //  1) Identify all input files (level N-1). Find MaxID.
+    //  2) Write N-MaxID.idx
+    //  3) Swap in-process. How do we know where to skip to?
+    //
+    // Well, we need to keep track of the last returned key "K".
+    // Any keys k_1 < K in written segments have already been returned (right? if k_1 < K and )
+    //
+    // Oh...this is f'ed up.
+    //
+    // Day 0. 10 entries w/ deadline t1 get written. 5 are dequeued.
+    //
+    // (t1)(t1)(t1)(t1)(t1)[t1][t1][t1][t1][t1]
+    //
+    // Day 1. 10 entries w/ deadline t0 get written. 0 have been dequeued.
+    //
+    // [t0][t0][t0][t0][t0][t0][t0][t0][t0][t0]
+    //
+    // "Merged",
+    //
+    // [t0][t0][t0][t0][t0][t0][t0][t0][t0][t0](t1)(t1)(t1)(t1)(t1)[t1][t1][t1][t1][t1]
+    //
+    // We need a stronger invariant than the one we have currently.
+    // * When writing a pending entry, its key K must be > then any key already dequeued.
+    // * Entry key "K" is dequeued only after all entry keys < K are dequeued.
+    // * Keys are dequeued in strict monotonic order *
+    //
+    // Recovery,
+    //  1) Remove tmp files
+    //  2) Remove overlapping segment files in lower levels
+    //  3) Compact log file (if exists)
+    //
+
+    // We can pass a reference to the watermark to the segment writer and ask it to track
+    // the location of the first key after this value?
+
+    // Unrelated, is it okay that we reuse IDs when requeueing items?
+  }
+
   public void runTestCompaction() throws IOException {
     synchronized (this) {
       if (currentSegment != null && currentSegment.size() > 0) {
@@ -116,13 +182,25 @@ public class QueueData implements Closeable {
     var mergedPath = SegmentFiles.getCombinedIndexPath(directory, "merged");
 
     try {
-      ImmutableSegment.write(mergedPath, new TombstoningSegmentView(pendingMerge));
-      logger.info("Merged {} segments; entries={}, size={}, duration={}, switches={}",
+      var opener = segmentWriter.write(
+          "merged",
+          new TombstoningSegmentView(pendingMerge),
+          this::peek
+      );
+      var writeDuration = Duration.between(start, Instant.now());
+      var segment = opener.open(peek());
+      var peeked = segment.peek();
+      segment.close();
+      var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
+      logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
+              + "switches={}, seekDuration={}, peeked={}",
           pendingMerge.getSegments().size(),
           pendingMerge.size(),
           DataSize.fromBytes(Files.size(mergedPath)),
           Duration.between(start, Instant.now()),
-          pendingMerge.getHeadSwitchDebugCount());
+          pendingMerge.getHeadSwitchDebugCount(),
+          seekDuration,
+          peeked);
     } finally {
       Files.delete(mergedPath);
     }
@@ -223,8 +301,8 @@ public class QueueData implements Closeable {
 
   private Opener writeAndDeleteLog(WritableSegment segment) throws IOException {
     var segmentName = segment.getName();
-    var entries = segment.entries();
-    var frozenSegment = segmentWriter.write(segmentName, entries);
+    var segmentCopy = new InMemorySegment(segment.entries());
+    var frozenSegment = segmentWriter.write(segmentName, segmentCopy, this::peek);
     StandardWriteAheadLog.delete(directory, segmentName);
     return frozenSegment;
   }

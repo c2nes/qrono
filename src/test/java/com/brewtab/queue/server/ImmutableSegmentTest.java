@@ -62,7 +62,7 @@ public class ImmutableSegmentTest {
     var footerSize = Encoding.FOOTER_SIZE;
 
     ByteArrayChannel channel = new ByteArrayChannel();
-    ImmutableSegment.write(channel, memSegment);
+    ImmutableSegment.write(channel, memSegment, () -> memSegment.getMetadata().firstKey());
     assertEquals(itemSize * 3 + footerSize, channel.position());
 
     channel.position(0);

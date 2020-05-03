@@ -147,3 +147,15 @@ Footer:
 TODO,
 * Clean up Encoding class
 
+# 2020-04-30
+
+TODO:
+
+- Online segment merging
+- IO batching (put lock waiters into queue; lock acquirer operates on batch)
+- Do not keep working item values in memory (just IDs)
+    - Add ID lookup index to segments?
+- Requeue with new value?
+- How do we avoid re-reading large numbers of segment entries to cancel out
+  tombstones?
+

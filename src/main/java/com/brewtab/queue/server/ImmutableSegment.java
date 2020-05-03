@@ -4,6 +4,7 @@ import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableEntry;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
@@ -12,6 +13,7 @@ import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMap.Builder;
 import com.google.protobuf.ByteString;
 import java.io.EOFException;
 import java.io.IOException;
@@ -21,6 +23,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.function.Supplier;
 
 public class ImmutableSegment implements Segment {
   private static final int DEFAULT_BUFFER_SIZE = 4096;
@@ -203,14 +206,19 @@ public class ImmutableSegment implements Segment {
     private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
     private long position = 0;
 
+    // Gets the current read offset. We can use this to more quickly seek to the required
+    // offset in the newly written segment.
+    private final Supplier<Entry.Key> liveReaderOffset;
+
     private Writer(
         SeekableByteChannel channel,
         Segment source,
-        ImmutableMap.Builder<Entry.Key, Long> offsets
-    ) {
+        Builder<Key, Long> offsets,
+        Supplier<Key> liveReaderOffset) {
       this.channel = channel;
       this.source = source;
       this.offsets = offsets;
+      this.liveReaderOffset = liveReaderOffset;
     }
 
     private void recordOffset(Entry entry) {
@@ -268,13 +276,23 @@ public class ImmutableSegment implements Segment {
       position += value.size();
     }
 
-    private void write() throws IOException {
+    private ReaderOffset write() throws IOException {
       // Get first entry
       var entry = source.next();
 
       if (entry == null) {
         throw new IllegalArgumentException("source segment must be non-empty");
       }
+
+      // Monitor where the reader is and maintain a corresponding start position
+      // in the output file. These are not updated synchronously so the live reader
+      // may drift ahead of this start position. That's okay. We maintain the best
+      // start position we can and will scan from there in the Opener to get to the
+      // requested position.
+      var readerOffset = liveReaderOffset.get();
+      var readerStartPosition = 0L;
+      var readerStartKey = entry.key();
+      var readerOffsetTTL = 0;
 
       // Footer fields
       var pendingCount = 0;
@@ -285,6 +303,24 @@ public class ImmutableSegment implements Segment {
       while (entry != null) {
         // Record offset to entry
         recordOffset(entry);
+
+        // Periodically update our copy of the reader's position, but only if we're ahead
+        // of where we last knew the reader to be. If we're behind where we last knew the
+        // reader to be we should just continue advancing the start position.
+        var readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
+        if (readerOffsetTTL == 0 && !readerIsAhead) {
+          readerOffset = liveReaderOffset.get();
+          readerOffsetTTL = 100;
+          readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
+        } else if (readerOffsetTTL > 0) {
+          readerOffsetTTL--;
+        }
+
+        // So long as the reader is ahead of us keep advancing the start position
+        if (readerIsAhead) {
+          readerStartPosition = position;
+          readerStartKey = entry.key();
+        }
 
         // Write key and pending item data
         var key = entry.key();
@@ -317,18 +353,34 @@ public class ImmutableSegment implements Segment {
           .maxId(maxId)
           .build());
       flushBuffer();
+
+      return new ReaderOffset(readerStartKey, readerStartPosition);
     }
   }
 
   public static void write(Path path, Segment segment) throws IOException {
+    var firstKey = segment.getMetadata().firstKey();
+    write(path, segment, () -> firstKey);
+  }
+
+  public static ReaderOffset write(
+      Path path,
+      Segment segment,
+      Supplier<Key> liveReaderOffset
+  ) throws IOException {
     try (var output = FileChannel.open(path, WRITE, CREATE)) { // TODO:
-      write(output, segment);
+      var readerOffset = write(output, segment, liveReaderOffset);
       output.force(false);
+      return readerOffset;
     }
   }
 
-  public static void write(SeekableByteChannel channel, Segment source) throws IOException {
-    new Writer(channel, source, null).write();
+  public static ReaderOffset write(
+      SeekableByteChannel channel,
+      Segment source,
+      Supplier<Key> liveReaderOffset
+  ) throws IOException {
+    return new Writer(channel, source, null, liveReaderOffset).write();
   }
 
   public static Map<Entry.Key, Long> writeWithOffsetTracking(
@@ -346,12 +398,31 @@ public class ImmutableSegment implements Segment {
       SeekableByteChannel channel,
       Segment source
   ) throws IOException {
-    var writer = new Writer(channel, source, ImmutableMap.builder());
+    var firstKey = source.getMetadata().firstKey();
+    var writer = new Writer(channel, source, ImmutableMap.builder(), () -> firstKey);
     writer.write();
     return writer.offsets.build();
   }
 
   private static ByteBuffer newByteBuffer(int capacity) {
     return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
+  }
+
+  public static class ReaderOffset {
+    private final Entry.Key key;
+    private final long position;
+
+    private ReaderOffset(Key key, long position) {
+      this.key = key;
+      this.position = position;
+    }
+
+    public Key getKey() {
+      return key;
+    }
+
+    public long getPosition() {
+      return position;
+    }
   }
 }

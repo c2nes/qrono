@@ -9,6 +9,7 @@ class SegmentFiles {
   private static final String TOMBSTONE_INDEX_SUFFIX = ".t-idx";
   private static final String PENDING_INDEX_SUFFIX = ".p-idx";
   private static final String COMBINED_INDEX_SUFFIX = ".c-idx";
+  private static final String TMP_SUFFIX = ".tmp";
 
   private static final List<String> SUFFIXES = List.of(
       LOG_SUFFIX,
@@ -42,6 +43,10 @@ class SegmentFiles {
     return path.getFileName().toString().endsWith(COMBINED_INDEX_SUFFIX);
   }
 
+  static boolean isTemporaryPath(Path path) {
+    return path.getFileName().toString().endsWith(TMP_SUFFIX);
+  }
+
   static boolean isAnyIndexPath(Path path) {
     return isTombstoneIndexPath(path)
         || isPendingIndexPath(path)
@@ -66,6 +71,10 @@ class SegmentFiles {
 
   static Path getCombinedIndexPath(Path directory, String segmentName) {
     return directory.resolve(segmentName + COMBINED_INDEX_SUFFIX);
+  }
+
+  static Path getTemporaryPath(Path path) {
+    return path.getParent().resolve(path.getFileName().toString() + TMP_SUFFIX);
   }
 
   static String getSegmentNameFromPath(Path path) {
