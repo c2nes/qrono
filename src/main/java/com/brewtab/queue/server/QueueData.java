@@ -133,25 +133,6 @@ public class QueueData implements Closeable {
     // Well, we need to keep track of the last returned key "K".
     // Any keys k_1 < K in written segments have already been returned (right? if k_1 < K and )
     //
-    // Oh...this is f'ed up.
-    //
-    // Day 0. 10 entries w/ deadline t1 get written. 5 are dequeued.
-    //
-    // (t1)(t1)(t1)(t1)(t1)[t1][t1][t1][t1][t1]
-    //
-    // Day 1. 10 entries w/ deadline t0 get written. 0 have been dequeued.
-    //
-    // [t0][t0][t0][t0][t0][t0][t0][t0][t0][t0]
-    //
-    // "Merged",
-    //
-    // [t0][t0][t0][t0][t0][t0][t0][t0][t0][t0](t1)(t1)(t1)(t1)(t1)[t1][t1][t1][t1][t1]
-    //
-    // We need a stronger invariant than the one we have currently.
-    // * When writing a pending entry, its key K must be > then any key already dequeued.
-    // * Entry key "K" is dequeued only after all entry keys < K are dequeued.
-    // * Keys are dequeued in strict monotonic order *
-    //
     // Recovery,
     //  1) Remove tmp files
     //  2) Remove overlapping segment files in lower levels
@@ -275,7 +256,7 @@ public class QueueData implements Closeable {
 
   private CompletableFuture<Void> flush(WritableSegment segment) throws IOException {
     // Freeze segment to close WAL and prevent future writes
-    currentSegment.freeze();
+    segment.freeze();
 
     // Wrap the segment in a decorator before adding it to the set of immutable segments.
     // This decorator allows us to transparently swap the in-memory copy of the segment

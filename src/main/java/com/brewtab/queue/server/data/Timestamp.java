@@ -17,6 +17,7 @@ public interface Timestamp extends Comparable<Timestamp> {
 
   @Value.Check
   default void check() {
+    Preconditions.checkArgument(millis() >= 0);
     Preconditions.checkArgument(millis() < (1L << 48));
   }
 }

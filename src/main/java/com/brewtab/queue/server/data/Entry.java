@@ -75,6 +75,12 @@ public interface Entry extends Comparable<Entry> {
 
   @Value.Immutable
   interface Key extends Comparable<Key> {
+    Key ZERO = ImmutableEntry.Key.builder()
+        .deadline(Timestamp.ZERO)
+        .id(0)
+        .entryType(Type.TOMBSTONE)
+        .build();
+
     Timestamp deadline();
 
     long id();
