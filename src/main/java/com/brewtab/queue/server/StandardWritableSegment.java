@@ -2,12 +2,10 @@ package com.brewtab.queue.server;
 
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableEntry;
-import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Verify;
 import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,6 +48,10 @@ public class StandardWritableSegment implements WritableSegment {
     if (item != null && lastRemoved != null) {
       Preconditions.checkArgument(item.compareTo(lastRemoved) > 0,
           "pending item must not precede previously dequeued entries");
+    } else {
+      var tombstone = entry.key();
+      Preconditions.checkArgument(tombstone.compareTo(peek()) < 0,
+          "tombstone key refers pending (not dequeued) item");
     }
   }
 
