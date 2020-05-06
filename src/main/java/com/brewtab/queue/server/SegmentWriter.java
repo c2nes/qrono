@@ -6,7 +6,7 @@ import java.util.function.Supplier;
 
 public interface SegmentWriter {
 
-  default Opener write(String segmentName, Segment source) throws IOException {
+  default Opener write(SegmentName segmentName, Segment source) throws IOException {
     var firstKey = source.getMetadata().firstKey();
     return write(segmentName, source, () -> firstKey);
   }
@@ -16,7 +16,7 @@ public interface SegmentWriter {
    * opened to a specific key.
    */
   Opener write(
-      String segmentName,
+      SegmentName segmentName,
       Segment source,
       // This feels finicky
       Supplier<Entry.Key> liveReaderOffset

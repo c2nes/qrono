@@ -20,7 +20,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
   public static final Duration DEFAULT_SYNC_INTERVAL = Duration.ofSeconds(1);
 
   private final Path directory;
-  private final String segmentName;
+  private final SegmentName segmentName;
   private final Duration syncInterval;
   private final FileOutputStream out;
   private Instant nextSyncDeadline;
@@ -32,7 +32,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
   //  (e.g. we could pass byte array backed OutputStreams or Channels)
   private StandardWriteAheadLog(
       Path directory,
-      String segmentName,
+      SegmentName segmentName,
       Duration syncInterval,
       FileOutputStream out
   ) {
@@ -67,11 +67,11 @@ public class StandardWriteAheadLog implements WriteAheadLog {
         ATOMIC_MOVE);
   }
 
-  public static WriteAheadLog create(Path directory, String segmentName) throws IOException {
+  public static WriteAheadLog create(Path directory, SegmentName segmentName) throws IOException {
     return create(directory, segmentName, DEFAULT_SYNC_INTERVAL);
   }
 
-  public static WriteAheadLog create(Path directory, String segmentName, Duration syncInterval)
+  public static WriteAheadLog create(Path directory, SegmentName segmentName, Duration syncInterval)
       throws IOException {
     var outputPath = SegmentFiles.getLogPath(directory, segmentName);
     var output = new FileOutputStream(outputPath.toFile());
@@ -115,7 +115,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
     return entries.build();
   }
 
-  public static void delete(Path directory, String segmentName) throws IOException {
+  public static void delete(Path directory, SegmentName segmentName) throws IOException {
     Files.delete(SegmentFiles.getClosedLogPath(directory, segmentName));
   }
 }

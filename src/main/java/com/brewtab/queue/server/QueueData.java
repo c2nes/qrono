@@ -17,9 +17,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +36,12 @@ public class QueueData implements Closeable {
   private final SegmentWriter segmentWriter;
 
   private final AtomicLong segmentCounter = new AtomicLong();
+
+  // TODO: Make this ... better?
+  // Updated together
+  private final Map<SegmentName, Segment> immutableSegmentsMap = new HashMap<>();
   private final MergedSegmentView<Segment> immutableSegments = new MergedSegmentView<>();
+
   private final TombstoningSegmentView tombstoningSegmentView =
       new TombstoningSegmentView(immutableSegments);
   private WritableSegment currentSegment = null;
@@ -57,7 +67,7 @@ public class QueueData implements Closeable {
 
       if (SegmentFiles.isClosedLogPath(path)) {
         logger.debug("Writing segment from log file {}", path);
-        String segmentName = SegmentFiles.getSegmentNameFromPath(path);
+        var segmentName = SegmentName.fromPath(path);
         List<Entry> entries = StandardWriteAheadLog.read(path);
         segmentWriter.write(segmentName, new InMemorySegment(entries));
         Files.delete(path);
@@ -65,10 +75,12 @@ public class QueueData implements Closeable {
 
       if (SegmentFiles.isLogPath(path)) {
         logger.debug("Writing segment from log file {}", path);
-        String segmentName = SegmentFiles.getSegmentNameFromPath(path);
+        var segmentName = SegmentName.fromPath(path);
         // TODO: Use lax read method here
         List<Entry> entries = StandardWriteAheadLog.read(path);
-        segmentWriter.write(segmentName, new InMemorySegment(entries));
+        if (!entries.isEmpty()) {
+          segmentWriter.write(segmentName, new InMemorySegment(entries));
+        }
         Files.delete(path);
       }
     }
@@ -77,16 +89,17 @@ public class QueueData implements Closeable {
     long maxId = 0;
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
-      if (SegmentFiles.isAnyIndexPath(path)) {
+      if (SegmentFiles.isIndexPath(path)) {
         var segment = ImmutableSegment.open(path);
         logger.debug("Opening segment {}; meta={}", path, segment.getMetadata());
+        immutableSegmentsMap.put(SegmentName.fromPath(path), segment);
         immutableSegments.addSegment(segment);
         if (segment.getMetadata().maxId() > maxId) {
           maxId = segment.getMetadata().maxId();
         }
 
-        var segmentName = SegmentFiles.getSegmentNameFromPath(path);
-        var segmentId = Long.parseLong(segmentName);
+        var segmentName = SegmentName.fromPath(path);
+        var segmentId = segmentName.id();
         if (segmentId > maxSegmentId) {
           maxSegmentId = segmentId;
         }
@@ -145,33 +158,56 @@ public class QueueData implements Closeable {
     // Unrelated, is it okay that we reuse IDs when requeueing items?
   }
 
+  // TODO: The tombstoning segment view stores the "next" value. Advancing the
+  //  newly created segment to the key returned by peek() may cause the next
+  //  dequeued value to be repeated.
   public void runTestCompaction() throws IOException {
+    CompletableFuture<Void> future = CompletableFuture.completedFuture(null);
     synchronized (this) {
       if (currentSegment != null && currentSegment.size() > 0) {
-        flushCurrentSegment().join();
+        future = flushCurrentSegment();
       }
     }
 
+    future.join();
+
+    var pendingMergePaths = new HashSet<Path>();
+    var pendingMergeNames = new HashSet<SegmentName>();
     var pendingMerge = new MergedSegmentView<ImmutableSegment>();
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
-      if (SegmentFiles.isAnyIndexPath(path)) {
+      if (SegmentFiles.isIndexPath(path)) {
+        pendingMergePaths.add(path);
+        pendingMergeNames.add(SegmentName.fromPath(path));
         pendingMerge.addSegment(ImmutableSegment.open(path));
       }
     }
-    var start = Instant.now();
-    var mergedPath = SegmentFiles.getCombinedIndexPath(directory, "merged");
 
-    try {
-      var opener = segmentWriter.write(
-          "merged",
-          new TombstoningSegmentView(pendingMerge),
-          this::peek
-      );
-      var writeDuration = Duration.between(start, Instant.now());
-      var segment = opener.open(peek());
+    var start = Instant.now();
+    var mergeName = new SegmentName(
+        pendingMergeNames.stream()
+            .mapToInt(SegmentName::level)
+            .max()
+            .orElse(0) + 1,
+        pendingMergeNames.stream()
+            .mapToLong(SegmentName::id)
+            .max()
+            .orElse(0));
+    var originalSegments = pendingMergeNames.stream()
+        .map(immutableSegmentsMap::get)
+        .filter(Objects::nonNull)
+        .collect(Collectors.toSet());
+    var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
+    var opener = segmentWriter.write(
+        mergeName,
+        new TombstoningSegmentView(pendingMerge),
+        this::peek);
+    var writeDuration = Duration.between(start, Instant.now());
+
+    // Synchronized to ensure peek() doesn't change while we replace the segments.
+    synchronized (this) {
+      var segment = opener.open(immutableSegments.peek());
       var peeked = segment.peek();
-      segment.close();
       var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
       logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
               + "switches={}, seekDuration={}, peeked={}",
@@ -182,13 +218,25 @@ public class QueueData implements Closeable {
           pendingMerge.getHeadSwitchDebugCount(),
           seekDuration,
           peeked);
-    } finally {
-      Files.delete(mergedPath);
+      // At this point we would like to swap the new segment for the input segments.
+      // We need to do this swapping within the merged segment view.
+      immutableSegmentsMap.put(mergeName, segment);
+      immutableSegments.replaceSegments(originalSegments, segment);
+      immutableSegmentsMap.keySet().removeAll(pendingMergeNames);
+    }
+
+    // Close
+    for (Segment segment : originalSegments) {
+      segment.close();
+    }
+    // Delete
+    for (Path path : pendingMergePaths) {
+      Files.delete(path);
     }
   }
 
   private WritableSegment nextWritableSegment() throws IOException {
-    var name = String.format("%010d", segmentCounter.getAndIncrement());
+    var name = new SegmentName(0, segmentCounter.getAndIncrement());
     var wal = StandardWriteAheadLog.create(directory, name);
     return new StandardWritableSegment(name, wal);
   }
@@ -262,6 +310,7 @@ public class QueueData implements Closeable {
     // This decorator allows us to transparently swap the in-memory copy of the segment
     // for the on-disk copy once the write is complete.
     var replaceableSegment = new ReplaceableSegment(segment);
+    immutableSegmentsMap.put(segment.getName(), replaceableSegment);
     immutableSegments.addSegment(replaceableSegment);
 
     // Schedule the write operation to happen asynchronously

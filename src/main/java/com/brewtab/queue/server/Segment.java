@@ -19,4 +19,10 @@ public interface Segment extends Closeable {
     var meta = getMetadata();
     return meta == null ? 0 : meta.pendingCount() + meta.tombstoneCount();
   }
+
+  interface Reader {
+    Entry.Key peek();
+
+    Entry next() throws IOException;
+  }
 }

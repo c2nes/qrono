@@ -17,7 +17,7 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 
 public class StandardWritableSegment implements WritableSegment {
-  private final String name;
+  private final SegmentName name;
   private final WriteAheadLog wal;
 
   private final PriorityQueue<Item> pending = new PriorityQueue<>();
@@ -36,7 +36,7 @@ public class StandardWritableSegment implements WritableSegment {
   private boolean frozen = false;
   private boolean closed = false;
 
-  public StandardWritableSegment(String name, WriteAheadLog wal) {
+  public StandardWritableSegment(SegmentName name, WriteAheadLog wal) {
     this.name = name;
     this.wal = wal;
   }
@@ -45,18 +45,19 @@ public class StandardWritableSegment implements WritableSegment {
   // This check verifies that it is upheld within the current segment.
   private void checkEntryDeadline(Entry entry) {
     var item = entry.item();
-    if (item != null && lastRemoved != null) {
-      Preconditions.checkArgument(item.compareTo(lastRemoved) > 0,
+    if (item != null) {
+      Preconditions.checkArgument(lastRemoved == null || item.compareTo(lastRemoved) > 0,
           "pending item must not precede previously dequeued entries");
     } else {
       var tombstone = entry.key();
-      Preconditions.checkArgument(tombstone.compareTo(peek()) < 0,
-          "tombstone key refers pending (not dequeued) item");
+      var head = peek();
+      Preconditions.checkArgument(head == null || tombstone.compareTo(head) < 0,
+          "tombstone key refers to pending (not dequeued) item");
     }
   }
 
   @Override
-  public String getName() {
+  public SegmentName getName() {
     return name;
   }
 

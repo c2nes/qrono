@@ -16,11 +16,11 @@ public class StandardSegmentWriter implements SegmentWriter {
 
   @Override
   public Opener write(
-      String segmentName,
+      SegmentName segmentName,
       Segment source,
       Supplier<Key> liveReaderOffset
   ) throws IOException {
-    var path = SegmentFiles.getCombinedIndexPath(directory, segmentName);
+    var path = SegmentFiles.getIndexPath(directory, segmentName);
     var tmpPath = SegmentFiles.getTemporaryPath(path);
     var offset = ImmutableSegment.write(tmpPath, source, liveReaderOffset);
     Files.move(tmpPath, path, StandardCopyOption.ATOMIC_MOVE);

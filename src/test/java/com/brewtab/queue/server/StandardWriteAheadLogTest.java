@@ -43,7 +43,7 @@ public class StandardWriteAheadLogTest {
       entrySupplier = new Memoize<>(entrySupplier);
     }
 
-    var name = "log-test-" + UUID.randomUUID();
+    var name = new SegmentName(0, 0);
     var log = StandardWriteAheadLog.create(temporaryFolder.getRoot().toPath(), name, syncDuration);
     var start = Instant.now();
     for (var i = 0; i < n; i++) {

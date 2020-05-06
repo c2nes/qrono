@@ -10,13 +10,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
+// TODO: Reconsider whether the generic parameterization here is necessary
 public class MergedSegmentView<E extends Segment> implements Segment {
-  // TODO: This comparator does not order between tombstone and pending
-  //  Should we update the Segment interface so peek returns a new "Entry.Key"?
   private static final Comparator<Segment> COMPARATOR = Comparator.comparing(Segment::peek);
 
   private final PriorityQueue<E> segments = new PriorityQueue<>(COMPARATOR);
@@ -56,6 +56,17 @@ public class MergedSegmentView<E extends Segment> implements Segment {
     } else {
       retired.add(segment);
     }
+  }
+
+  public synchronized void replaceSegments(Set<E> oldSegments, E newSegment) {
+    if (head != null) {
+      segments.add(head);
+      head = null;
+    }
+
+    segments.removeAll(oldSegments);
+    retired.removeAll(oldSegments);
+    addSegment(newSegment);
   }
 
   public synchronized Collection<E> getSegments() {

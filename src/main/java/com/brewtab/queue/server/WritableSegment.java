@@ -9,7 +9,7 @@ public interface WritableSegment extends Segment {
    * Returns the name of this segment.
    */
   // TODO: Rename "ID"?
-  String getName();
+  SegmentName getName();
 
   /**
    * Add a new entry to the segment.
