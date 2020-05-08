@@ -10,8 +10,8 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 import java.util.function.Supplier;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -59,6 +59,7 @@ public class StandardWriteAheadLogTest {
         mbPerSec);
   }
 
+  @Ignore("benchmark")
   @Test
   public void test() throws IOException {
     test(1_000_000, 128, Duration.ofSeconds(1), true);

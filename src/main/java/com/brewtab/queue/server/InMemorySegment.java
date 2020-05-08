@@ -5,21 +5,27 @@ import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.collect.ImmutableSortedSet;
-import java.io.IOException;
 
 public class InMemorySegment implements Segment {
+  private final SegmentName name;
   private final ImmutableSortedSet<Entry> entries;
 
-  public InMemorySegment(Iterable<Entry> entries) {
-    this(ImmutableSortedSet.copyOf(entries));
+  public InMemorySegment(SegmentName name, Iterable<Entry> entries) {
+    this(name, ImmutableSortedSet.copyOf(entries));
   }
 
-  public InMemorySegment(ImmutableSortedSet<Entry> entries) {
+  public InMemorySegment(SegmentName name, ImmutableSortedSet<Entry> entries) {
+    this.name = name;
     this.entries = entries;
   }
 
   @Override
-  public SegmentMetadata getMetadata() {
+  public SegmentName name() {
+    return name;
+  }
+
+  @Override
+  public SegmentMetadata metadata() {
     var pendingCount = entries.stream().filter(Entry::isPending).count();
     var tombstoneCount = entries.size() - pendingCount;
     return ImmutableSegmentMetadata.builder()
@@ -29,13 +35,11 @@ public class InMemorySegment implements Segment {
             .mapToLong(e -> e.key().id())
             .max()
             .orElse(0))
-        .firstKey(entries.iterator().next().key())
-        .lastKey(entries.descendingIterator().next().key())
         .build();
   }
 
   @Override
-  public SegmentReader newReader(Key position) throws IOException {
-    return new InMemorySegmentReader(entries.tailSet(Entry.newTombstoneEntry(position)));
+  public SegmentReader newReader(Key position) {
+    return new InMemorySegmentReader(entries.tailSet(Entry.newTombstoneEntry(position), false));
   }
 }

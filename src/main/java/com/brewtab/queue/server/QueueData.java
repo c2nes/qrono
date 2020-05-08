@@ -6,10 +6,8 @@ import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableItem;
-import com.brewtab.queue.server.data.SegmentMetadata;
 import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import java.io.Closeable;
 import java.io.File;
@@ -18,15 +16,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,16 +32,12 @@ public class QueueData implements Closeable {
   private final SegmentWriter segmentWriter;
 
   private final AtomicLong segmentCounter = new AtomicLong();
-
-  // TODO: Make this ... better?
-  // Updated together
-  private final Map<SegmentName, Segment> immutableSegmentsMap = new HashMap<>();
   private final MergedSegmentReader immutableSegments = new MergedSegmentReader();
 
   private WritableSegment currentSegment = null;
 
   // Last key dequeued by next()
-  private Entry.Key last = null;
+  private volatile Key last = Key.ZERO;
 
   public QueueData(Path directory, IOScheduler ioScheduler, SegmentWriter segmentWriter) {
     this.directory = directory;
@@ -56,6 +46,7 @@ public class QueueData implements Closeable {
   }
 
   // TODO: Refactor loading process
+  // TODO: Load with Guava Service startUp
   public synchronized QueueLoadSummary load() throws IOException {
     // TODO: Use some sort of file locking to prevent multiple processes
     //  from accessing the queue data simultaneously?
@@ -78,9 +69,7 @@ public class QueueData implements Closeable {
         var segmentName = SegmentName.fromPath(path);
         // TODO: Use lax read method here
         List<Entry> entries = StandardWriteAheadLog.read(path);
-        if (!entries.isEmpty()) {
-          segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
-        }
+        segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
       }
     }
@@ -91,11 +80,10 @@ public class QueueData implements Closeable {
       Path path = file.toPath();
       if (SegmentFiles.isIndexPath(path)) {
         var segment = ImmutableSegment.open(path);
-        logger.debug("Opening segment {}; meta={}", path, segment.getMetadata());
-        immutableSegmentsMap.put(SegmentName.fromPath(path), segment);
-        immutableSegments.addSegment(segment);
-        if (segment.getMetadata().maxId() > maxId) {
-          maxId = segment.getMetadata().maxId();
+        logger.debug("Opening segment {}; meta={}", path, segment.metadata());
+        immutableSegments.addSegment(segment, Key.ZERO);
+        if (segment.metadata().maxId() > maxId) {
+          maxId = segment.metadata().maxId();
         }
 
         var segmentName = SegmentName.fromPath(path);
@@ -107,6 +95,9 @@ public class QueueData implements Closeable {
     }
 
     segmentCounter.set(maxSegmentId + 1);
+
+    // Initialize next segment
+    currentSegment = nextWritableSegment();
 
     return new QueueLoadSummary(maxId);
   }
@@ -159,15 +150,10 @@ public class QueueData implements Closeable {
   }
 
   public void runTestCompaction() throws IOException {
-    CompletableFuture<Void> future = CompletableFuture.completedFuture(null);
-    synchronized (this) {
-      if (currentSegment != null && currentSegment.size() > 0) {
-        future = flushCurrentSegment();
-      }
-    }
+    // Force flush current segment so it is included in the compaction.
+    forceFlushCurrentSegment().join();
 
-    future.join();
-
+    // TODO: Some of this is redundant now
     var pendingMergePaths = new HashSet<Path>();
     var pendingMergeNames = new HashSet<SegmentName>();
     var pendingMerge = new MergedSegmentReader();
@@ -176,7 +162,7 @@ public class QueueData implements Closeable {
       if (SegmentFiles.isIndexPath(path)) {
         pendingMergePaths.add(path);
         pendingMergeNames.add(SegmentName.fromPath(path));
-        pendingMerge.addSegment(ImmutableSegment.open(path));
+        pendingMerge.addSegment(ImmutableSegment.open(path), Key.ZERO);
       }
     }
 
@@ -190,39 +176,30 @@ public class QueueData implements Closeable {
             .mapToLong(SegmentName::id)
             .max()
             .orElse(0));
-    var originalSegments = pendingMergeNames.stream()
-        .map(immutableSegmentsMap::get)
-        .filter(Objects::nonNull)
-        .collect(Collectors.toSet());
     var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
     var mergedSegment = segmentWriter.write(
         mergeName,
         pendingMerge,
-        this::peek);
+        () -> last);
     var writeDuration = Duration.between(start, Instant.now());
 
-    // Synchronized to ensure peek() doesn't change while we replace the segments.
+    // Synchronized to ensure "last" doesn't change while we replace the segments.
     synchronized (this) {
-      var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
-      logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
-              + "switches={}, seekDuration={}",
-          pendingMerge.getSegments().size(),
-          mergedSegment.size(),
-          DataSize.fromBytes(Files.size(mergedPath)),
-          Duration.between(start, Instant.now()),
-          pendingMerge.getHeadSwitchDebugCount(),
-          seekDuration);
       // At this point we would like to swap the new segment for the input segments.
       // We need to do this swapping within the merged segment view.
-      immutableSegmentsMap.put(mergeName, mergedSegment);
-      immutableSegments.replaceSegments(originalSegments, mergedSegment);
-      immutableSegmentsMap.keySet().removeAll(pendingMergeNames);
+      immutableSegments.replaceSegments(pendingMerge.getSegments(), mergedSegment, last);
     }
 
-    // Close
-    for (SegmentReader segment : originalSegments) {
-      segment.close();
-    }
+    var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
+    logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
+            + "switches={}, seekDuration={}",
+        pendingMerge.getSegments().size(),
+        mergedSegment.size(),
+        DataSize.fromBytes(Files.size(mergedPath)),
+        Duration.between(start, Instant.now()),
+        pendingMerge.getHeadSwitchDebugCount(),
+        seekDuration);
+
     // Delete
     for (Path path : pendingMergePaths) {
       Files.delete(path);
@@ -235,18 +212,10 @@ public class QueueData implements Closeable {
     return new StandardWritableSegment(name, wal);
   }
 
-  private WritableSegment getCurrentSegment() throws IOException {
-    if (currentSegment == null) {
-      Files.createDirectories(directory);
-      currentSegment = nextWritableSegment();
-    }
-    return currentSegment;
-  }
-
   private Entry adjustEntryDeadline(Entry entry) {
     // If item is non-null then this is a pending entry
     var item = entry.item();
-    if (item != null && last != null && entry.key().compareTo(last) < 0) {
+    if (item != null && entry.key().compareTo(last) < 0) {
       var newDeadline = last.deadline();
       var newItem = ImmutableItem.builder()
           .from(item)
@@ -268,205 +237,112 @@ public class QueueData implements Closeable {
     return entry;
   }
 
-  public synchronized Entry write(Entry entry) throws IOException {
-    entry = adjustEntryDeadline(entry);
-    getCurrentSegment().add(entry);
+  public Entry write(Entry entry) throws IOException {
+    synchronized (this) {
+      entry = adjustEntryDeadline(entry);
+      currentSegment.add(entry);
+    }
+
     checkFlushCurrentSegment();
     return entry;
   }
 
   private void checkFlushCurrentSegment() throws IOException {
-    // TODO: Fix this...
-    if (getCurrentSegment().size() > 128 * 1024) {
-      flushCurrentSegment();
+    Segment frozen;
+
+    synchronized (this) {
+      // TODO: This should consider memory usage
+      if (currentSegment.size() < 128 * 1024) {
+        // Do not freeze or flush
+        return;
+      }
+
+      frozen = freezeAndReplaceCurrentSegment();
+    }
+
+    if (frozen != null) {
+      flush(frozen);
     }
   }
 
   @VisibleForTesting
-  CompletableFuture<Void> flushCurrentSegment() throws IOException {
+  synchronized Segment freezeAndReplaceCurrentSegment() throws IOException {
+    // Freeze segment to close WAL and prevent future writes
+    var frozen = currentSegment.freeze();
+    immutableSegments.addSegment(frozen, last);
+    currentSegment = nextWritableSegment();
+    return frozen;
+  }
+
+  @VisibleForTesting
+  CompletableFuture<Void> forceFlushCurrentSegment() throws IOException {
+    return flush(freezeAndReplaceCurrentSegment());
+  }
+
+  private CompletableFuture<Void> flush(Segment frozen) {
     var start = Instant.now();
-    // Freeze and flush current segment to disk
-    var future = flush(currentSegment);
+
+    // Schedule the write operation to happen asynchronously
+    CompletableFuture<Void> future = ioScheduler.schedule(new Parameters(), () -> {
+      // TODO: Handle exceptional completion of the future
+      Segment segment = writeAndDeleteLog(frozen);
+      synchronized (QueueData.this) {
+        immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
+      }
+      return null;
+    });
+
     logger.debug("Scheduled in-memory segment for compaction; waitTime={}",
         Duration.between(start, Instant.now()));
-
-    // Start new writable segment
-    currentSegment = nextWritableSegment();
 
     return future;
   }
 
-  private CompletableFuture<Void> flush(WritableSegment segment) throws IOException {
-    // Freeze segment to close WAL and prevent future writes
-    Segment frozenInMemory = segment.freeze();
-
-    // Wrap the segment in a decorator before adding it to the set of immutable segments.
-    // This decorator allows us to transparently swap the in-memory copy of the segment
-    // for the on-disk copy once the write is complete.
-    var replaceableSegment = new ReplaceableSegment(frozenInMemory);
-    immutableSegmentsMap.put(segment.getName(), replaceableSegment);
-    immutableSegments.addSegment(replaceableSegment);
-
-    // Schedule the write operation to happen asynchronously
-    var writeFuture = ioScheduler.schedule(() -> writeAndDeleteLog(segment), new Parameters());
-
-    // TODO: Handle exceptional completion of the future
-
-    // Replace the in-memory copy of the segment with the frozen on-disk copy.
-    return writeFuture.thenAccept(opener -> {
-      try {
-        replaceableSegment.replaceFrom(opener);
-      } catch (IOException e) {
-        // TODO: Crash the process or handle the error or something...
-        logger.error("Failed to replace in-memory segment with on-disk copy", e);
-      }
-    });
-  }
-
-  private Segment writeAndDeleteLog(SegmentName name, SegmentReader source) throws IOException {
-    var frozenSegment = segmentWriter.write(name, source, this::peek);
-    StandardWriteAheadLog.delete(directory, name);
+  private Segment writeAndDeleteLog(Segment source) throws IOException {
+    var frozenSegment = segmentWriter.write(source.name(), source.newReader(), () -> last);
+    StandardWriteAheadLog.delete(directory, source.name());
     return frozenSegment;
   }
 
-  public synchronized Entry.Key peek() {
-    return head().key;
+  public synchronized Key peek() {
+    return headReader().peek();
   }
 
   public synchronized Entry next() throws IOException {
-    var segment = head().segment;
-    if (segment == null) {
-      return null;
-    }
-    var entry = segment.next();
+    var entry = headReader().next();
     if (entry != null) {
       last = entry.key();
     }
     return entry;
   }
 
-  private KeySegmentPair head() {
-    var currentSegmentKey = currentSegment == null ? null : currentSegment.peek();
-    var immutableSegmentsKey = immutableSegments.peek();
-
-    if (currentSegmentKey == null && immutableSegmentsKey == null) {
-      // Queue is empty
-      return new KeySegmentPair(null, null);
-    }
-
+  private SegmentReader headReader() {
+    var currentSegmentKey = currentSegment.peek();
     if (currentSegmentKey == null) {
-      return new KeySegmentPair(immutableSegmentsKey, immutableSegments);
+      return immutableSegments;
     }
 
-    if (immutableSegmentsKey == null) {
-      return new KeySegmentPair(currentSegmentKey, currentSegment);
+    var immutableSegmentsKey = immutableSegments.peek();
+    if (immutableSegmentsKey == null || currentSegmentKey.compareTo(immutableSegmentsKey) < 0) {
+      return currentSegment;
     }
 
-    if (currentSegmentKey.compareTo(immutableSegmentsKey) < 0) {
-      return new KeySegmentPair(currentSegmentKey, currentSegment);
-    } else {
-      return new KeySegmentPair(immutableSegmentsKey, immutableSegments);
-    }
+    return immutableSegments;
   }
 
   public synchronized long getQueueSize() {
-    var immutableMeta = immutableSegments.getMetadata();
-    if (currentSegment == null) {
-      return immutableMeta;
-    }
-
-    var memMeta = currentSegment.getMetadata();
-    if (memMeta == null) {
-      return immutableMeta;
-    }
-
-    if (immutableMeta == null) {
-      return memMeta;
-    }
-
-    return SegmentMetadata.merge(memMeta, immutableMeta);
+    return immutableSegments.getSegments().stream()
+        .map(Segment::metadata)
+        .mapToLong(m -> m.pendingCount() - m.tombstoneCount())
+        .sum()
+        + currentSegment.pendingCount()
+        - currentSegment.tombstoneCount();
   }
 
   @Override
   public synchronized void close() throws IOException {
-    currentSegment.freeze();
-    writeAndDeleteLog(currentSegment);
+    writeAndDeleteLog(currentSegment.freeze());
     currentSegment.close();
     immutableSegments.close();
-  }
-
-  private static class KeySegmentPair {
-    private final Entry.Key key;
-    private final SegmentReader segment;
-
-    private KeySegmentPair(Entry.Key key, SegmentReader segment) {
-      this.key = key;
-      this.segment = segment;
-    }
-  }
-
-  /**
-   * Segment whose source segment can be replaced.
-   */
-  private static class ReplaceableSegment implements Segment {
-    private Segment active;
-    private List<ReplaceableReader> readers = new ArrayList<>(1);
-
-    private ReplaceableSegment(Segment active) {
-      this.active = active;
-    }
-
-    @Override
-    public synchronized SegmentMetadata getMetadata() {
-      return active.getMetadata();
-    }
-
-    @Override
-    public synchronized SegmentReader newReader(Key position) throws IOException {
-      if (readers == null) {
-        return active.newReader(position);
-      }
-
-      var reader = new ReplaceableReader(active.newReader(position));
-      readers.add(reader);
-      return reader;
-    }
-
-    synchronized void replaceFrom(Segment replacement) throws IOException {
-      Preconditions.checkState(readers != null, "replaceFrom can only be called once");
-      active = replacement;
-      for (ReplaceableReader reader : readers) {
-        reader.replaceFrom(replacement);
-      }
-      // Allow readers to be GC'ed
-      readers = null;
-    }
-
-    private static class ReplaceableReader implements SegmentReader {
-      private volatile SegmentReader active;
-
-      private ReplaceableReader(SegmentReader active) {
-        this.active = active;
-      }
-
-      @Override
-      public Key peek() {
-        return active.peek();
-      }
-
-      @Override
-      public synchronized Entry next() throws IOException {
-        return active.next();
-      }
-
-      @Override
-      public void close() throws IOException {
-        active.close();
-      }
-
-      synchronized void replaceFrom(Segment replacement) throws IOException {
-        active = replacement.newReader(peek());
-      }
-    }
   }
 }

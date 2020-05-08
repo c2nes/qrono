@@ -23,8 +23,8 @@ final class Encoding {
   // [14:reserved][48:deadline][64:id][2:type]
   static final int KEY_SIZE = 16;
 
-  // [long:pending count][long:tombstone count][last key][long:max id]
-  static final int FOOTER_SIZE = 8 + 8 + KEY_SIZE + 8;
+  // [long:pending count][long:tombstone count][long:max id]
+  static final int FOOTER_SIZE = 8 + 8 + 8;
 
   static int writeStats(ByteBuffer bb, Item.Stats stats) {
     long enqueueTime = stats.enqueueTime().millis();
@@ -85,7 +85,6 @@ final class Encoding {
   static int writeFooter(ByteBuffer bb, Footer footer) {
     bb.putLong(footer.pendingCount());
     bb.putLong(footer.tombstoneCount());
-    writeKey(bb, footer.lastKey());
     bb.putLong(footer.maxId());
     return FOOTER_SIZE;
   }
@@ -94,7 +93,6 @@ final class Encoding {
     return ImmutableEncoding.Footer.builder()
         .pendingCount(bb.getLong())
         .tombstoneCount(bb.getLong())
-        .lastKey(readKey(bb))
         .maxId(bb.getLong())
         .build();
   }
@@ -150,8 +148,6 @@ final class Encoding {
     long pendingCount();
 
     long tombstoneCount();
-
-    Entry.Key lastKey();
 
     long maxId();
   }

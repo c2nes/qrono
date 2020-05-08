@@ -5,9 +5,6 @@ import org.immutables.value.Value;
 
 @Value.Immutable
 public interface SegmentMetadata {
-  Entry.Key firstKey();
-
-  Entry.Key lastKey();
 
   long maxId();
 

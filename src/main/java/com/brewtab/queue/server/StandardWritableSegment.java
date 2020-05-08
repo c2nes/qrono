@@ -53,7 +53,7 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public SegmentName getName() {
+  public SegmentName name() {
     return name;
   }
 
@@ -93,11 +93,22 @@ public class StandardWritableSegment implements WritableSegment {
       entries.add(Entry.newPendingEntry(item));
     }
 
-    return new InMemorySegment(entries);
+    return new InMemorySegment(name, entries);
   }
 
-  public long size() {
-    return pending.size() + removed.size() + tombstones.size();
+  @Override
+  public synchronized long pendingCount() {
+    return pending.size() + removed.size();
+  }
+
+  @Override
+  public synchronized long tombstoneCount() {
+    return tombstones.size();
+  }
+
+  @Override
+  public synchronized long size() {
+    return pendingCount() + tombstoneCount();
   }
 
   @Override

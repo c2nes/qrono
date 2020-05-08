@@ -68,11 +68,15 @@ public class QueueDataTest {
       data.write(Entry.newPendingEntry(item.id(i).build()));
     }
 
-    // Force flush otherwise entry and tombstone will be merged
-    // in-memory and not written to disk.
-    data.flushCurrentSegment();
+    // TODO: Test freezing the current segment after we've dequeued items from it.
 
     assertEquals(0, assertPending(data.next()).id());
+
+    // Force flush otherwise entry and tombstone will be merged
+    // in-memory and not written to disk.
+    data.forceFlushCurrentSegment().join();
+//    data.freezeAndReplaceCurrentSegment();
+
     assertEquals(1, assertPending(data.next()).id());
     assertEquals(2, assertPending(data.next()).id());
 
@@ -105,7 +109,7 @@ public class QueueDataTest {
 
   static class DirectIOScheduler implements IOScheduler {
     @Override
-    public <V> CompletableFuture<V> schedule(Callable<V> operation, Parameters parameters) {
+    public <V> CompletableFuture<V> schedule(Parameters parameters, Callable<V> operation) {
       try {
         return CompletableFuture.completedFuture(operation.call());
       } catch (Exception e) {

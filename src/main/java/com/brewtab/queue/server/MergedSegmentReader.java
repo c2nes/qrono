@@ -1,22 +1,29 @@
 package com.brewtab.queue.server;
 
+import static java.util.Collections.unmodifiableCollection;
+
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.Entry.Type;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Collectors;
 
 public class MergedSegmentReader implements SegmentReader {
   private static final Comparator<SegmentReader> COMPARATOR =
       Comparator.comparing(SegmentReader::peek);
 
+  // TODO: Rename this segments and segments to "readers"
+  private final Map<SegmentName, Segment> allSegments = new HashMap<>();
+  private final Map<SegmentName, SegmentReader> namedReaders = new HashMap<>();
   private final PriorityQueue<SegmentReader> segments = new PriorityQueue<>(COMPARATOR);
   private final LongAdder headSwitches = new LongAdder();
 
@@ -33,6 +40,7 @@ public class MergedSegmentReader implements SegmentReader {
       head = segments.poll();
       headSwitches.increment();
     } else if (head.peek() == null) {
+      // Note, head will still be in namedReaders
       head.close();
       head = segments.poll();
       headSwitches.increment();
@@ -46,13 +54,13 @@ public class MergedSegmentReader implements SegmentReader {
     }
   }
 
-  public synchronized void addSegment(Segment segment) throws IOException {
-    add(segment.newReader());
-  }
+  public synchronized void addSegment(Segment segment, Key position) throws IOException {
+    var reader = segment.newReader(position);
 
-  private synchronized void add(SegmentReader reader) throws IOException {
     // If peek is non-null then reinsert into the heap
     if (reader.peek() != null) {
+      allSegments.put(segment.name(), segment);
+      namedReaders.put(segment.name(), reader);
       segments.add(reader);
 
       if (next != null) {
@@ -69,24 +77,36 @@ public class MergedSegmentReader implements SegmentReader {
     }
   }
 
-  public synchronized void replaceSegments(Set<SegmentReader> oldSegments, Segment newSegment)
-      throws IOException {
+  public synchronized void replaceSegments(
+      Collection<Segment> oldSegments,
+      Segment newSegment,
+      Key position
+  ) throws IOException {
+    // Put head back into segments so we don't have to handle it separately
     if (head != null) {
       segments.add(head);
       head = null;
     }
 
-    segments.removeAll(oldSegments);
+    Set<SegmentName> names = oldSegments.stream()
+        .map(Segment::name)
+        .collect(Collectors.toSet());
 
-    add(newSegment.newReader(peek()));
+    for (SegmentName name : names) {
+      allSegments.remove(name);
+      var reader = namedReaders.remove(name);
+      if (reader != null) {
+        if (segments.remove(reader)) {
+          reader.close();
+        }
+      }
+    }
+
+    addSegment(newSegment, position);
   }
 
-  public synchronized Collection<SegmentReader> getSegments() {
-    var copy = new ArrayList<>(segments);
-    if (head != null) {
-      copy.add(head);
-    }
-    return copy;
+  public synchronized Collection<Segment> getSegments() {
+    return unmodifiableCollection(allSegments.values());
   }
 
   private Entry.Key rawPeek() {

@@ -1,5 +1,8 @@
 package com.brewtab.queue.server;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
+
 import com.brewtab.queue.Api.DequeueRequest;
 import com.brewtab.queue.Api.EnqueueRequest;
 import com.brewtab.queue.Api.EnqueueResponse;
@@ -10,6 +13,7 @@ import com.brewtab.queue.Api.RequeueResponse;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
+import io.grpc.Status;
 import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.grpc.testing.GrpcServerRule;
@@ -19,15 +23,19 @@ import java.time.Duration;
 import java.time.Instant;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 public class QueueServerServiceTest {
   @Rule
   public GrpcServerRule serverRule = new GrpcServerRule();
 
+  @Rule
+  public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
   @Test
   public void testEnqueueThroughput() throws InterruptedException, IOException {
     StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
-    Path directory = Path.of("/tmp/queue-server-test");
+    Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
@@ -54,7 +62,7 @@ public class QueueServerServiceTest {
   @Test
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
     StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
-    Path directory = Path.of("/tmp/queue-server-test");
+    Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
@@ -92,16 +100,21 @@ public class QueueServerServiceTest {
     System.out.println("Release: " + release);
 
     // Double release should be rejected
-    service.release(ReleaseRequest.newBuilder()
-        .setQueue("test-queue")
-        .setId(item.getId())
-        .build());
+    try {
+      service.release(ReleaseRequest.newBuilder()
+          .setQueue("test-queue")
+          .setId(item.getId())
+          .build());
+      fail("FAILED_PRECONDITION expected");
+    } catch (StatusRuntimeException e) {
+      assertEquals(Status.Code.FAILED_PRECONDITION, e.getStatus().getCode());
+    }
   }
 
   @Test
-  public void testEnqueueDequeueReleaseMany() throws IOException, InterruptedException {
+  public void testEnqueueDequeueReleaseMany() throws IOException {
     StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
-    Path directory = Path.of("/tmp/queue-server-test");
+    Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);

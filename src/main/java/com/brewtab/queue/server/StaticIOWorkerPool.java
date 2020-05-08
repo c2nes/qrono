@@ -25,7 +25,7 @@ public class StaticIOWorkerPool extends AbstractIdleService implements IOSchedul
   }
 
   @Override
-  public <V> CompletableFuture<V> schedule(Callable<V> operation, Parameters parameters) {
+  public <V> CompletableFuture<V> schedule(Parameters parameters, Callable<V> operation) {
     var request = new Request<>(operation);
     Uninterruptibles.putUninterruptibly(channel, request);
     return request.future;

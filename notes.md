@@ -159,3 +159,63 @@ TODO:
 - How do we avoid re-reading large numbers of segment entries to cancel out
   tombstones?
 
+
+"Segment"
+- Summary information (# pending, # tombstone, max ID, etc)
+- Streaming entries (peek(), next())
+- Topology information? (Segment ID, Merge Level)
+
+```
+// "DurableSegment"
+// "FrozenSegment"
+// "ImmutableSegment"
+Segment
+  Name name()
+  Metadata metadata(); // We won't know the metadata for
+                       // a segment we haven't written yet.
+
+  Reader newReader();
+    Entry.Key peek();
+    Entry next();
+
+  Writer newWriter(); // ????
+    Opener write(Reader source, Supplier<Entry.Key> liveReaderOffset);
+    long write(Entry entry);
+    Segment close(); // ????
+
+Segment merge(Segment... segments);
+
+
+// "CurrentSegment"
+// "PendingSegment"
+// "MutableSegment"
+// "WritableSegment"
+// "UpcomingSegment"
+OpenSegment extends Segment.Reader
+  long pendingCount();
+  long tombstoneCount();
+  void add(Entry entry);
+  Segment freeze(Name name);
+
+Metadata
+  netPendingCount();
+  maxID();
+
+SegmentStorage
+  List<Name> list();
+  Segment open(Name name);
+  Segment write(Name name, Segment.Reader source);
+  WritableSegment create(Name name);
+
+  // Who handles logs and freezing segments?
+
+  // Remove partially written segments
+  // Convert logs to segments?
+  void recover(); // ????
+
+// Activities
+// - Building new segment
+// - Reading segments
+// - Merging segments
+
+```

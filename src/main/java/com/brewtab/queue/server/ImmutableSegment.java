@@ -31,33 +31,31 @@ public class ImmutableSegment implements Segment {
   // TODO: Abstract the file opening for easier testing (e.g. Supplier<SeekableByteChannel>)
   private final Path path;
   private final SegmentMetadata metadata;
-  private final long limit;
   private final KnownOffset knownOffset;
 
-  private ImmutableSegment(Path path, SegmentMetadata metadata, long limit) {
-    this(path, metadata, limit, KnownOffset.ZERO);
+  private ImmutableSegment(Path path, SegmentMetadata metadata) {
+    this(path, metadata, KnownOffset.ZERO);
   }
 
-  private ImmutableSegment(
-      Path path,
-      SegmentMetadata metadata,
-      long limit,
-      KnownOffset knownOffset
-  ) {
+  private ImmutableSegment(Path path, SegmentMetadata metadata, KnownOffset knownOffset) {
     this.path = path;
     this.metadata = metadata;
-    this.limit = limit;
     this.knownOffset = knownOffset;
   }
 
   @Override
-  public SegmentMetadata getMetadata() {
+  public SegmentName name() {
+    return SegmentName.fromPath(path);
+  }
+
+  @Override
+  public SegmentMetadata metadata() {
     return metadata;
   }
 
   @Override
   public SegmentReader newReader(Key position) throws IOException {
-    var reader = new Reader(FileChannel.open(path), limit);
+    var reader = new Reader(FileChannel.open(path));
     if (position.compareTo(knownOffset.key()) < 0) {
       // TODO: Log a warning. "knownOffset" was tracked by the Writer based on a hint about
       //  where the head of the queue is currently. The head of the queue may have since moved
@@ -71,7 +69,7 @@ public class ImmutableSegment implements Segment {
 
     // Seek to the requested position
     var peek = reader.peek();
-    while (peek != null && peek.compareTo(position) < 0) {
+    while (peek != null && peek.compareTo(position) <= 0) {
       reader.next();
       peek = reader.peek();
     }
@@ -81,25 +79,9 @@ public class ImmutableSegment implements Segment {
 
   public static ImmutableSegment open(Path path) throws IOException {
     try (var source = FileChannel.open(path)) {
-      var channel = new BufferedReadableChannel(source);
-
-      // Read footer
-      var footerPosition = source.size() - Encoding.FOOTER_SIZE;
-      channel.position(footerPosition);
-      channel.ensureReadableBytes(Encoding.FOOTER_SIZE);
-      var footer = Encoding.readFooter(channel.buffer);
-
-      // Put position back to beginning of channel
-      channel.position(0);
-
-      // Read first key
-      channel.ensureReadableBytes(Encoding.KEY_SIZE);
-      var firstKey = Encoding.readKey(channel.buffer);
-
-      // Build metadata from first key and data in footer
-      var metadata = buildMetadata(footer, firstKey);
-
-      return new ImmutableSegment(path, metadata, footerPosition);
+      Reader reader = new Reader(source);
+      var metadata = buildMetadata(reader.readFooter());
+      return new ImmutableSegment(path, metadata);
     }
   }
 
@@ -117,8 +99,7 @@ public class ImmutableSegment implements Segment {
       output.force(false);
       Files.move(tmpPath, path, StandardCopyOption.ATOMIC_MOVE);
 
-      var limit = output.position() - Encoding.FOOTER_SIZE;
-      return new ImmutableSegment(path, writer.metadata, limit, readerOffset);
+      return new ImmutableSegment(path, writer.metadata, readerOffset);
     }
   }
 
@@ -126,12 +107,10 @@ public class ImmutableSegment implements Segment {
     return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
   }
 
-  private static SegmentMetadata buildMetadata(Encoding.Footer footer, Key firstKey) {
+  private static SegmentMetadata buildMetadata(Encoding.Footer footer) {
     return ImmutableSegmentMetadata.builder()
         .pendingCount(footer.pendingCount())
         .tombstoneCount(footer.tombstoneCount())
-        .firstKey(firstKey)
-        .lastKey(footer.lastKey())
         .maxId(footer.maxId())
         .build();
   }
@@ -139,18 +118,18 @@ public class ImmutableSegment implements Segment {
   @VisibleForTesting
   static class Reader implements SegmentReader {
     private final BufferedReadableChannel channel;
-    private final long limit;
+    private final long footerPosition;
     private Entry.Key nextKey = null;
     private boolean closed = false;
 
     @VisibleForTesting
-    Reader(SeekableByteChannel channel, long limit) {
-      this(new BufferedReadableChannel(channel), limit);
+    Reader(SeekableByteChannel channel) throws IOException {
+      this(new BufferedReadableChannel(channel));
     }
 
-    private Reader(BufferedReadableChannel channel, long limit) {
+    private Reader(BufferedReadableChannel channel) throws IOException {
       this.channel = channel;
-      this.limit = limit;
+      footerPosition = channel.channel.size() - Encoding.FOOTER_SIZE;
     }
 
     private void checkOpen() {
@@ -198,7 +177,7 @@ public class ImmutableSegment implements Segment {
     }
 
     Entry.Key readNextKey() throws IOException {
-      if (position() < limit) {
+      if (position() < footerPosition) {
         channel.ensureReadableBytes(Encoding.KEY_SIZE);
         return Encoding.readKey(channel.buffer);
       }
@@ -228,6 +207,12 @@ public class ImmutableSegment implements Segment {
       channel.position(newPosition);
       // Read next key at new offset
       nextKey = readNextKey();
+    }
+
+    public Encoding.Footer readFooter() throws IOException {
+      channel.position(footerPosition);
+      channel.ensureReadableBytes(Encoding.FOOTER_SIZE);
+      return Encoding.readFooter(channel.buffer);
     }
   }
 
@@ -269,6 +254,7 @@ public class ImmutableSegment implements Segment {
     }
   }
 
+  @VisibleForTesting
   static class Writer {
     private final SeekableByteChannel channel;
     private final SegmentReader source;
@@ -283,10 +269,7 @@ public class ImmutableSegment implements Segment {
     // Populated by write()
     private SegmentMetadata metadata;
 
-    private Writer(
-        SeekableByteChannel channel,
-        SegmentReader source,
-        Supplier<Key> liveReaderOffset) {
+    Writer(SeekableByteChannel channel, SegmentReader source, Supplier<Key> liveReaderOffset) {
       this.channel = channel;
       this.source = source;
       this.liveReaderOffset = liveReaderOffset;
@@ -341,14 +324,7 @@ public class ImmutableSegment implements Segment {
       position += value.size();
     }
 
-    private KnownOffset write() throws IOException {
-      // Get first entry
-      var entry = source.next();
-
-      if (entry == null) {
-        throw new IllegalArgumentException("source segment must be non-empty");
-      }
-
+    KnownOffset write() throws IOException {
       // Monitor where the reader is and maintain a corresponding start position
       // in the output file. These are not updated synchronously so the live reader
       // may drift ahead of this start position. That's okay. We maintain the best
@@ -356,18 +332,14 @@ public class ImmutableSegment implements Segment {
       // requested position.
       var readerOffset = liveReaderOffset.get();
       var readerStartPosition = 0L;
-      var readerStartKey = entry.key();
+      var readerStartKey = Key.ZERO;
 
       // Footer fields
       var pendingCount = 0;
       var tombstoneCount = 0;
-      Entry.Key lastKey = null;
       var maxId = Long.MIN_VALUE;
 
-      // Remember first key for metadata
-      var firstKey = entry.key();
-
-      while (entry != null) {
+      for (var entry = source.next(); entry != null; entry = source.next()) {
         // Update our copy of the reader's position, but only if we're ahead of where
         // we last knew the reader to be. If we're behind where we last knew the
         // reader to be we should just continue advancing the start position.
@@ -398,9 +370,6 @@ public class ImmutableSegment implements Segment {
         if (key.id() > maxId) {
           maxId = key.id();
         }
-
-        lastKey = key;
-        entry = source.next();
       }
 
       // TODO: Consider versioning the footer
@@ -408,12 +377,11 @@ public class ImmutableSegment implements Segment {
       var footer = ImmutableEncoding.Footer.builder()
           .pendingCount(pendingCount)
           .tombstoneCount(tombstoneCount)
-          .lastKey(lastKey)
           .maxId(maxId)
           .build();
 
       // Save metadata for use by caller
-      metadata = buildMetadata(footer, firstKey);
+      metadata = buildMetadata(footer);
 
       // Write footer
       ensureBufferCapacity(Encoding.FOOTER_SIZE);
