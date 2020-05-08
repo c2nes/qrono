@@ -3,12 +3,13 @@ package com.brewtab.queue.server;
 import static java.util.Objects.requireNonNull;
 
 import com.brewtab.queue.server.IOScheduler.Parameters;
-import com.brewtab.queue.server.SegmentWriter.Opener;
 import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import java.io.Closeable;
 import java.io.File;
@@ -17,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -40,10 +42,8 @@ public class QueueData implements Closeable {
   // TODO: Make this ... better?
   // Updated together
   private final Map<SegmentName, Segment> immutableSegmentsMap = new HashMap<>();
-  private final MergedSegmentView<Segment> immutableSegments = new MergedSegmentView<>();
+  private final MergedSegmentReader immutableSegments = new MergedSegmentReader();
 
-  private final TombstoningSegmentView tombstoningSegmentView =
-      new TombstoningSegmentView(immutableSegments);
   private WritableSegment currentSegment = null;
 
   // Last key dequeued by next()
@@ -69,7 +69,7 @@ public class QueueData implements Closeable {
         logger.debug("Writing segment from log file {}", path);
         var segmentName = SegmentName.fromPath(path);
         List<Entry> entries = StandardWriteAheadLog.read(path);
-        segmentWriter.write(segmentName, new InMemorySegment(entries));
+        segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
       }
 
@@ -79,7 +79,7 @@ public class QueueData implements Closeable {
         // TODO: Use lax read method here
         List<Entry> entries = StandardWriteAheadLog.read(path);
         if (!entries.isEmpty()) {
-          segmentWriter.write(segmentName, new InMemorySegment(entries));
+          segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         }
         Files.delete(path);
       }
@@ -158,9 +158,6 @@ public class QueueData implements Closeable {
     // Unrelated, is it okay that we reuse IDs when requeueing items?
   }
 
-  // TODO: The tombstoning segment view stores the "next" value. Advancing the
-  //  newly created segment to the key returned by peek() may cause the next
-  //  dequeued value to be repeated.
   public void runTestCompaction() throws IOException {
     CompletableFuture<Void> future = CompletableFuture.completedFuture(null);
     synchronized (this) {
@@ -173,7 +170,7 @@ public class QueueData implements Closeable {
 
     var pendingMergePaths = new HashSet<Path>();
     var pendingMergeNames = new HashSet<SegmentName>();
-    var pendingMerge = new MergedSegmentView<ImmutableSegment>();
+    var pendingMerge = new MergedSegmentReader();
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
       if (SegmentFiles.isIndexPath(path)) {
@@ -198,35 +195,32 @@ public class QueueData implements Closeable {
         .filter(Objects::nonNull)
         .collect(Collectors.toSet());
     var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
-    var opener = segmentWriter.write(
+    var mergedSegment = segmentWriter.write(
         mergeName,
-        new TombstoningSegmentView(pendingMerge),
+        pendingMerge,
         this::peek);
     var writeDuration = Duration.between(start, Instant.now());
 
     // Synchronized to ensure peek() doesn't change while we replace the segments.
     synchronized (this) {
-      var segment = opener.open(immutableSegments.peek());
-      var peeked = segment.peek();
       var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
       logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
-              + "switches={}, seekDuration={}, peeked={}",
+              + "switches={}, seekDuration={}",
           pendingMerge.getSegments().size(),
-          pendingMerge.size(),
+          mergedSegment.size(),
           DataSize.fromBytes(Files.size(mergedPath)),
           Duration.between(start, Instant.now()),
           pendingMerge.getHeadSwitchDebugCount(),
-          seekDuration,
-          peeked);
+          seekDuration);
       // At this point we would like to swap the new segment for the input segments.
       // We need to do this swapping within the merged segment view.
-      immutableSegmentsMap.put(mergeName, segment);
-      immutableSegments.replaceSegments(originalSegments, segment);
+      immutableSegmentsMap.put(mergeName, mergedSegment);
+      immutableSegments.replaceSegments(originalSegments, mergedSegment);
       immutableSegmentsMap.keySet().removeAll(pendingMergeNames);
     }
 
     // Close
-    for (Segment segment : originalSegments) {
+    for (SegmentReader segment : originalSegments) {
       segment.close();
     }
     // Delete
@@ -304,12 +298,12 @@ public class QueueData implements Closeable {
 
   private CompletableFuture<Void> flush(WritableSegment segment) throws IOException {
     // Freeze segment to close WAL and prevent future writes
-    segment.freeze();
+    Segment frozenInMemory = segment.freeze();
 
     // Wrap the segment in a decorator before adding it to the set of immutable segments.
     // This decorator allows us to transparently swap the in-memory copy of the segment
     // for the on-disk copy once the write is complete.
-    var replaceableSegment = new ReplaceableSegment(segment);
+    var replaceableSegment = new ReplaceableSegment(frozenInMemory);
     immutableSegmentsMap.put(segment.getName(), replaceableSegment);
     immutableSegments.addSegment(replaceableSegment);
 
@@ -329,11 +323,9 @@ public class QueueData implements Closeable {
     });
   }
 
-  private Opener writeAndDeleteLog(WritableSegment segment) throws IOException {
-    var segmentName = segment.getName();
-    var segmentCopy = new InMemorySegment(segment.entries());
-    var frozenSegment = segmentWriter.write(segmentName, segmentCopy, this::peek);
-    StandardWriteAheadLog.delete(directory, segmentName);
+  private Segment writeAndDeleteLog(SegmentName name, SegmentReader source) throws IOException {
+    var frozenSegment = segmentWriter.write(name, source, this::peek);
+    StandardWriteAheadLog.delete(directory, name);
     return frozenSegment;
   }
 
@@ -355,30 +347,30 @@ public class QueueData implements Closeable {
 
   private KeySegmentPair head() {
     var currentSegmentKey = currentSegment == null ? null : currentSegment.peek();
-    var tombstoningSegmentViewKey = tombstoningSegmentView.peek();
+    var immutableSegmentsKey = immutableSegments.peek();
 
-    if (currentSegmentKey == null && tombstoningSegmentViewKey == null) {
+    if (currentSegmentKey == null && immutableSegmentsKey == null) {
       // Queue is empty
       return new KeySegmentPair(null, null);
     }
 
     if (currentSegmentKey == null) {
-      return new KeySegmentPair(tombstoningSegmentViewKey, tombstoningSegmentView);
+      return new KeySegmentPair(immutableSegmentsKey, immutableSegments);
     }
 
-    if (tombstoningSegmentViewKey == null) {
+    if (immutableSegmentsKey == null) {
       return new KeySegmentPair(currentSegmentKey, currentSegment);
     }
 
-    if (currentSegmentKey.compareTo(tombstoningSegmentViewKey) < 0) {
+    if (currentSegmentKey.compareTo(immutableSegmentsKey) < 0) {
       return new KeySegmentPair(currentSegmentKey, currentSegment);
     } else {
-      return new KeySegmentPair(tombstoningSegmentViewKey, tombstoningSegmentView);
+      return new KeySegmentPair(immutableSegmentsKey, immutableSegments);
     }
   }
 
-  public synchronized SegmentMetadata getMetadata() {
-    var immutableMeta = tombstoningSegmentView.getMetadata();
+  public synchronized long getQueueSize() {
+    var immutableMeta = immutableSegments.getMetadata();
     if (currentSegment == null) {
       return immutableMeta;
     }
@@ -405,46 +397,76 @@ public class QueueData implements Closeable {
 
   private static class KeySegmentPair {
     private final Entry.Key key;
-    private final Segment segment;
+    private final SegmentReader segment;
 
-    private KeySegmentPair(Entry.Key key, Segment segment) {
+    private KeySegmentPair(Entry.Key key, SegmentReader segment) {
       this.key = key;
       this.segment = segment;
     }
   }
 
   /**
-   * Segment whose source segment can be replaced by providing an {@link Opener}.
+   * Segment whose source segment can be replaced.
    */
   private static class ReplaceableSegment implements Segment {
-    private volatile Segment active;
+    private Segment active;
+    private List<ReplaceableReader> readers = new ArrayList<>(1);
 
     private ReplaceableSegment(Segment active) {
       this.active = active;
     }
 
     @Override
-    public SegmentMetadata getMetadata() {
+    public synchronized SegmentMetadata getMetadata() {
       return active.getMetadata();
     }
 
     @Override
-    public Entry.Key peek() {
-      return active.peek();
+    public synchronized SegmentReader newReader(Key position) throws IOException {
+      if (readers == null) {
+        return active.newReader(position);
+      }
+
+      var reader = new ReplaceableReader(active.newReader(position));
+      readers.add(reader);
+      return reader;
     }
 
-    @Override
-    public synchronized Entry next() throws IOException {
-      return active.next();
+    synchronized void replaceFrom(Segment replacement) throws IOException {
+      Preconditions.checkState(readers != null, "replaceFrom can only be called once");
+      active = replacement;
+      for (ReplaceableReader reader : readers) {
+        reader.replaceFrom(replacement);
+      }
+      // Allow readers to be GC'ed
+      readers = null;
     }
 
-    @Override
-    public void close() throws IOException {
-      active.close();
-    }
+    private static class ReplaceableReader implements SegmentReader {
+      private volatile SegmentReader active;
 
-    synchronized void replaceFrom(Opener opener) throws IOException {
-      active = opener.open(peek());
+      private ReplaceableReader(SegmentReader active) {
+        this.active = active;
+      }
+
+      @Override
+      public Key peek() {
+        return active.peek();
+      }
+
+      @Override
+      public synchronized Entry next() throws IOException {
+        return active.next();
+      }
+
+      @Override
+      public void close() throws IOException {
+        active.close();
+      }
+
+      synchronized void replaceFrom(Segment replacement) throws IOException {
+        active = replacement.newReader(peek());
+      }
     }
   }
 }

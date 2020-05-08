@@ -4,7 +4,8 @@ import com.brewtab.queue.server.data.Entry;
 import java.io.IOException;
 import java.util.Collection;
 
-public interface WritableSegment extends Segment {
+// TODO: Rename this...its not a true "Segment" anymore
+public interface WritableSegment extends SegmentReader {
   /**
    * Returns the name of this segment.
    */
@@ -16,13 +17,10 @@ public interface WritableSegment extends Segment {
    */
   Entry add(Entry entry) throws IOException;
 
+  long size();
+
   /**
    * Freeze the segment, making it read-only.
    */
-  void freeze() throws IOException;
-
-  /**
-   * Returns the entries in the segment. The segment must be frozen before the entries can be read.
-   */
-  Collection<Entry> entries();
+  Segment freeze() throws IOException;
 }

@@ -2,15 +2,11 @@ package com.brewtab.queue.server;
 
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableEntry;
-import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
 import com.brewtab.queue.server.data.Item;
-import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.PriorityQueue;
 import java.util.SortedSet;
@@ -82,15 +78,11 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public synchronized void freeze() throws IOException {
+  public synchronized Segment freeze() throws IOException {
     Preconditions.checkState(!frozen, "already frozen");
     frozen = true;
     wal.close();
-  }
 
-  @Override
-  public synchronized Collection<Entry> entries() {
-    Preconditions.checkState(frozen, "must be frozen");
     var entries = new ArrayList<Entry>();
     for (Entry.Key tombstone : tombstones) {
       entries.add(ImmutableEntry.builder().key(tombstone).build());
@@ -101,38 +93,9 @@ public class StandardWritableSegment implements WritableSegment {
       entries.add(Entry.newPendingEntry(item));
     }
 
-    return Collections.unmodifiableList(entries);
+    return new InMemorySegment(entries);
   }
 
-  @Override
-  public synchronized SegmentMetadata getMetadata() {
-    var allItems = new ArrayList<Item>(pending.size() + removed.size());
-    allItems.addAll(pending);
-    allItems.addAll(removed.values());
-
-    var allKeys = new ArrayList<Entry.Key>(allItems.size() + tombstones.size());
-    allKeys.addAll(tombstones);
-    for (Item item : allItems) {
-      allKeys.add(Entry.newPendingKey(item));
-    }
-
-    if (allKeys.isEmpty()) {
-      return null;
-    }
-
-    return ImmutableSegmentMetadata.builder()
-        .pendingCount(allItems.size())
-        .tombstoneCount(tombstones.size())
-        .maxId(allItems.stream()
-            .mapToLong(Item::id)
-            .max()
-            .orElse(0))
-        .firstKey(Collections.min(allKeys))
-        .lastKey(Collections.max(allKeys))
-        .build();
-  }
-
-  @Override
   public long size() {
     return pending.size() + removed.size() + tombstones.size();
   }

@@ -10,6 +10,7 @@ import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.SegmentMetadata;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.protobuf.ByteString;
@@ -19,33 +20,34 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.function.Supplier;
 
 public class ImmutableSegment implements Segment {
   private static final int DEFAULT_BUFFER_SIZE = 4096;
 
-  private final BufferedReadableChannel channel;
+  // TODO: Abstract the file opening for easier testing (e.g. Supplier<SeekableByteChannel>)
+  private final Path path;
   private final SegmentMetadata metadata;
   private final long limit;
-  private Entry.Key nextKey;
+  private final KnownOffset knownOffset;
 
-  private boolean closed = false;
-
-  private ImmutableSegment(
-      BufferedReadableChannel channel,
-      SegmentMetadata metadata,
-      long limit,
-      Entry.Key nextKey
-  ) {
-    this.channel = channel;
-    this.metadata = metadata;
-    this.limit = limit;
-    this.nextKey = nextKey;
+  private ImmutableSegment(Path path, SegmentMetadata metadata, long limit) {
+    this(path, metadata, limit, KnownOffset.ZERO);
   }
 
-  private void checkOpen() {
-    Preconditions.checkState(!closed, "closed");
+  private ImmutableSegment(
+      Path path,
+      SegmentMetadata metadata,
+      long limit,
+      KnownOffset knownOffset
+  ) {
+    this.path = path;
+    this.metadata = metadata;
+    this.limit = limit;
+    this.knownOffset = knownOffset;
   }
 
   @Override
@@ -54,108 +56,179 @@ public class ImmutableSegment implements Segment {
   }
 
   @Override
-  public Entry.Key peek() {
-    checkOpen();
-    return nextKey;
-  }
-
-  private Entry readNextEntry() throws IOException {
-    if (nextKey == null) {
-      return null;
+  public SegmentReader newReader(Key position) throws IOException {
+    var reader = new Reader(FileChannel.open(path), limit);
+    if (position.compareTo(knownOffset.key()) < 0) {
+      // TODO: Log a warning. "knownOffset" was tracked by the Writer based on a hint about
+      //  where the head of the queue is currently. The head of the queue may have since moved
+      //  ahead of this known position, but if the requested position is _behind_ our known
+      //  position then something has gone wrong and seeking to the appropriate position may
+      //  be slow.
+      reader.position(0);
+    } else {
+      reader.position(knownOffset.position());
     }
 
-    if (nextKey.entryType() == Entry.Type.PENDING) {
-      channel.ensureReadableBytes(Encoding.STATS_SIZE + 4);
-      var stats = Encoding.readStats(channel.buffer);
-      var valueLength = channel.buffer.getInt();
-      channel.ensureReadableBytes(valueLength);
-      var value = ByteString.copyFrom(channel.buffer, valueLength);
-
-      var item = ImmutableItem.builder()
-          .deadline(nextKey.deadline())
-          .id(nextKey.id())
-          .stats(stats)
-          .value(value)
-          .build();
-
-      return ImmutableEntry.builder()
-          .key(nextKey)
-          .item(item)
-          .build();
+    // Seek to the requested position
+    var peek = reader.peek();
+    while (peek != null && peek.compareTo(position) < 0) {
+      reader.next();
+      peek = reader.peek();
     }
 
-    if (nextKey.entryType() == Entry.Type.TOMBSTONE) {
-      return ImmutableEntry.builder()
-          .key(nextKey)
-          .build();
-    }
-
-    throw new IllegalStateException("unrecognized entry type");
-  }
-
-  private Entry.Key readNextKey() throws IOException {
-    if (position() < limit) {
-      channel.ensureReadableBytes(Encoding.KEY_SIZE);
-      return Encoding.readKey(channel.buffer);
-    }
-    return null;
-  }
-
-  @Override
-  public Entry next() throws IOException {
-    checkOpen();
-    var entry = readNextEntry();
-    nextKey = readNextKey();
-    return entry;
-  }
-
-  @Override
-  public void close() throws IOException {
-    closed = true;
-    nextKey = null;
-    channel.channel.close();
-  }
-
-  public long position() throws IOException {
-    return channel.channel.position() - channel.buffer.remaining();
-  }
-
-  public void position(long newPosition) throws IOException {
-    channel.position(newPosition);
-    // Read next key at new offset
-    nextKey = readNextKey();
+    return reader;
   }
 
   public static ImmutableSegment open(Path path) throws IOException {
-    return newReader(FileChannel.open(path));
+    try (var source = FileChannel.open(path)) {
+      var channel = new BufferedReadableChannel(source);
+
+      // Read footer
+      var footerPosition = source.size() - Encoding.FOOTER_SIZE;
+      channel.position(footerPosition);
+      channel.ensureReadableBytes(Encoding.FOOTER_SIZE);
+      var footer = Encoding.readFooter(channel.buffer);
+
+      // Put position back to beginning of channel
+      channel.position(0);
+
+      // Read first key
+      channel.ensureReadableBytes(Encoding.KEY_SIZE);
+      var firstKey = Encoding.readKey(channel.buffer);
+
+      // Build metadata from first key and data in footer
+      var metadata = buildMetadata(footer, firstKey);
+
+      return new ImmutableSegment(path, metadata, footerPosition);
+    }
   }
 
-  public static ImmutableSegment newReader(SeekableByteChannel source) throws IOException {
-    var channel = new BufferedReadableChannel(source);
+  public static ImmutableSegment write(
+      Path path,
+      SegmentReader source,
+      Supplier<Key> liveReaderOffset
+  ) throws IOException {
+    var tmpPath = SegmentFiles.getTemporaryPath(path);
+    try (var output = FileChannel.open(tmpPath, WRITE, CREATE)) { // TODO:
+      var writer = new Writer(output, source, liveReaderOffset);
 
-    // Read footer
-    var footerPosition = channel.channel.size() - Encoding.FOOTER_SIZE;
-    channel.position(footerPosition);
-    channel.ensureReadableBytes(Encoding.FOOTER_SIZE);
-    var footer = Encoding.readFooter(channel.buffer);
+      // Do the actual writing
+      var readerOffset = writer.write();
+      output.force(false);
+      Files.move(tmpPath, path, StandardCopyOption.ATOMIC_MOVE);
 
-    // Put position back to beginning of channel
-    channel.position(0);
+      var limit = output.position() - Encoding.FOOTER_SIZE;
+      return new ImmutableSegment(path, writer.metadata, limit, readerOffset);
+    }
+  }
 
-    // Read first key
-    channel.ensureReadableBytes(Encoding.KEY_SIZE);
-    var firstKey = Encoding.readKey(channel.buffer);
+  private static ByteBuffer newByteBuffer(int capacity) {
+    return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
+  }
 
-    // Build metadata from first key and data in footer
-    var metadata = ImmutableSegmentMetadata.builder()
+  private static SegmentMetadata buildMetadata(Encoding.Footer footer, Key firstKey) {
+    return ImmutableSegmentMetadata.builder()
         .pendingCount(footer.pendingCount())
         .tombstoneCount(footer.tombstoneCount())
         .firstKey(firstKey)
         .lastKey(footer.lastKey())
         .maxId(footer.maxId())
         .build();
+  }
 
-    return new ImmutableSegment(channel, metadata, footerPosition, firstKey);
+  @VisibleForTesting
+  static class Reader implements SegmentReader {
+    private final BufferedReadableChannel channel;
+    private final long limit;
+    private Entry.Key nextKey = null;
+    private boolean closed = false;
+
+    @VisibleForTesting
+    Reader(SeekableByteChannel channel, long limit) {
+      this(new BufferedReadableChannel(channel), limit);
+    }
+
+    private Reader(BufferedReadableChannel channel, long limit) {
+      this.channel = channel;
+      this.limit = limit;
+    }
+
+    private void checkOpen() {
+      Preconditions.checkState(!closed, "closed");
+    }
+
+    @Override
+    public Entry.Key peek() {
+      checkOpen();
+      return nextKey;
+    }
+
+    private Entry readNextEntry() throws IOException {
+      if (nextKey == null) {
+        return null;
+      }
+
+      if (nextKey.entryType() == Entry.Type.PENDING) {
+        channel.ensureReadableBytes(Encoding.STATS_SIZE + 4);
+        var stats = Encoding.readStats(channel.buffer);
+        var valueLength = channel.buffer.getInt();
+        channel.ensureReadableBytes(valueLength);
+        var value = ByteString.copyFrom(channel.buffer, valueLength);
+
+        var item = ImmutableItem.builder()
+            .deadline(nextKey.deadline())
+            .id(nextKey.id())
+            .stats(stats)
+            .value(value)
+            .build();
+
+        return ImmutableEntry.builder()
+            .key(nextKey)
+            .item(item)
+            .build();
+      }
+
+      if (nextKey.entryType() == Entry.Type.TOMBSTONE) {
+        return ImmutableEntry.builder()
+            .key(nextKey)
+            .build();
+      }
+
+      throw new IllegalStateException("unrecognized entry type");
+    }
+
+    Entry.Key readNextKey() throws IOException {
+      if (position() < limit) {
+        channel.ensureReadableBytes(Encoding.KEY_SIZE);
+        return Encoding.readKey(channel.buffer);
+      }
+      return null;
+    }
+
+    @Override
+    public Entry next() throws IOException {
+      checkOpen();
+      var entry = readNextEntry();
+      nextKey = readNextKey();
+      return entry;
+    }
+
+    @Override
+    public void close() throws IOException {
+      closed = true;
+      nextKey = null;
+      channel.channel.close();
+    }
+
+    public long position() throws IOException {
+      return channel.channel.position() - channel.buffer.remaining();
+    }
+
+    public void position(long newPosition) throws IOException {
+      channel.position(newPosition);
+      // Read next key at new offset
+      nextKey = readNextKey();
+    }
   }
 
   static class BufferedReadableChannel {
@@ -198,7 +271,7 @@ public class ImmutableSegment implements Segment {
 
   static class Writer {
     private final SeekableByteChannel channel;
-    private final Segment source;
+    private final SegmentReader source;
 
     // Gets the current read offset. We can use this to more quickly seek to the required
     // offset in the newly written segment.
@@ -207,9 +280,12 @@ public class ImmutableSegment implements Segment {
     private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
     private long position = 0;
 
+    // Populated by write()
+    private SegmentMetadata metadata;
+
     private Writer(
         SeekableByteChannel channel,
-        Segment source,
+        SegmentReader source,
         Supplier<Key> liveReaderOffset) {
       this.channel = channel;
       this.source = source;
@@ -265,7 +341,7 @@ public class ImmutableSegment implements Segment {
       position += value.size();
     }
 
-    private ReaderOffset write() throws IOException {
+    private KnownOffset write() throws IOException {
       // Get first entry
       var entry = source.next();
 
@@ -287,6 +363,9 @@ public class ImmutableSegment implements Segment {
       var tombstoneCount = 0;
       Entry.Key lastKey = null;
       var maxId = Long.MIN_VALUE;
+
+      // Remember first key for metadata
+      var firstKey = entry.key();
 
       while (entry != null) {
         // Update our copy of the reader's position, but only if we're ahead of where
@@ -326,58 +405,41 @@ public class ImmutableSegment implements Segment {
 
       // TODO: Consider versioning the footer
 
-      // Write footer
-      ensureBufferCapacity(Encoding.FOOTER_SIZE);
-      Encoding.writeFooter(buffer, ImmutableEncoding.Footer.builder()
+      var footer = ImmutableEncoding.Footer.builder()
           .pendingCount(pendingCount)
           .tombstoneCount(tombstoneCount)
           .lastKey(lastKey)
           .maxId(maxId)
-          .build());
+          .build();
+
+      // Save metadata for use by caller
+      metadata = buildMetadata(footer, firstKey);
+
+      // Write footer
+      ensureBufferCapacity(Encoding.FOOTER_SIZE);
+      Encoding.writeFooter(buffer, footer);
       flushBuffer();
 
-      return new ReaderOffset(readerStartKey, readerStartPosition);
+      return new KnownOffset(readerStartKey, readerStartPosition);
     }
   }
 
-  public static ReaderOffset write(
-      Path path,
-      Segment segment,
-      Supplier<Key> liveReaderOffset
-  ) throws IOException {
-    try (var output = FileChannel.open(path, WRITE, CREATE)) { // TODO:
-      var readerOffset = write(output, segment, liveReaderOffset);
-      output.force(false);
-      return readerOffset;
-    }
-  }
+  public static class KnownOffset {
+    public static final KnownOffset ZERO = new KnownOffset(Key.ZERO, 0);
 
-  public static ReaderOffset write(
-      SeekableByteChannel channel,
-      Segment source,
-      Supplier<Key> liveReaderOffset
-  ) throws IOException {
-    return new Writer(channel, source, liveReaderOffset).write();
-  }
-
-  private static ByteBuffer newByteBuffer(int capacity) {
-    return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
-  }
-
-  public static class ReaderOffset {
     private final Entry.Key key;
     private final long position;
 
-    private ReaderOffset(Key key, long position) {
+    private KnownOffset(Key key, long position) {
       this.key = key;
       this.position = position;
     }
 
-    public Key getKey() {
+    public Key key() {
       return key;
     }
 
-    public long getPosition() {
+    public long position() {
       return position;
     }
   }

@@ -6,24 +6,18 @@ import java.util.function.Supplier;
 
 public interface SegmentWriter {
 
-  default Opener write(SegmentName segmentName, Segment source) throws IOException {
-    var firstKey = source.getMetadata().firstKey();
+  default Segment write(SegmentName segmentName, SegmentReader source) throws IOException {
+    var firstKey = source.peek();
     return write(segmentName, source, () -> firstKey);
   }
 
   /**
-   * Writes a segment. Returns an {@link Opener} for the newly written segment allowing it to be
-   * opened to a specific key.
+   * Writes a segment.
    */
-  Opener write(
+  Segment write(
       SegmentName segmentName,
-      Segment source,
+      SegmentReader source,
       // This feels finicky
       Supplier<Entry.Key> liveReaderOffset
   ) throws IOException;
-
-  interface Opener {
-    // Open to this key, or the first key after it.
-    Segment open(Entry.Key position) throws IOException;
-  }
 }

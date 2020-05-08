@@ -15,7 +15,6 @@ import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
-import com.brewtab.queue.server.data.SegmentMetadata;
 import com.brewtab.queue.server.data.Timestamp;
 import io.grpc.Status;
 import java.io.IOException;
@@ -171,16 +170,7 @@ public class Queue {
   }
 
   public synchronized QueueInfo getQueueInfo(GetQueueInfoRequest request) {
-    SegmentMetadata meta = data.getMetadata();
-
-    // Queue is totally empty
-    if (meta == null) {
-      return QueueInfo.getDefaultInstance();
-    }
-
-    // Our definition of pending excludes dequeued items, but at the data layer an
-    // item is pending until it is released / requeued.
-    long totalSize = meta.pendingCount() - meta.tombstoneCount();
+    long totalSize = data.getQueueSize();
     long dequeuedSize = dequeued.size();
     long pendingSize = totalSize - dequeuedSize;
     return QueueInfo.newBuilder()

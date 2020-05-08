@@ -54,7 +54,7 @@ public class ImmutableSegmentTest {
             .value(value)
             .build());
 
-    InMemorySegment memSegment = new InMemorySegment(entry1, entry2, entry3);
+    InMemorySegmentReader memSegment = new InMemorySegmentReader(entry1, entry2, entry3);
 
     // Item overhead
     var itemOverhead = Encoding.KEY_SIZE + Encoding.STATS_SIZE + 4;
