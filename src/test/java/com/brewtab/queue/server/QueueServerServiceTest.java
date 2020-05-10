@@ -38,7 +38,8 @@ public class QueueServerServiceTest {
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
+    var workingSet = new InMemoryWorkingSet();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
     QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
@@ -65,7 +66,8 @@ public class QueueServerServiceTest {
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
+    var workingSet = new InMemoryWorkingSet();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
     QueueServerService service = new QueueServerService(queueFactory);
 
     var value = ByteString.copyFromUtf8("Hello, world!");
@@ -117,7 +119,8 @@ public class QueueServerServiceTest {
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler);
+    var workingSet = new InMemoryWorkingSet();
+    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
     QueueServerService service = new QueueServerService(queueFactory);
     var queueName = "test-queue-" + System.currentTimeMillis();
 

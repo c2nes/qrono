@@ -17,13 +17,13 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+// TODO: Rename? Queue...Reader? PendingSet? EntryLog?
 public class QueueData implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(QueueData.class);
 
@@ -153,56 +153,47 @@ public class QueueData implements Closeable {
     // Force flush current segment so it is included in the compaction.
     forceFlushCurrentSegment().join();
 
-    // TODO: Some of this is redundant now
-    var pendingMergePaths = new HashSet<Path>();
-    var pendingMergeNames = new HashSet<SegmentName>();
+    var segments = immutableSegments.getSegments();
     var pendingMerge = new MergedSegmentReader();
-    for (File file : requireNonNull(directory.toFile().listFiles())) {
-      Path path = file.toPath();
-      if (SegmentFiles.isIndexPath(path)) {
-        pendingMergePaths.add(path);
-        pendingMergeNames.add(SegmentName.fromPath(path));
-        pendingMerge.addSegment(ImmutableSegment.open(path), Key.ZERO);
-      }
+    for (Segment segment : segments) {
+      pendingMerge.addSegment(segment, Key.ZERO);
     }
 
-    var start = Instant.now();
     var mergeName = new SegmentName(
-        pendingMergeNames.stream()
-            .mapToInt(SegmentName::level)
+        segments.stream()
+            .mapToInt(s -> s.name().level())
             .max()
             .orElse(0) + 1,
-        pendingMergeNames.stream()
-            .mapToLong(SegmentName::id)
+        segments.stream()
+            .mapToLong(s -> s.name().id())
             .max()
             .orElse(0));
-    var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
-    var mergedSegment = segmentWriter.write(
-        mergeName,
-        pendingMerge,
-        () -> last);
+
+    var start = Instant.now();
+    var mergedSegment = segmentWriter.write(mergeName, pendingMerge, () -> last);
     var writeDuration = Duration.between(start, Instant.now());
 
     // Synchronized to ensure "last" doesn't change while we replace the segments.
     synchronized (this) {
       // At this point we would like to swap the new segment for the input segments.
       // We need to do this swapping within the merged segment view.
-      immutableSegments.replaceSegments(pendingMerge.getSegments(), mergedSegment, last);
+      immutableSegments.replaceSegments(segments, mergedSegment, last);
     }
 
     var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
+    var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
     logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
             + "switches={}, seekDuration={}",
-        pendingMerge.getSegments().size(),
+        segments.size(),
         mergedSegment.size(),
         DataSize.fromBytes(Files.size(mergedPath)),
         Duration.between(start, Instant.now()),
         pendingMerge.getHeadSwitchDebugCount(),
         seekDuration);
 
-    // Delete
-    for (Path path : pendingMergePaths) {
-      Files.delete(path);
+    // Delete old segments
+    for (Segment segment : segments) {
+      Files.delete(SegmentFiles.getIndexPath(directory, segment.name()));
     }
   }
 

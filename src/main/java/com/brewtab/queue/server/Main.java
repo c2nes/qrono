@@ -62,12 +62,20 @@ public class Main {
     long epoch = Timestamps.toMillis(globalState.getEpoch());
     IdGenerator idGenerator = new StandardIdGenerator(clock, epoch, maxId);
 
-    QueueFactory queueFactory = new QueueFactory(queuesDirectory, idGenerator, ioScheduler);
+    Path workingSetDirectory = root.resolve("working");
+
+    var workingSet = new DiskBackedWorkingSet(workingSetDirectory, 1 << 30);
+    workingSet.startAsync().awaitRunning();
+
+    QueueFactory queueFactory = new QueueFactory(
+        queuesDirectory,
+        idGenerator,
+        ioScheduler,
+        workingSet);
     Map<String, Queue> queues = new HashMap<>();
     queueData.forEach((path, data) -> {
       String queueName = path.getFileName().toString();
-      Queue queue = new Queue(data, idGenerator, clock);
-      queues.put(queueName, queue);
+      queues.put(queueName, queueFactory.createQueue(data));
     });
 
     QueueServerService service = new QueueServerService(queueFactory, queues);

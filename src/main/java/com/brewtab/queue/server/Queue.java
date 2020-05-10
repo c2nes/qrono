@@ -14,13 +14,10 @@ import com.brewtab.queue.Api.Stats;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
-import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.Timestamp;
 import io.grpc.Status;
 import java.io.IOException;
 import java.time.Clock;
-import java.util.HashMap;
-import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,12 +28,14 @@ public class Queue {
   private final IdGenerator idGenerator;
   private final Clock clock;
 
-  private final Map<Long, Item> dequeued = new HashMap<>();
+  private final WorkingSet dequeued;
 
-  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock) {
+  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock,
+      WorkingSet dequeued) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
+    this.dequeued = dequeued;
   }
 
   public synchronized QueueLoadSummary load() throws IOException {
@@ -114,7 +113,7 @@ public class Queue {
             .build())
         .build();
 
-    dequeued.put(item.id(), item);
+    dequeued.add(item);
 
     // Convert to API model
     return Api.Item.newBuilder()
@@ -130,7 +129,7 @@ public class Queue {
   }
 
   public synchronized void release(ReleaseRequest request) throws IOException {
-    var released = dequeued.remove(request.getId());
+    var released = dequeued.removeForRelease(request.getId());
     if (released == null) {
       throw Status.FAILED_PRECONDITION
           .withDescription("item not dequeued")
@@ -141,7 +140,7 @@ public class Queue {
   }
 
   public synchronized RequeueResponse requeue(RequeueRequest request) throws IOException {
-    var item = dequeued.remove(request.getId());
+    var item = dequeued.removeForRequeue(request.getId());
 
     if (item == null) {
       throw Status.FAILED_PRECONDITION

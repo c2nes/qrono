@@ -8,20 +8,28 @@ public class QueueFactory {
   private final Path directory;
   private final IdGenerator idGenerator;
   private final IOScheduler ioScheduler;
+  private final WorkingSet workingSet;
 
   public QueueFactory(
       Path directory,
       IdGenerator idGenerator,
-      IOScheduler ioScheduler) {
+      IOScheduler ioScheduler,
+      WorkingSet workingSet
+  ) {
     this.directory = directory;
     this.idGenerator = idGenerator;
     this.ioScheduler = ioScheduler;
+    this.workingSet = workingSet;
   }
 
-  public Queue createQueue(String name) throws IOException {
+  public Queue createQueue(String name) {
     Path queueDirectory = directory.resolve(name);
     StandardSegmentWriter segmentWriter = new StandardSegmentWriter(queueDirectory);
     QueueData queueData = new QueueData(queueDirectory, ioScheduler, segmentWriter);
-    return new Queue(queueData, idGenerator, Clock.systemUTC());
+    return new Queue(queueData, idGenerator, Clock.systemUTC(), workingSet);
+  }
+
+  public Queue createQueue(QueueData data) {
+    return new Queue(data, idGenerator, Clock.systemUTC(), workingSet);
   }
 }
