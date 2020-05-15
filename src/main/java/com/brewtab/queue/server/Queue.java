@@ -1,37 +1,26 @@
 package com.brewtab.queue.server;
 
-import static com.google.protobuf.util.Timestamps.fromMillis;
-import static com.google.protobuf.util.Timestamps.toMillis;
-
-import com.brewtab.queue.Api;
-import com.brewtab.queue.Api.EnqueueRequest;
-import com.brewtab.queue.Api.GetQueueInfoRequest;
-import com.brewtab.queue.Api.QueueInfo;
-import com.brewtab.queue.Api.ReleaseRequest;
-import com.brewtab.queue.Api.RequeueRequest;
-import com.brewtab.queue.Api.RequeueResponse;
-import com.brewtab.queue.Api.Stats;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableQueueInfo;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
+import com.brewtab.queue.server.data.Item;
+import com.brewtab.queue.server.data.QueueInfo;
 import com.brewtab.queue.server.data.Timestamp;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import java.io.IOException;
 import java.time.Clock;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import javax.annotation.Nullable;
 
 public class Queue {
-  private static final Logger logger = LoggerFactory.getLogger(Queue.class);
-
   private final QueueData data;
   private final IdGenerator idGenerator;
   private final Clock clock;
 
   private final WorkingSet dequeued;
 
-  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock,
-      WorkingSet dequeued) {
+  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet dequeued) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
@@ -42,9 +31,12 @@ public class Queue {
     return data.load();
   }
 
-  public synchronized Api.Item enqueue(EnqueueRequest request) throws IOException {
-    var enqueueTime = clock.millis();
-    var deadline = request.hasDeadline() ? toMillis(request.getDeadline()) : enqueueTime;
+  public synchronized Item enqueue(ByteString value, @Nullable Timestamp deadline)
+      throws IOException {
+    var enqueueTime = ImmutableTimestamp.of(clock.millis());
+    if (deadline == null) {
+      deadline = enqueueTime;
+    }
 
     // Invariant: Entries must be written in ID order.
     //
@@ -54,14 +46,14 @@ public class Queue {
     long id = idGenerator.generateId();
 
     var requestedItem = ImmutableItem.builder()
-        .deadline(ImmutableTimestamp.of(deadline))
+        .deadline(deadline)
         .id(id)
         .stats(ImmutableItem.Stats.builder()
             .dequeueCount(0)
-            .enqueueTime(ImmutableTimestamp.of(enqueueTime))
+            .enqueueTime(enqueueTime)
             .requeueTime(Timestamp.ZERO)
             .build())
-        .value(request.getValue())
+        .value(value)
         .build();
 
     var entry = data.write(Entry.newPendingEntry(requestedItem));
@@ -73,19 +65,10 @@ public class Queue {
     assert item != null : "pending entries have non-null items";
 
     // Build API response object
-    return Api.Item.newBuilder()
-        .setDeadline(fromMillis(item.deadline().millis()))
-        .setId(item.id())
-        .setStats(Stats.newBuilder()
-            .setDequeueCount(item.stats().dequeueCount())
-            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
-            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
-            .build())
-        .setValue(item.value())
-        .build();
+    return item;
   }
 
-  public synchronized Api.Item dequeue() throws IOException {
+  public synchronized Item dequeue() throws IOException {
     var key = data.peek();
     if (key == null) {
       return null;
@@ -115,21 +98,12 @@ public class Queue {
 
     dequeued.add(item);
 
-    // Convert to API model
-    return Api.Item.newBuilder()
-        .setDeadline(fromMillis(item.deadline().millis()))
-        .setId(item.id())
-        .setStats(Stats.newBuilder()
-            .setDequeueCount(item.stats().dequeueCount())
-            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
-            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
-            .build())
-        .setValue(item.value())
-        .build();
+    return item;
   }
 
-  public synchronized void release(ReleaseRequest request) throws IOException {
-    var released = dequeued.removeForRelease(request.getId());
+  public synchronized void release(long id) throws IOException {
+    // TODO: This doesn't validate that the item is for this queue!
+    var released = dequeued.removeForRelease(id);
     if (released == null) {
       throw Status.FAILED_PRECONDITION
           .withDescription("item not dequeued")
@@ -139,42 +113,54 @@ public class Queue {
     data.write(Entry.newTombstoneEntry(released));
   }
 
-  public synchronized RequeueResponse requeue(RequeueRequest request) throws IOException {
-    var item = dequeued.removeForRequeue(request.getId());
-
+  public synchronized Timestamp requeue(long id, @Nullable Timestamp deadline) throws IOException {
+    // TODO: This doesn't validate that the item is for this queue!
+    var item = dequeued.removeForRequeue(id);
     if (item == null) {
       throw Status.FAILED_PRECONDITION
           .withDescription("item not dequeued")
           .asRuntimeException();
     }
 
-    var tombstone = Entry.newTombstoneEntry(item);
-    var requeueTime = clock.millis();
-    var deadline = request.hasDeadline() ? toMillis(request.getDeadline()) : requeueTime;
+    var success = false;
 
-    item = ImmutableItem.builder()
-        .from(item)
-        .deadline(ImmutableTimestamp.of(deadline))
-        .stats(ImmutableItem.Stats.builder()
-            .from(item.stats())
-            .requeueTime(ImmutableTimestamp.of(requeueTime))
-            .build())
-        .build();
+    try {
+      var tombstone = Entry.newTombstoneEntry(item);
+      var requeueTime = ImmutableTimestamp.of(clock.millis());
 
-    // TODO: Commit these atomically
-    data.write(Entry.newPendingEntry(item));
-    data.write(tombstone);
+      if (deadline == null) {
+        deadline = requeueTime;
+      }
 
-    return RequeueResponse.newBuilder().build();
+      var newItem = ImmutableItem.builder()
+          .from(item)
+          .deadline(deadline)
+          .stats(ImmutableItem.Stats.builder()
+              .from(item.stats())
+              .requeueTime(requeueTime)
+              .build())
+          .build();
+
+      // TODO: Commit these atomically
+      var entry = data.write(Entry.newPendingEntry(newItem));
+      data.write(tombstone);
+      success = true;
+
+      return entry.key().deadline();
+    } finally {
+      if (!success) {
+        dequeued.add(item);
+      }
+    }
   }
 
-  public synchronized QueueInfo getQueueInfo(GetQueueInfoRequest request) {
+  public synchronized QueueInfo getQueueInfo() {
     long totalSize = data.getQueueSize();
     long dequeuedSize = dequeued.size();
     long pendingSize = totalSize - dequeuedSize;
-    return QueueInfo.newBuilder()
-        .setPending(pendingSize)
-        .setDequeued(dequeuedSize)
+    return ImmutableQueueInfo.builder()
+        .pendingCount(pendingSize)
+        .dequeuedCount(dequeuedSize)
         .build();
   }
 

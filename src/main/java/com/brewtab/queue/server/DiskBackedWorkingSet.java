@@ -75,6 +75,17 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
     // Create first mapped file
     currentFile = new MappedFile(0);
+    files.put(currentFile.fileID, currentFile);
+  }
+
+  @Override
+  protected void run() throws Exception {
+    while (isRunning()) {
+      MappedFile file = awaitFileToDrain();
+      if (file != null) {
+        drain(file);
+      }
+    }
   }
 
   private synchronized MappedFile awaitFileToDrain() throws InterruptedException {
@@ -105,16 +116,6 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     }
 
     return null;
-  }
-
-  @Override
-  protected void run() throws Exception {
-    while (isRunning()) {
-      MappedFile file = awaitFileToDrain();
-      if (file != null) {
-        drain(file);
-      }
-    }
   }
 
   private void drain(MappedFile file) throws IOException {
@@ -161,6 +162,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     entries.put(entry.id, entry);
   }
 
+  // TODO: This isn't per-queue dummy!
   @Override
   public synchronized long size() {
     return entries.size();
@@ -178,7 +180,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   public synchronized Item get(long id) {
     Preconditions.checkState(isRunning());
 
-    var entry = entries.remove(id);
+    var entry = entries.get(id);
     if (entry == null) {
       return null;
     }

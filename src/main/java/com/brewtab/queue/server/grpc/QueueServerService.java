@@ -1,4 +1,7 @@
-package com.brewtab.queue.server;
+package com.brewtab.queue.server.grpc;
+
+import static com.google.protobuf.util.Timestamps.fromMillis;
+import static com.google.protobuf.util.Timestamps.toMillis;
 
 import com.brewtab.queue.Api.CompactQueueRequest;
 import com.brewtab.queue.Api.DequeueRequest;
@@ -10,7 +13,11 @@ import com.brewtab.queue.Api.QueueInfo;
 import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
+import com.brewtab.queue.Api.Stats;
 import com.brewtab.queue.QueueServerGrpc;
+import com.brewtab.queue.server.Queue;
+import com.brewtab.queue.server.QueueService;
+import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.Empty;
 import io.grpc.Status;
@@ -18,42 +25,24 @@ import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.Callable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   private static final Logger logger = LoggerFactory.getLogger(QueueServerService.class);
-  private final QueueFactory queueFactory;
-  private final Map<String, Queue> queues;
+  private final QueueService svc;
 
-  public QueueServerService(QueueFactory queueFactory) {
-    this(queueFactory, Collections.emptyMap());
-  }
-
-  public QueueServerService(QueueFactory queueFactory, Map<String, Queue> initialQueues) {
-    this.queueFactory = queueFactory;
-    this.queues = new HashMap<>(initialQueues);
+  public QueueServerService(QueueService svc) {
+    this.svc = svc;
   }
 
   private synchronized Queue getQueue(String queueName) {
-    Queue queue = queues.get(queueName);
+    Queue queue = svc.getQueue(queueName);
     if (queue == null) {
       throw Status.NOT_FOUND
           .withDescription("no such queue, " + queueName)
           .asRuntimeException();
-    }
-    return queue;
-  }
-
-  private synchronized Queue getOrCreateQueue(String queueName) throws IOException {
-    Queue queue = queues.get(queueName);
-    if (queue == null) {
-      queue = queueFactory.createQueue(queueName);
-      queues.put(queueName, queue);
     }
     return queue;
   }
@@ -66,11 +55,14 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getOrCreateQueue(queueName);
-    Item item = queue.enqueue(request);
+    Queue queue = svc.getOrCreateQueue(queueName);
+    var item = queue.enqueue(
+        request.getValue(),
+        request.hasDeadline() ? ImmutableTimestamp.of(toMillis(request.getDeadline())) : null);
+
     return EnqueueResponse.newBuilder()
-        .setId(item.getId())
-        .setDeadline(item.getDeadline())
+        .setId(item.id())
+        .setDeadline(fromMillis(item.deadline().millis()))
         .build();
   }
 
@@ -109,13 +101,25 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   Item dequeue(DequeueRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-    Item item = queue.dequeue();
+
+    var item = queue.dequeue();
     if (item == null) {
       throw Status.NOT_FOUND
           .withDescription("no items ready")
           .asRuntimeException();
     }
-    return item;
+
+    // Convert to API model
+    return Item.newBuilder()
+        .setDeadline(fromMillis(item.deadline().millis()))
+        .setId(item.id())
+        .setStats(Stats.newBuilder()
+            .setDequeueCount(item.stats().dequeueCount())
+            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+            .build())
+        .setValue(item.value())
+        .build();
   }
 
   @Override
@@ -127,7 +131,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   Empty release(ReleaseRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-    queue.release(request);
+    queue.release(request.getId());
     return Empty.getDefaultInstance();
   }
 
@@ -140,7 +144,12 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   RequeueResponse requeue(RequeueRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-    return queue.requeue(request);
+    var deadline = request.hasDeadline()
+        ? ImmutableTimestamp.of(toMillis(request.getDeadline()))
+        : null;
+    // TODO: Return updated deadline
+    var newDeadlineMillis = queue.requeue(request.getId(), deadline).millis();
+    return RequeueResponse.newBuilder().build();
   }
 
   @Override
@@ -155,10 +164,11 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   QueueInfo getQueueInfo(GetQueueInfoRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-
-    return queue.getQueueInfo(request)
-        .toBuilder()
+    var info = queue.getQueueInfo();
+    return QueueInfo.newBuilder()
         .setName(queueName)
+        .setPending(info.pendingCount())
+        .setDequeued(info.dequeuedCount())
         .build();
   }
 

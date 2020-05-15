@@ -1,4 +1,4 @@
-package com.brewtab.queue.server;
+package com.brewtab.queue.server.grpc;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
@@ -10,6 +10,11 @@ import com.brewtab.queue.Api.Item;
 import com.brewtab.queue.Api.ReleaseRequest;
 import com.brewtab.queue.Api.RequeueRequest;
 import com.brewtab.queue.Api.RequeueResponse;
+import com.brewtab.queue.server.InMemoryWorkingSet;
+import com.brewtab.queue.server.QueueFactory;
+import com.brewtab.queue.server.QueueService;
+import com.brewtab.queue.server.StandardIdGenerator;
+import com.brewtab.queue.server.StaticIOWorkerPool;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
@@ -40,7 +45,8 @@ public class QueueServerServiceTest {
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    QueueServerService service = new QueueServerService(queueFactory);
+    var queueService = new QueueService(queueFactory);
+    QueueServerService service = new QueueServerService(queueService);
 
     var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
     var n = 1_000_000;
@@ -68,7 +74,8 @@ public class QueueServerServiceTest {
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    QueueServerService service = new QueueServerService(queueFactory);
+    var queueService = new QueueService(queueFactory);
+    QueueServerService service = new QueueServerService(queueService);
 
     var value = ByteString.copyFromUtf8("Hello, world!");
     EnqueueResponse resp = service.enqueue(EnqueueRequest.newBuilder()
@@ -121,7 +128,8 @@ public class QueueServerServiceTest {
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
     var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    QueueServerService service = new QueueServerService(queueFactory);
+    var queueService = new QueueService(queueFactory);
+    QueueServerService service = new QueueServerService(queueService);
     var queueName = "test-queue-" + System.currentTimeMillis();
 
     var start = Instant.now();
