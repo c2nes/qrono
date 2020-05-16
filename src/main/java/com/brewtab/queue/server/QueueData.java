@@ -6,6 +6,7 @@ import com.brewtab.queue.server.IOScheduler.Parameters;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableItem;
+import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Verify;
@@ -207,20 +208,21 @@ public class QueueData implements Closeable {
     // If item is non-null then this is a pending entry
     var item = entry.item();
     if (item != null && entry.key().compareTo(last) < 0) {
-      var newDeadline = last.deadline();
+      var lastDeadline = last.deadline();
+
+      // Move the deadline only as far forward as is needed to ensure "last" will precede "entry".
+      var newDeadline = entry.key().id() < last.id()
+          ? ImmutableTimestamp.of(lastDeadline.millis() + 1)
+          : lastDeadline;
+
       var newItem = ImmutableItem.builder()
           .from(item)
           .deadline(newDeadline)
           .build();
       var newEntry = Entry.newPendingEntry(newItem);
 
-      // If the item still compares less after adjusting the deadline then the item
-      // ID must have gone backwards (which should never happen).
-      // TODO: This could happen with a requeue, right? How should we handle it?
-      //  Advance the deadline by 1ms? Assign new IDs when requeueing?
-      Verify.verify(last.compareTo(newEntry.key()) < 0,
-          "Pending item ID went backwards! %s < %s",
-          newDeadline, last.deadline());
+      // Verify that ordering is now correct
+      Verify.verify(last.compareTo(newEntry.key()) < 0);
 
       return newEntry;
     }

@@ -21,10 +21,9 @@ public class MergedSegmentReader implements SegmentReader {
   private static final Comparator<SegmentReader> COMPARATOR =
       Comparator.comparing(SegmentReader::peek);
 
-  // TODO: Rename this segments and segments to "readers"
-  private final Map<SegmentName, Segment> allSegments = new HashMap<>();
-  private final Map<SegmentName, SegmentReader> namedReaders = new HashMap<>();
-  private final PriorityQueue<SegmentReader> segments = new PriorityQueue<>(COMPARATOR);
+  private final Map<SegmentName, Segment> segments = new HashMap<>();
+  private final PriorityQueue<SegmentReader> readers = new PriorityQueue<>(COMPARATOR);
+  private final Map<SegmentName, SegmentReader> readersByName = new HashMap<>();
   private final LongAdder headSwitches = new LongAdder();
 
   private SegmentReader head = null;
@@ -37,18 +36,18 @@ public class MergedSegmentReader implements SegmentReader {
 
   private void updateHead() throws IOException {
     if (head == null) {
-      head = segments.poll();
+      head = readers.poll();
       headSwitches.increment();
     } else if (head.peek() == null) {
       // Note, head will still be in namedReaders
       head.close();
-      head = segments.poll();
+      head = readers.poll();
       headSwitches.increment();
     } else {
-      var next = segments.peek();
+      var next = readers.peek();
       if (next != null && COMPARATOR.compare(next, head) < 0) {
-        segments.add(head);
-        head = segments.poll();
+        readers.add(head);
+        head = readers.poll();
         headSwitches.increment();
       }
     }
@@ -59,15 +58,15 @@ public class MergedSegmentReader implements SegmentReader {
 
     // If peek is non-null then reinsert into the heap
     if (reader.peek() != null) {
-      allSegments.put(segment.name(), segment);
-      namedReaders.put(segment.name(), reader);
-      segments.add(reader);
+      segments.put(segment.name(), segment);
+      readers.add(reader);
+      readersByName.put(segment.name(), reader);
 
       if (next != null) {
         // We've buffered an entry in `next`, but we can no longer assume
-        // it is in fact the next entry. Push it back into segments by
+        // it is in fact the next entry. Push it back into readers by
         // wrapping it in a single entry reader.
-        segments.add(new SingleEntryReader(next));
+        readers.add(new SingleEntryReader(next));
         next = null;
       }
 
@@ -82,9 +81,9 @@ public class MergedSegmentReader implements SegmentReader {
       Segment newSegment,
       Key position
   ) throws IOException {
-    // Put head back into segments so we don't have to handle it separately
+    // Put head back into readers so we don't have to handle it separately
     if (head != null) {
-      segments.add(head);
+      readers.add(head);
       head = null;
     }
 
@@ -93,10 +92,10 @@ public class MergedSegmentReader implements SegmentReader {
         .collect(Collectors.toSet());
 
     for (SegmentName name : names) {
-      allSegments.remove(name);
-      var reader = namedReaders.remove(name);
+      segments.remove(name);
+      var reader = readersByName.remove(name);
       if (reader != null) {
-        if (segments.remove(reader)) {
+        if (readers.remove(reader)) {
           reader.close();
         }
       }
@@ -106,7 +105,7 @@ public class MergedSegmentReader implements SegmentReader {
   }
 
   public synchronized Collection<Segment> getSegments() {
-    return unmodifiableCollection(allSegments.values());
+    return unmodifiableCollection(segments.values());
   }
 
   private Entry.Key rawPeek() {
@@ -177,7 +176,7 @@ public class MergedSegmentReader implements SegmentReader {
 
   @Override
   public synchronized void close() throws IOException {
-    for (SegmentReader segment : segments) {
+    for (SegmentReader segment : readers) {
       segment.close();
     }
     if (head != null) {

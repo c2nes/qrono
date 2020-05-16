@@ -131,7 +131,15 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   Empty release(ReleaseRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-    queue.release(request.getId());
+
+    try {
+      queue.release(request.getId());
+    } catch (IllegalStateException e) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(e.getMessage())
+          .asRuntimeException();
+    }
+
     return Empty.getDefaultInstance();
   }
 
@@ -147,9 +155,17 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     var deadline = request.hasDeadline()
         ? ImmutableTimestamp.of(toMillis(request.getDeadline()))
         : null;
-    // TODO: Return updated deadline
-    var newDeadlineMillis = queue.requeue(request.getId(), deadline).millis();
-    return RequeueResponse.newBuilder().build();
+
+    try {
+      var newDeadlineMillis = queue.requeue(request.getId(), deadline).millis();
+      return RequeueResponse.newBuilder()
+          .setDeadline(fromMillis(newDeadlineMillis))
+          .build();
+    } catch (IllegalStateException e) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(e.getMessage())
+          .asRuntimeException();
+    }
   }
 
   @Override

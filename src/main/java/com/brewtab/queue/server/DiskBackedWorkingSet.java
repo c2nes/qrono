@@ -162,7 +162,6 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     entries.put(entry.id, entry);
   }
 
-  // TODO: This isn't per-queue dummy!
   @Override
   public synchronized long size() {
     return entries.size();

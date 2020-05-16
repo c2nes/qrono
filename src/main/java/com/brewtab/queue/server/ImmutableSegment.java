@@ -91,7 +91,7 @@ public class ImmutableSegment implements Segment {
       Supplier<Key> liveReaderOffset
   ) throws IOException {
     var tmpPath = SegmentFiles.getTemporaryPath(path);
-    try (var output = FileChannel.open(tmpPath, WRITE, CREATE)) { // TODO:
+    try (var output = FileChannel.open(tmpPath, WRITE, CREATE)) {
       var writer = new Writer(output, source, liveReaderOffset);
 
       // Do the actual writing

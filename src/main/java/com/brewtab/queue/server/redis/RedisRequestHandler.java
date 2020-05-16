@@ -4,7 +4,6 @@ import com.brewtab.queue.server.QueueService;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Timestamp;
 import com.google.protobuf.ByteString;
-import io.grpc.StatusRuntimeException;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandler.Sharable;
@@ -107,7 +106,6 @@ public class RedisRequestHandler extends SimpleChannelInboundHandler<ArrayRedisM
       return;
     }
 
-    // TODO: Remove gRPC from Queue
     var response = new ArrayRedisMessage(List.of(
         new IntegerRedisMessage(item.id()),
         new IntegerRedisMessage(item.deadline().millis()),
@@ -162,7 +160,13 @@ public class RedisRequestHandler extends SimpleChannelInboundHandler<ArrayRedisM
       return;
     }
 
-    deadline = queue.requeue(id, deadline);
+    try {
+      deadline = queue.requeue(id, deadline);
+    } catch (IllegalStateException e) {
+      ctx.writeAndFlush(new ErrorRedisMessage("ERR item not dequeued"));
+      return;
+    }
+
     ctx.writeAndFlush(new IntegerRedisMessage(deadline.millis()));
   }
 
@@ -188,7 +192,12 @@ public class RedisRequestHandler extends SimpleChannelInboundHandler<ArrayRedisM
       return;
     }
 
-    queue.release(id);
+    try {
+      queue.release(id);
+    } catch (IllegalStateException e) {
+      ctx.writeAndFlush(new ErrorRedisMessage("ERR item not dequeued"));
+      return;
+    }
 
     ctx.writeAndFlush(new SimpleStringRedisMessage("OK"));
   }
@@ -276,9 +285,6 @@ public class RedisRequestHandler extends SimpleChannelInboundHandler<ArrayRedisM
     try {
       handleMessage(ctx, msg.children());
     } catch (RedisRequestException e) {
-      ctx.writeAndFlush(new ErrorRedisMessage(e.getMessage()));
-    } catch (StatusRuntimeException e) {
-      // TODO: Should we StatusRuntimeException outside gRPC?
       ctx.writeAndFlush(new ErrorRedisMessage(e.getMessage()));
     }
   }

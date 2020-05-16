@@ -7,8 +7,10 @@ import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.QueueInfo;
 import com.brewtab.queue.server.data.Timestamp;
+import com.google.common.base.Verify;
 import com.google.protobuf.ByteString;
-import io.grpc.Status;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
 import java.time.Clock;
 import javax.annotation.Nullable;
@@ -18,13 +20,14 @@ public class Queue {
   private final IdGenerator idGenerator;
   private final Clock clock;
 
-  private final WorkingSet dequeued;
+  private final WorkingSet workingSet;
+  private final LongSet dequeuedIds = new LongOpenHashSet();
 
-  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet dequeued) {
+  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet workingSet) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
-    this.dequeued = dequeued;
+    this.workingSet = workingSet;
   }
 
   public synchronized QueueLoadSummary load() throws IOException {
@@ -96,32 +99,41 @@ public class Queue {
             .build())
         .build();
 
-    dequeued.add(item);
+    workingSet.add(item);
+    dequeuedIds.add(item.id());
 
     return item;
   }
 
   public synchronized void release(long id) throws IOException {
-    // TODO: This doesn't validate that the item is for this queue!
-    var released = dequeued.removeForRelease(id);
-    if (released == null) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("item not dequeued")
-          .asRuntimeException();
+    if (!dequeuedIds.remove(id)) {
+      // TODO: Consider using a more specific exception here
+      throw new IllegalStateException("item not dequeued");
     }
 
-    data.write(Entry.newTombstoneEntry(released));
+    var released = workingSet.removeForRelease(id);
+    Verify.verifyNotNull(released, "item missing from working set");
+    var success = false;
+
+    try {
+      data.write(Entry.newTombstoneEntry(released));
+      success = true;
+    } finally {
+      if (!success) {
+        // TODO: We don't have the item...what should we do?
+        // workingSet.add(item);
+        dequeuedIds.add(id);
+      }
+    }
   }
 
   public synchronized Timestamp requeue(long id, @Nullable Timestamp deadline) throws IOException {
-    // TODO: This doesn't validate that the item is for this queue!
-    var item = dequeued.removeForRequeue(id);
-    if (item == null) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("item not dequeued")
-          .asRuntimeException();
+    if (!dequeuedIds.remove(id)) {
+      throw new IllegalStateException("item not dequeued");
     }
 
+    var item = workingSet.removeForRequeue(id);
+    Verify.verifyNotNull(item, "item missing from working set");
     var success = false;
 
     try {
@@ -149,14 +161,15 @@ public class Queue {
       return entry.key().deadline();
     } finally {
       if (!success) {
-        dequeued.add(item);
+        workingSet.add(item);
+        dequeuedIds.add(id);
       }
     }
   }
 
   public synchronized QueueInfo getQueueInfo() {
     long totalSize = data.getQueueSize();
-    long dequeuedSize = dequeued.size();
+    long dequeuedSize = dequeuedIds.size();
     long pendingSize = totalSize - dequeuedSize;
     return ImmutableQueueInfo.builder()
         .pendingCount(pendingSize)

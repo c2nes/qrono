@@ -99,6 +99,7 @@ message RequeueRequest {
 }
 
 message RequeueResponse {
+  google.protobuf.Timestamp deadline = 1;
 }
 
 message ReleaseRequest {
