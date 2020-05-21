@@ -10,7 +10,6 @@ import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.QueueInfo;
 import com.brewtab.queue.server.data.Timestamp;
 import com.google.common.base.Throwables;
-import com.google.common.base.Verify;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
 import com.lmax.disruptor.EventHandler;
@@ -30,6 +29,9 @@ import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+// TODO: When we "drop" a queue we'll need to ensure we clear its entries from the
+//   working set. Alternatively, we could that no items are dequeued when dropping
+//   a queue (i.e. make it the user's responsibility).
 public class Queue {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
 
@@ -213,6 +215,13 @@ public class Queue {
     // For internal use
     private int _resultIdx = -1;
     private int _size = 0;
+    // Error to be set on the result future _unless_ the batch write fails.
+    // We defer sending this error because it may be inaccurate if previous requests
+    // within the same batch fail. For instance, if a batch contains duplicate release
+    // operations then the first should succeed while the second should return an
+    // "item not dequeued" error. If the batch write fails then this error message may
+    // be misleading.
+    private Throwable _deferredError = null;
 
     @Override
     public void prepareRequest(List<? super Entry> batch) {
@@ -242,21 +251,33 @@ public class Queue {
       op = null;
       _resultIdx = -1;
       _size = 0;
+      _deferredError = null;
     }
 
     abstract class AbstractOp implements Op {
       @Override
       public final void takeResult(List<? extends Entry> results) {
-        if (_resultIdx >= 0) {
-          result.complete(results.get(_resultIdx));
+        if (_deferredError != null) {
+          takeResult(_deferredError);
+        } else {
+          if (_resultIdx >= 0) {
+            result.complete(results.get(_resultIdx));
+          }
+          onSuccess();
         }
       }
 
+
       @Override
       public final void takeResult(Throwable ex) {
-        if (_resultIdx >= 0) {
-          result.completeExceptionally(ex);
-        }
+        result.completeExceptionally(ex);
+        onFailure();
+      }
+
+      void onSuccess() {
+      }
+
+      void onFailure() {
       }
 
       @Override
@@ -288,29 +309,41 @@ public class Queue {
     class Release extends AbstractOp {
       private long id;
 
+      // For internal use
+      private WorkingSet.ItemRef _item = null;
+
+      @Override
+      void onSuccess() {
+        if (_item != null) {
+          _item.release();
+        }
+      }
+
+      @Override
+      void onFailure() {
+        if (_item != null) {
+          // TODO: Access to dequeuedIds sill needs to be synchronized!!!
+          dequeuedIds.add(id);
+        }
+      }
+
       @Override
       public void prepareRequest(List<? super Entry> batch) {
-        synchronized (Queue.this) {
-          if (!dequeuedIds.remove(id)) {
+        try {
+          var item = workingSet.get(id);
+          if (item == null || !dequeuedIds.remove(id)) {
             // TODO: Consider using a more specific exception here
-            result.completeExceptionally(new IllegalStateException("item not dequeued"));
+            _deferredError = new IllegalStateException("item not dequeued");
             return;
           }
-        }
 
-        // TODO: Defer workingSet removal until tombstone write is successful.
-        //  We need the key returned by the workingSet :(
-
-        try {
-          var released = workingSet.removeForRelease(id);
-          Verify.verifyNotNull(released, "item missing from working set");
-
-          var tombstone = Entry.newTombstoneEntry(released);
-
+          var tombstone = Entry.newTombstoneEntry(item.key());
           batch.add(tombstone);
           _resultIdx = batch.size() - 1;
           _size = entrySize(tombstone);
+          _item = item;
         } catch (IOException e) {
+          // TODO: Re-add id to dequeuedIds?
           result.completeExceptionally(e);
         }
       }
@@ -318,6 +351,7 @@ public class Queue {
       @Override
       public void reset() {
         id = 0;
+        _item = null;
       }
     }
 
@@ -326,20 +360,36 @@ public class Queue {
       private Timestamp requeueTime;
       private Timestamp deadline;
 
+      // For internal use
+      private WorkingSet.ItemRef _item = null;
+
+      @Override
+      void onSuccess() {
+        if (_item != null) {
+          _item.release();
+        }
+      }
+
+      @Override
+      void onFailure() {
+        if (_item != null) {
+          // TODO: Access to dequeuedIds sill needs to be synchronized!!!
+          dequeuedIds.add(id);
+        }
+      }
+
       @Override
       public void prepareRequest(List<? super Entry> batch) {
-        synchronized (Queue.this) {
-          if (!dequeuedIds.remove(id)) {
-            result.completeExceptionally(new IllegalStateException("item not dequeued"));
+        try {
+          var itemRef = workingSet.get(id);
+          if (itemRef == null || !dequeuedIds.remove(id)) {
+            // TODO: Consider using a more specific exception here
+            _deferredError = new IllegalStateException("item not dequeued");
             return;
           }
-        }
 
-        try {
-          var item = workingSet.removeForRequeue(id);
-          Verify.verifyNotNull(item, "item missing from working set");
-
-          var tombstone = Entry.newTombstoneEntry(item);
+          var item = itemRef.item();
+          var tombstone = Entry.newTombstoneEntry(itemRef.key());
           var requeue = Entry.newPendingEntry(ImmutableItem.builder()
               .from(item)
               .deadline(deadline)
@@ -353,7 +403,9 @@ public class Queue {
           batch.add(tombstone);
           _resultIdx = batch.size() - 2;
           _size = entrySize(requeue) + entrySize(tombstone);
+          _item = itemRef;
         } catch (IOException e) {
+          // TODO: Re-add id to dequeuedIds?
           result.completeExceptionally(e);
         }
       }
@@ -363,6 +415,7 @@ public class Queue {
         id = 0;
         requeueTime = null;
         deadline = null;
+        _item = null;
       }
     }
   }

@@ -1,5 +1,7 @@
 package com.brewtab.queue.server;
 
+import com.brewtab.queue.server.data.Entry;
+import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.Item;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -18,12 +20,27 @@ public class InMemoryWorkingSet implements WorkingSet {
   }
 
   @Override
-  public Item get(long id) {
-    return items.get(id);
-  }
+  public ItemRef get(long id) {
+    var item = items.get(id);
+    if (item == null) {
+      return null;
+    }
 
-  @Override
-  public Item removeForRequeue(long id) {
-    return items.remove(id);
+    return new ItemRef() {
+      @Override
+      public Key key() {
+        return Entry.newTombstoneKey(item);
+      }
+
+      @Override
+      public Item item() {
+        return item;
+      }
+
+      @Override
+      public boolean release() {
+        return items.remove(id) != null;
+      }
+    };
   }
 }

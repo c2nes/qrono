@@ -176,7 +176,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   }
 
   @Override
-  public synchronized Item get(long id) {
+  public synchronized ItemRef get(long id) {
     Preconditions.checkState(isRunning());
 
     var entry = entries.get(id);
@@ -184,12 +184,40 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
       return null;
     }
 
-    Item item = entry.item.get();
-    if (item != null) {
-      return item;
-    }
+    var entryFile = entryFile(entry);
 
-    return entryFile(entry).get(entry);
+    return new ItemRef() {
+      @Override
+      public Key key() {
+        return entry.toTombstoneKey();
+      }
+
+      @Override
+      public Item item() {
+        // TODO: This could be more fine grained
+        synchronized (DiskBackedWorkingSet.this) {
+          Item item = entry.item.get();
+          if (item != null) {
+            return item;
+          }
+
+          return entryFile.get(entry);
+        }
+      }
+
+      @Override
+      public boolean release() {
+        // TODO: This could be more fine grained? Maybe?
+        synchronized (DiskBackedWorkingSet.this) {
+          if (entries.remove(id) == null) {
+            return false;
+          }
+
+          removeFileEntry(entryFile, entry);
+          return true;
+        }
+      }
+    };
   }
 
   private void removeFileEntry(MappedFile file, WorkingItem entry) {
@@ -203,40 +231,6 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
         notifyAll();
       }
     }
-  }
-
-  @Override
-  public synchronized Item removeForRequeue(long id) {
-    Preconditions.checkState(isRunning());
-
-    var entry = entries.remove(id);
-    if (entry == null) {
-      return null;
-    }
-
-    var file = entryFile(entry);
-
-    var item = entry.item.get();
-    if (item == null) {
-      item = file.get(entry);
-    }
-
-    removeFileEntry(file, entry);
-
-    return item;
-  }
-
-  @Override
-  public synchronized Key removeForRelease(long id) {
-    Preconditions.checkState(isRunning());
-
-    var entry = entries.remove(id);
-    if (entry == null) {
-      return null;
-    }
-
-    removeFileEntry(entryFile(entry), entry);
-    return entry.toTombstoneKey();
   }
 
   long entryFileID(WorkingItem entry) {
