@@ -2,6 +2,7 @@ package com.brewtab.queue.server;
 
 import com.brewtab.queue.server.data.Entry;
 import java.io.IOException;
+import java.util.List;
 
 // TODO: Rename this...its not a true "Segment" anymore
 public interface WritableSegment extends SegmentReader {
@@ -13,7 +14,9 @@ public interface WritableSegment extends SegmentReader {
   /**
    * Add a new entry to the segment.
    */
-  Entry add(Entry entry) throws IOException;
+  void add(Entry entry) throws IOException;
+
+  void addAll(List<Entry> entries) throws IOException;
 
   long pendingCount();
 

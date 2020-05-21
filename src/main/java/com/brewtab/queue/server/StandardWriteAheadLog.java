@@ -1,28 +1,31 @@
 package com.brewtab.queue.server;
 
 import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.brewtab.queue.server.data.Entry;
-import com.brewtab.queue.server.data.ImmutableEntry;
-import com.brewtab.queue.server.data.ImmutableItem;
-import com.brewtab.queue.server.data.Item;
 import com.google.common.collect.ImmutableList;
-import com.google.protobuf.ByteString;
-import java.io.FileOutputStream;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.Unpooled;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.zip.Adler32;
 
 public class StandardWriteAheadLog implements WriteAheadLog {
   public static final Duration DEFAULT_SYNC_INTERVAL = Duration.ofSeconds(1);
 
+  private final PooledByteBufAllocator bufAllocator = PooledByteBufAllocator.DEFAULT;
+
   private final Path directory;
   private final SegmentName segmentName;
   private final Duration syncInterval;
-  private final FileOutputStream out;
+  private final FileChannel out;
   private Instant nextSyncDeadline;
 
   // TODO: Dependency inject Clock
@@ -34,7 +37,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
       Path directory,
       SegmentName segmentName,
       Duration syncInterval,
-      FileOutputStream out
+      FileChannel out
   ) {
     this.directory = directory;
     this.segmentName = segmentName;
@@ -45,20 +48,52 @@ public class StandardWriteAheadLog implements WriteAheadLog {
 
   @Override
   public void append(Entry entry) throws IOException {
-    // TODO: Buffer writes and re-use buffer
-    out.write(Encoding.toByteArray(entry));
+    append(List.of(entry));
+  }
+
+  @Override
+  public void append(List<Entry> entries) throws IOException {
+    if (entries.isEmpty()) {
+      return;
+    }
+
+    // [entries size:32][checksum:32]
+    int headerSize = 4 + 4;
+    int entriesSize = entries.stream()
+        .mapToInt(Encoding::entrySize)
+        .sum();
+
+    var buf = bufAllocator.buffer(headerSize + entriesSize);
+
+    try {
+      buf.writeInt(entriesSize);
+      buf.writerIndex(8); // We'll write the checksum later
+
+      for (Entry entry : entries) {
+        Encoding.writeEntry(buf, entry);
+      }
+
+      // Compute checksum
+      var xsum = new Adler32();
+      xsum.update(buf.nioBuffer(8, entriesSize));
+      buf.setInt(4, (int) xsum.getValue());
+
+      // Write entire buffer
+      buf.readBytes(out, headerSize + entriesSize);
+    } finally {
+      buf.release();
+    }
+
     Instant now = Instant.now();
     if (now.isAfter(nextSyncDeadline)) {
-      out.flush();
-      out.getFD().sync();
+      out.force(false);
       nextSyncDeadline = now.plus(syncInterval);
     }
   }
 
   @Override
   public void close() throws IOException {
-    out.flush();
-    out.getFD().sync();
+    out.force(false);
     out.close();
 
     Files.move(
@@ -74,42 +109,42 @@ public class StandardWriteAheadLog implements WriteAheadLog {
   public static WriteAheadLog create(Path directory, SegmentName segmentName, Duration syncInterval)
       throws IOException {
     var outputPath = SegmentFiles.getLogPath(directory, segmentName);
-    var output = new FileOutputStream(outputPath.toFile());
+    var output = FileChannel.open(outputPath, WRITE, CREATE);
     return new StandardWriteAheadLog(directory, segmentName, syncInterval, output);
   }
 
   public static List<Entry> read(Path path) throws IOException {
     // TODO: Handle corruption or at least truncated writes
     var entries = new ImmutableList.Builder<Entry>();
+    var buf = Unpooled.wrappedBuffer(Files.readAllBytes(path));
 
-    // TODO: Don't buffer the entire file in memory
-    // This log was for an in-memory segment so its reasonably safe
-    // to read it fully into memory. However, if we're sufficiently
-    // constrained on memory (e.g. the in-memory segment took more than
-    // half of available memory itself) then this may pose an issue.
-    var bytes = Files.readAllBytes(path);
-    var buffer = Encoding.wrapByteBuffer(bytes);
-
-    while (buffer.hasRemaining()) {
-      var encodedKey = Encoding.readKey(buffer);
-      var key = ImmutableEntry.Key.copyOf(encodedKey);
-      Item item = null;
-      if (encodedKey.entryType() == Entry.Type.PENDING) {
-        var stats = Encoding.readStats(buffer);
-        var valueLength = buffer.getInt();
-        var value = ByteString.copyFrom(buffer, valueLength);
-        item = ImmutableItem.builder()
-            .deadline(key.deadline())
-            .id(key.id())
-            .stats(stats)
-            .value(value)
-            .build();
+    while (buf.readableBytes() > 8) {
+      int size = buf.readInt();
+      int xsum = buf.readInt();
+      if (buf.readableBytes() < size) {
+        // TODO: Throw exception which wraps successfully read entries
+        throw new IOException("truncated");
       }
 
-      entries.add(ImmutableEntry.builder()
-          .key(key)
-          .item(item)
-          .build());
+      var computedXsum = new Adler32();
+      computedXsum.update(buf.nioBuffer(buf.readerIndex(), size));
+      int computed = ((int) computedXsum.getValue());
+      if (xsum != computed) {
+        // TODO: Throw exception wrapping succesfully read entries
+        // TODO: If there's still readable bytes then something has gone extra wrong
+        throw new IOException(String.format("checksum failure; %x != %x", xsum, computed));
+      }
+
+      // Read entries in this chunk
+      var endOfChunk = buf.readerIndex() + size;
+      while (buf.readerIndex() < endOfChunk) {
+        entries.add(Encoding.readEntry(buf));
+      }
+    }
+
+    // Shouldn't be any readable bytes left
+    if (buf.isReadable()) {
+      throw new IOException("truncated");
     }
 
     return entries.build();

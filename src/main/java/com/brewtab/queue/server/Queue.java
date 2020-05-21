@@ -1,5 +1,7 @@
 package com.brewtab.queue.server;
 
+import static com.brewtab.queue.server.Encoding.entrySize;
+
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableQueueInfo;
@@ -7,15 +9,30 @@ import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.QueueInfo;
 import com.brewtab.queue.server.data.Timestamp;
+import com.google.common.base.Throwables;
 import com.google.common.base.Verify;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
+import com.lmax.disruptor.EventHandler;
+import com.lmax.disruptor.EventTranslatorThreeArg;
+import com.lmax.disruptor.EventTranslatorTwoArg;
+import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.dsl.Disruptor;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Queue {
+  private static final Logger log = LoggerFactory.getLogger(Queue.class);
+
   private final QueueData data;
   private final IdGenerator idGenerator;
   private final Clock clock;
@@ -23,52 +40,84 @@ public class Queue {
   private final WorkingSet workingSet;
   private final LongSet dequeuedIds = new LongOpenHashSet();
 
+  private final EventHandler<Op> batchOpHandler = new EventHandler<>() {
+    private final List<Op> ops = new ArrayList<>();
+    private final List<Entry> entries = new ArrayList<>();
+    private int entriesSizeBytes = 0;
+
+    @Override
+    public void onEvent(Op op, long sequence, boolean endOfBatch) {
+      ops.add(op);
+      op.prepareRequest(entries);
+      entriesSizeBytes += op.sizeBytes();
+
+      // TODO: Make this configurable
+      if (entriesSizeBytes > 1024 * 1024 || endOfBatch) {
+        flushBatch();
+      }
+    }
+
+    private void flushBatch() {
+      log.trace("Flushing batch; opsSize={}, entriesSize={}, entriesSizeBytes={}",
+          ops.size(), entries.size(), entriesSizeBytes);
+
+      try {
+        var results = data.write(entries);
+        ops.forEach(op -> op.takeResult(results));
+      } catch (Exception e) {
+        ops.forEach(op -> op.takeResult(e));
+      } finally {
+        ops.forEach(Op::reset);
+        ops.clear();
+        entries.clear();
+        entriesSizeBytes = 0;
+      }
+    }
+  };
+
+  private final RingBuffer<OpHolder> opBuffer;
+  private final EnqueueTranslator enqueueTranslator = new EnqueueTranslator();
+  private final ReleaseTranslator releaseTranslator = new ReleaseTranslator();
+  private final RequeueTranslator requeueTranslator = new RequeueTranslator();
+
   public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet workingSet) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
     this.workingSet = workingSet;
+    opBuffer = buildRingBuffer();
   }
 
   public synchronized QueueLoadSummary load() throws IOException {
     return data.load();
   }
 
-  public synchronized Item enqueue(ByteString value, @Nullable Timestamp deadline)
-      throws IOException {
-    var enqueueTime = ImmutableTimestamp.of(clock.millis());
-    if (deadline == null) {
-      deadline = enqueueTime;
+  private RingBuffer<OpHolder> buildRingBuffer() {
+    Disruptor<OpHolder> disruptor = new Disruptor<>(
+        OpHolder::new,
+        1024,
+        new ThreadFactoryBuilder()
+            .setDaemon(true)
+            .setNameFormat("QueueDisruptor-%d")
+            .build());
+
+    disruptor.handleEventsWith(batchOpHandler);
+    return disruptor.start();
+  }
+
+  public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
+    var result = new CompletableFuture<Entry>();
+    opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
+    return result.thenApply(Entry::item);
+  }
+
+  public Item enqueue(ByteString value, @Nullable Timestamp deadline) throws IOException {
+    try {
+      return enqueueAsync(value, deadline).join();
+    } catch (CompletionException e) {
+      Throwables.propagateIfPossible(e.getCause(), IOException.class);
+      throw new RuntimeException(e);
     }
-
-    // Invariant: Entries must be written in ID order.
-    //
-    // Solution: This method is synchronized so ID generation and entry writing
-    //  are performed atomically.
-
-    long id = idGenerator.generateId();
-
-    var requestedItem = ImmutableItem.builder()
-        .deadline(deadline)
-        .id(id)
-        .stats(ImmutableItem.Stats.builder()
-            .dequeueCount(0)
-            .enqueueTime(enqueueTime)
-            .requeueTime(Timestamp.ZERO)
-            .build())
-        .value(value)
-        .build();
-
-    var entry = data.write(Entry.newPendingEntry(requestedItem));
-
-    // data.write() may adjust the item deadline
-    var item = entry.item();
-
-    // Help out the linter
-    assert item != null : "pending entries have non-null items";
-
-    // Build API response object
-    return item;
   }
 
   public synchronized Item dequeue() throws IOException {
@@ -105,65 +154,36 @@ public class Queue {
     return item;
   }
 
-  public synchronized void release(long id) throws IOException {
-    if (!dequeuedIds.remove(id)) {
-      // TODO: Consider using a more specific exception here
-      throw new IllegalStateException("item not dequeued");
-    }
+  public CompletableFuture<Void> releaseAsync(long id) {
+    var result = new CompletableFuture<Entry>();
+    opBuffer.publishEvent(releaseTranslator, result, id);
 
-    var released = workingSet.removeForRelease(id);
-    Verify.verifyNotNull(released, "item missing from working set");
-    var success = false;
+    return result.thenRun(() -> {
+      // Convert from CompletableFuture<Entry> to CF<Void>
+    });
+  }
 
+  public void release(long id) throws IOException {
     try {
-      data.write(Entry.newTombstoneEntry(released));
-      success = true;
-    } finally {
-      if (!success) {
-        // TODO: We don't have the item...what should we do?
-        // workingSet.add(item);
-        dequeuedIds.add(id);
-      }
+      releaseAsync(id).join();
+    } catch (CompletionException e) {
+      Throwables.propagateIfPossible(e.getCause(), IOException.class);
+      throw new RuntimeException(e);
     }
   }
 
-  public synchronized Timestamp requeue(long id, @Nullable Timestamp deadline) throws IOException {
-    if (!dequeuedIds.remove(id)) {
-      throw new IllegalStateException("item not dequeued");
-    }
+  public CompletableFuture<Timestamp> requeueAsync(long id, @Nullable Timestamp deadline) {
+    var result = new CompletableFuture<Entry>();
+    opBuffer.publishEvent(requeueTranslator, result, id, deadline);
+    return result.thenApply(entry -> entry.key().deadline());
+  }
 
-    var item = workingSet.removeForRequeue(id);
-    Verify.verifyNotNull(item, "item missing from working set");
-    var success = false;
-
+  public Timestamp requeue(long id, @Nullable Timestamp deadline) throws IOException {
     try {
-      var tombstone = Entry.newTombstoneEntry(item);
-      var requeueTime = ImmutableTimestamp.of(clock.millis());
-
-      if (deadline == null) {
-        deadline = requeueTime;
-      }
-
-      var newItem = ImmutableItem.builder()
-          .from(item)
-          .deadline(deadline)
-          .stats(ImmutableItem.Stats.builder()
-              .from(item.stats())
-              .requeueTime(requeueTime)
-              .build())
-          .build();
-
-      // TODO: Commit these atomically
-      var entry = data.write(Entry.newPendingEntry(newItem));
-      data.write(tombstone);
-      success = true;
-
-      return entry.key().deadline();
-    } finally {
-      if (!success) {
-        workingSet.add(item);
-        dequeuedIds.add(id);
-      }
+      return requeueAsync(id, deadline).join();
+    } catch (CompletionException e) {
+      Throwables.propagateIfPossible(e.getCause(), IOException.class);
+      throw new RuntimeException(e);
     }
   }
 
@@ -179,5 +199,250 @@ public class Queue {
 
   public void runTestCompaction() throws IOException {
     data.runTestCompaction();
+  }
+
+  class OpHolder implements Op {
+    private final Enqueue enqueue = new Enqueue();
+    private final Release release = new Release();
+    private final Requeue requeue = new Requeue();
+
+    private Op op = null;
+
+    private CompletableFuture<Entry> result;
+
+    // For internal use
+    private int _resultIdx = -1;
+    private int _size = 0;
+
+    @Override
+    public void prepareRequest(List<? super Entry> batch) {
+      op.prepareRequest(batch);
+    }
+
+    @Override
+    public void takeResult(List<? extends Entry> results) {
+      op.takeResult(results);
+    }
+
+    @Override
+    public void takeResult(Throwable throwable) {
+      op.takeResult(throwable);
+    }
+
+    @Override
+    public int sizeBytes() {
+      return op.sizeBytes();
+    }
+
+    @Override
+    public void reset() {
+      enqueue.reset();
+      release.reset();
+      requeue.reset();
+      op = null;
+      _resultIdx = -1;
+      _size = 0;
+    }
+
+    abstract class AbstractOp implements Op {
+      @Override
+      public final void takeResult(List<? extends Entry> results) {
+        if (_resultIdx >= 0) {
+          result.complete(results.get(_resultIdx));
+        }
+      }
+
+      @Override
+      public final void takeResult(Throwable ex) {
+        if (_resultIdx >= 0) {
+          result.completeExceptionally(ex);
+        }
+      }
+
+      @Override
+      public final int sizeBytes() {
+        return _size;
+      }
+    }
+
+    class Enqueue extends AbstractOp {
+      private final ImmutableItem.Builder pendingBuilder = ImmutableItem.builder();
+
+      @Override
+      public void prepareRequest(List<? super Entry> batch) {
+        var pending = Entry.newPendingEntry(pendingBuilder
+            .id(idGenerator.generateId())
+            .build());
+        batch.add(pending);
+        _resultIdx = batch.size() - 1;
+        _size = entrySize(pending);
+      }
+
+      @Override
+      public void reset() {
+        pendingBuilder.value(ByteString.EMPTY);
+        _size = 0;
+      }
+    }
+
+    class Release extends AbstractOp {
+      private long id;
+
+      @Override
+      public void prepareRequest(List<? super Entry> batch) {
+        synchronized (Queue.this) {
+          if (!dequeuedIds.remove(id)) {
+            // TODO: Consider using a more specific exception here
+            result.completeExceptionally(new IllegalStateException("item not dequeued"));
+            return;
+          }
+        }
+
+        // TODO: Defer workingSet removal until tombstone write is successful.
+        //  We need the key returned by the workingSet :(
+
+        try {
+          var released = workingSet.removeForRelease(id);
+          Verify.verifyNotNull(released, "item missing from working set");
+
+          var tombstone = Entry.newTombstoneEntry(released);
+
+          batch.add(tombstone);
+          _resultIdx = batch.size() - 1;
+          _size = entrySize(tombstone);
+        } catch (IOException e) {
+          result.completeExceptionally(e);
+        }
+      }
+
+      @Override
+      public void reset() {
+        id = 0;
+      }
+    }
+
+    class Requeue extends AbstractOp {
+      private long id;
+      private Timestamp requeueTime;
+      private Timestamp deadline;
+
+      @Override
+      public void prepareRequest(List<? super Entry> batch) {
+        synchronized (Queue.this) {
+          if (!dequeuedIds.remove(id)) {
+            result.completeExceptionally(new IllegalStateException("item not dequeued"));
+            return;
+          }
+        }
+
+        try {
+          var item = workingSet.removeForRequeue(id);
+          Verify.verifyNotNull(item, "item missing from working set");
+
+          var tombstone = Entry.newTombstoneEntry(item);
+          var requeue = Entry.newPendingEntry(ImmutableItem.builder()
+              .from(item)
+              .deadline(deadline)
+              .stats(ImmutableItem.Stats.builder()
+                  .from(item.stats())
+                  .requeueTime(requeueTime)
+                  .build())
+              .build());
+
+          batch.add(requeue);
+          batch.add(tombstone);
+          _resultIdx = batch.size() - 2;
+          _size = entrySize(requeue) + entrySize(tombstone);
+        } catch (IOException e) {
+          result.completeExceptionally(e);
+        }
+      }
+
+      @Override
+      public void reset() {
+        id = 0;
+        requeueTime = null;
+        deadline = null;
+      }
+    }
+  }
+
+  interface Op {
+    /**
+     * Prepares the request, adding entries to {@code batch} as required. Implementations should
+     * remember the indices of their batch entries as those will be required to retrieve results in
+     * {@link #takeResult(List)}
+     */
+    void prepareRequest(List<? super Entry> batch);
+
+    void takeResult(List<? extends Entry> results);
+
+    void takeResult(Throwable throwable);
+
+    /**
+     * Returns the approximate number of bytes this entry will write. This method may throw an
+     * exception or return an invalid result if called before {@link #prepareRequest(List)}.
+     */
+    int sizeBytes();
+
+    void reset();
+  }
+
+  class EnqueueTranslator implements
+      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, ByteString, Timestamp> {
+    @Override
+    public void translateTo(
+        OpHolder event,
+        long sequence,
+        CompletableFuture<Entry> result,
+        ByteString value,
+        Timestamp deadline
+    ) {
+      var enqueueTime = ImmutableTimestamp.of(clock.millis());
+      event.result = result;
+      event.op = event.enqueue;
+      event.enqueue.pendingBuilder
+          .deadline(deadline == null ? enqueueTime : deadline)
+          .stats(ImmutableItem.Stats.builder()
+              .dequeueCount(0)
+              .enqueueTime(enqueueTime)
+              .requeueTime(Timestamp.ZERO)
+              .build())
+          .value(value);
+    }
+  }
+
+  class ReleaseTranslator implements
+      EventTranslatorTwoArg<OpHolder, CompletableFuture<Entry>, Long> {
+    @Override
+    public void translateTo(
+        OpHolder event,
+        long sequence,
+        CompletableFuture<Entry> result,
+        Long id
+    ) {
+      event.result = result;
+      event.op = event.release;
+      event.release.id = id;
+    }
+  }
+
+  class RequeueTranslator implements
+      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, Long, Timestamp> {
+    @Override
+    public void translateTo(
+        OpHolder event,
+        long sequence,
+        CompletableFuture<Entry> result,
+        Long id,
+        Timestamp deadline
+    ) {
+      var requeueTime = ImmutableTimestamp.of(clock.millis());
+      event.result = result;
+      event.op = event.requeue;
+      event.requeue.id = id;
+      event.requeue.requeueTime = requeueTime;
+      event.requeue.deadline = deadline == null ? requeueTime : deadline;
+    }
   }
 }

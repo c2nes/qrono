@@ -8,6 +8,7 @@ import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.PriorityQueue;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -57,13 +58,7 @@ public class StandardWritableSegment implements WritableSegment {
     return name;
   }
 
-  @Override
-  public Entry add(Entry entry) throws IOException {
-    Preconditions.checkState(!frozen, "frozen");
-
-    checkEntryDeadline(entry);
-    wal.append(entry);
-
+  private void addToInMemoryState(Entry entry) {
     var item = entry.item();
     if (item != null) {
       pending.add(item);
@@ -73,8 +68,22 @@ public class StandardWritableSegment implements WritableSegment {
         tombstones.add(tombstone);
       }
     }
+  }
 
-    return entry;
+  @Override
+  public void add(Entry entry) throws IOException {
+    Preconditions.checkState(!frozen, "frozen");
+    checkEntryDeadline(entry);
+    wal.append(entry);
+    addToInMemoryState(entry);
+  }
+
+  @Override
+  public void addAll(List<Entry> entries) throws IOException {
+    Preconditions.checkState(!frozen, "frozen");
+    entries.forEach(this::checkEntryDeadline);
+    wal.append(entries);
+    entries.forEach(this::addToInMemoryState);
   }
 
   @Override

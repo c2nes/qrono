@@ -51,6 +51,10 @@ public class StaticIOWorkerPool extends AbstractIdleService implements IOSchedul
       } catch (Exception e) {
         // TODO: Need to do something here...maybe just kill the process?
         log.error("Unhandled exception while executing IO", e);
+      } catch (Error e) {
+        // TODO: Need to do something here...maybe just kill the process?
+        log.error("Unhandled error while executing IO", e);
+        throw e;
       }
     }
   }

@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -228,6 +229,33 @@ public class QueueData implements Closeable {
     }
 
     return entry;
+  }
+
+  private List<Entry> adjustEntryDeadlines(List<Entry> entries) {
+    List<Entry> updatedEntries = entries;
+    int i = 0;
+    for (Entry entry : entries) {
+      var updated = adjustEntryDeadline(entry);
+      if (updated != entry) {
+        if (updatedEntries == entries) {
+          // (Lazily) make mutable copy before updating
+          updatedEntries = new ArrayList<>(entries);
+        }
+        updatedEntries.set(i, updated);
+      }
+      i++;
+    }
+    return updatedEntries;
+  }
+
+  public List<Entry> write(List<Entry> entries) throws IOException {
+    synchronized (this) {
+      entries = adjustEntryDeadlines(entries);
+      currentSegment.addAll(entries);
+    }
+
+    checkFlushCurrentSegment();
+    return entries;
   }
 
   public Entry write(Entry entry) throws IOException {

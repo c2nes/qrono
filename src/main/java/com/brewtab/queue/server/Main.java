@@ -5,27 +5,15 @@ import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.Timestamp;
 import com.brewtab.queue.server.grpc.QueueServerService;
-import com.brewtab.queue.server.redis.RedisRequestHandler;
+import com.brewtab.queue.server.redis.RedisChannelInitializer;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.DecoderException;
-import io.netty.handler.codec.redis.ErrorRedisMessage;
-import io.netty.handler.codec.redis.RedisArrayAggregator;
-import io.netty.handler.codec.redis.RedisBulkStringAggregator;
-import io.netty.handler.codec.redis.RedisDecoder;
-import io.netty.handler.codec.redis.RedisEncoder;
-import io.netty.util.ReferenceCountUtil;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Verticle;
@@ -181,48 +169,11 @@ public class Main {
 
     var parentGroup = new NioEventLoopGroup();
     var childGroup = new NioEventLoopGroup();
-    var redisRequestHandler = new RedisRequestHandler(queueService);
     var redisServer = new ServerBootstrap()
         .group(parentGroup, childGroup)
         .channel(NioServerSocketChannel.class)
         .childOption(ChannelOption.SO_KEEPALIVE, true)
-        .childHandler(new ChannelInitializer<SocketChannel>() {
-          @Override
-          protected void initChannel(SocketChannel ch) throws Exception {
-            ch.pipeline().addLast(
-                new RedisEncoder(),
-                new RedisDecoder(),
-                new RedisBulkStringAggregator(),
-                new RedisArrayAggregator(),
-                redisRequestHandler,
-                // Fallback for non-array requests
-                new ChannelInboundHandlerAdapter() {
-                  @Override
-                  public void channelRead(ChannelHandlerContext ctx, Object msg) {
-                    try {
-                      ctx.writeAndFlush(new ErrorRedisMessage("ERR unknown command"));
-                    } finally {
-                      ReferenceCountUtil.release(msg);
-                    }
-                  }
-
-                  @Override
-                  public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                    if (cause instanceof DecoderException) {
-                      ctx.writeAndFlush(new ErrorRedisMessage("ERR protocol error"))
-                          .addListener(ChannelFutureListener.CLOSE);
-                    } else if (!ctx.channel().isActive()) {
-                      // TODO: This isn't working
-                      // Connection closed, log quietly?
-                      log.debug("Caught exception for closed channel", cause);
-                      ctx.close();
-                    } else {
-                      ctx.fireExceptionCaught(cause);
-                    }
-                  }
-                });
-          }
-        });
+        .childHandler(new RedisChannelInitializer(queueService));
 
     var channelFuture = redisServer.bind(16379).sync();
 
