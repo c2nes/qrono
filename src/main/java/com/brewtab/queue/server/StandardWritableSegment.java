@@ -4,7 +4,6 @@ import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.ImmutableEntry;
 import com.brewtab.queue.server.data.Item;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -92,13 +91,16 @@ public class StandardWritableSegment implements WritableSegment {
     frozen = true;
     wal.close();
 
-    var entries = new ArrayList<Entry>();
+    var entries = new ArrayList<Entry>(tombstones.size() + pending.size() + removed.size());
     for (Entry.Key tombstone : tombstones) {
       entries.add(ImmutableEntry.builder().key(tombstone).build());
     }
 
-    var pendingAndRemoved = Iterables.concat(pending, removed.values());
-    for (Item item : pendingAndRemoved) {
+    for (Item item : pending) {
+      entries.add(Entry.newPendingEntry(item));
+    }
+
+    for (Item item : removed.values()) {
       entries.add(Entry.newPendingEntry(item));
     }
 

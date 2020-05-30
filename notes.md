@@ -159,7 +159,6 @@ TODO:
 - How do we avoid re-reading large numbers of segment entries to cancel out
   tombstones?
 
-
 "Segment"
 - Summary information (# pending, # tombstone, max ID, etc)
 - Streaming entries (peek(), next())
@@ -219,3 +218,14 @@ SegmentStorage
 // - Merging segments
 
 ```
+
+# 2020-05-23
+
+Todo,
+- Delete queue support
+- Create queue support (explicit)
+- Persistent vs ephemeral queues (disappear when empty)
+- Configuration file
+- Profiling (enqueue, dequeue, requeue, release performance)
+- Convert queue data to Guava service; handle load in startUp
+- Automatic segment merging (ugh)

@@ -135,22 +135,21 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
 
-      var item = queue.dequeue();
-      if (item == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
+      return queue.dequeueAsync().thenApply(item -> {
+        if (item == null) {
+          return FullBulkStringRedisMessage.NULL_INSTANCE;
+        }
 
-      var response = new ArrayRedisMessage(List.of(
-          new IntegerRedisMessage(item.id()),
-          new IntegerRedisMessage(item.deadline().millis()),
-          new IntegerRedisMessage(item.stats().enqueueTime().millis()),
-          new IntegerRedisMessage(item.stats().requeueTime().millis()),
-          new IntegerRedisMessage(item.stats().dequeueCount()),
-          new FullBulkStringRedisMessage(
-              Unpooled.wrappedBuffer(item.value().asReadOnlyByteBuffer()))
-      ));
-
-      return completedFuture(response);
+        return new ArrayRedisMessage(List.of(
+            new IntegerRedisMessage(item.id()),
+            new IntegerRedisMessage(item.deadline().millis()),
+            new IntegerRedisMessage(item.stats().enqueueTime().millis()),
+            new IntegerRedisMessage(item.stats().requeueTime().millis()),
+            new IntegerRedisMessage(item.stats().dequeueCount()),
+            new FullBulkStringRedisMessage(
+                Unpooled.wrappedBuffer(item.value().asReadOnlyByteBuffer()))
+        ));
+      });
     }
 
     // REQUEUE queue id [DEADLINE milliseconds-timestamp]
@@ -194,13 +193,17 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
 
-      try {
-        deadline = queue.requeue(id, deadline);
-      } catch (IllegalStateException e) {
-        return completedFuture(new ErrorRedisMessage("ERR item not dequeued"));
-      }
+      return queue.requeueAsync(id, deadline).handle((updatedDeadline, ex) -> {
+        if (ex == null) {
+          return new IntegerRedisMessage(updatedDeadline.millis());
+        }
 
-      return completedFuture(new IntegerRedisMessage(deadline.millis()));
+        if (ex instanceof IllegalStateException) {
+          return new ErrorRedisMessage("ERR item not dequeued");
+        }
+
+        throw new CompletionException(ex);
+      });
     }
 
     // RELEASE queue id
@@ -225,13 +228,17 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
 
-      try {
-        queue.release(id);
-      } catch (IllegalStateException e) {
-        return completedFuture(new ErrorRedisMessage("ERR item not dequeued"));
-      }
+      return queue.releaseAsync(id).handle((_result, ex) -> {
+        if (ex == null) {
+          return new SimpleStringRedisMessage("OK");
+        }
 
-      return completedFuture(new SimpleStringRedisMessage("OK"));
+        if (ex instanceof IllegalStateException) {
+          return new ErrorRedisMessage("ERR item not dequeued");
+        }
+
+        throw new CompletionException(ex);
+      });
     }
 
     // INFO queue
@@ -248,12 +255,9 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
 
-      var info = queue.getQueueInfo();
-      var response = new ArrayRedisMessage(List.of(
+      return queue.getQueueInfoAsync().thenApply(info -> new ArrayRedisMessage(List.of(
           new IntegerRedisMessage(info.pendingCount()),
-          new IntegerRedisMessage(info.dequeuedCount())));
-
-      return completedFuture(response);
+          new IntegerRedisMessage(info.dequeuedCount()))));
     }
 
     private CompletableFuture<RedisMessage> handlePing(List<RedisMessage> args) {
@@ -345,8 +349,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         }
 
         // When complete release message and flush unblocked responses in the pipeline
-        future.thenRun(() -> flushCompletedResponses(ctx))
-            .whenComplete((result, e) -> ReferenceCountUtil.release(msg));
+        future.thenRunAsync(() -> flushCompletedResponses(ctx), ctx.executor())
+            .whenCompleteAsync((result, e) -> ReferenceCountUtil.release(msg), ctx.executor());
 
         // Release will happen on future completion
         release = false;

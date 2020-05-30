@@ -12,8 +12,8 @@ import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Verticle;
@@ -167,11 +167,11 @@ public class Main {
     // Netty Redis
     // -----------------------------------------------------------------------
 
-    var parentGroup = new NioEventLoopGroup();
-    var childGroup = new NioEventLoopGroup();
+    var parentGroup = new EpollEventLoopGroup();
+    var childGroup = new EpollEventLoopGroup();
     var redisServer = new ServerBootstrap()
         .group(parentGroup, childGroup)
-        .channel(NioServerSocketChannel.class)
+        .channel(EpollServerSocketChannel.class)
         .childOption(ChannelOption.SO_KEEPALIVE, true)
         .childHandler(new RedisChannelInitializer(queueService));
 
