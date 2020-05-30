@@ -20,7 +20,11 @@ public interface Segment {
   SegmentReader newReader(Entry.Key position) throws IOException;
 
   /**
-   * Size without other metadata
+   * Total number of entries. Equivalent to,
+   *
+   * <pre>
+   *   metadata().pendingCount() + metadata().tombstoneCount()
+   * </pre>
    */
   default long size() {
     var meta = metadata();

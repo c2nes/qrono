@@ -3,8 +3,10 @@ package com.brewtab.queue.server;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.ImmutableSegmentMetadata;
+import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import com.google.common.collect.ImmutableSortedSet;
+import javax.annotation.Nullable;
 
 public class InMemorySegment implements Segment {
   private final SegmentName name;
@@ -40,6 +42,29 @@ public class InMemorySegment implements Segment {
 
   @Override
   public SegmentReader newReader(Key position) {
-    return new InMemorySegmentReader(entries.tailSet(Entry.newTombstoneEntry(position), false));
+    return new InMemorySegmentReader(entries.tailSet(new KeyOnlyEntry(position), false));
+  }
+
+  /**
+   * Entry with only a key. Instances are not valid entries! This class exists so bare keys can be
+   * wrapped and used to obtain a tail set in {@link #newReader(Key)}.
+   */
+  private static class KeyOnlyEntry implements Entry {
+    private final Key key;
+
+    private KeyOnlyEntry(Key key) {
+      this.key = key;
+    }
+
+    @Override
+    public Key key() {
+      return key;
+    }
+
+    @Nullable
+    @Override
+    public Item item() {
+      throw new UnsupportedOperationException();
+    }
   }
 }

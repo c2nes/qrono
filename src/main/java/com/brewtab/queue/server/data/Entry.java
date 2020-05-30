@@ -44,11 +44,14 @@ public interface Entry extends Comparable<Entry> {
   }
 
   static Entry newTombstoneEntry(Key key) {
+    if (key.entryType() != Type.TOMBSTONE) {
+      key = ImmutableEntry.Key.builder()
+          .from(key)
+          .entryType(Type.TOMBSTONE)
+          .build();
+    }
     return ImmutableEntry.builder()
-        .key(ImmutableEntry.Key.builder()
-            .from(key)
-            .entryType(Type.TOMBSTONE)
-            .build())
+        .key(key)
         .build();
   }
 

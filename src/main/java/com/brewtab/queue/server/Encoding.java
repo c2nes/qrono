@@ -11,7 +11,6 @@ import com.brewtab.queue.server.data.Item;
 import com.google.protobuf.ByteString;
 import io.netty.buffer.ByteBuf;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import org.immutables.value.Value;
 
 @Value.Enclosing
@@ -29,50 +28,35 @@ final class Encoding {
   static final int FOOTER_SIZE = 8 + 8 + 8;
 
   static int writeStats(ByteBuffer bb, Item.Stats stats) {
-    long enqueueTime = stats.enqueueTime().millis();
-    long requeueTime = stats.requeueTime().millis();
-    int dequeueCount = stats.dequeueCount();
-
-    long upper = (enqueueTime << 16) | (requeueTime >>> 32);
-    long lower = (requeueTime << 32) | dequeueCount;
-    bb.putLong(upper);
-    bb.putLong(lower);
-
-    return STATS_SIZE;
+    return writeStats(BYTE_BUFFER, bb, stats);
   }
 
   static int writeStats(ByteBuf bb, Item.Stats stats) {
+    return writeStats(BYTE_BUF, bb, stats);
+  }
+
+  static <B> int writeStats(ByteBufferAdapter<B> adapter, B bb, Item.Stats stats) {
     long enqueueTime = stats.enqueueTime().millis();
     long requeueTime = stats.requeueTime().millis();
     int dequeueCount = stats.dequeueCount();
 
     long upper = (enqueueTime << 16) | (requeueTime >>> 32);
     long lower = (requeueTime << 32) | dequeueCount;
-    bb.writeLong(upper);
-    bb.writeLong(lower);
+    adapter.putLong(bb, upper);
+    adapter.putLong(bb, lower);
 
     return STATS_SIZE;
   }
 
   static Item.Stats readStats(ByteBuffer bb) {
-    long upper = bb.getLong();
-    long lower = bb.getLong();
-
-    long enqueueTime = upper >>> 16;
-    long requeueTime = ((upper & ((1L << 16) - 1)) << 32) | (lower >>> 32);
-    int dequeueCount = (int) (lower & ((1L << 32) - 1));
-
-    return ImmutableItem.Stats.builder()
-        .dequeueCount(dequeueCount)
-        .enqueueTime(ImmutableTimestamp.of(enqueueTime))
-        .requeueTime(ImmutableTimestamp.of(requeueTime))
-        .build();
+    return statsFromBits(bb.getLong(), bb.getLong());
   }
 
   static Item.Stats readStats(ByteBuf bb) {
-    long upper = bb.readLong();
-    long lower = bb.readLong();
+    return statsFromBits(bb.readLong(), bb.readLong());
+  }
 
+  static Item.Stats statsFromBits(long upper, long lower) {
     long enqueueTime = upper >>> 16;
     long requeueTime = ((upper & ((1L << 16) - 1)) << 32) | (lower >>> 32);
     int dequeueCount = (int) (lower & ((1L << 32) - 1));
@@ -85,50 +69,35 @@ final class Encoding {
   }
 
   static int writeKey(ByteBuffer bb, Entry.Key key) {
-    var deadline = key.deadline().millis();
-    var id = key.id();
-    var type = key.entryType();
-
-    long upper = (deadline << 2) | (id >>> 62);
-    long lower = (id << 2) | entryTypeToBits(type);
-    bb.putLong(upper);
-    bb.putLong(lower);
-
-    return KEY_SIZE;
+    return writeKey(BYTE_BUFFER, bb, key);
   }
 
   static int writeKey(ByteBuf bb, Entry.Key key) {
+    return writeKey(BYTE_BUF, bb, key);
+  }
+
+  static <B> int writeKey(ByteBufferAdapter<B> adapter, B bb, Entry.Key key) {
     var deadline = key.deadline().millis();
     var id = key.id();
     var type = key.entryType();
 
     long upper = (deadline << 2) | (id >>> 62);
     long lower = (id << 2) | entryTypeToBits(type);
-    bb.writeLong(upper);
-    bb.writeLong(lower);
+    adapter.putLong(bb, upper);
+    adapter.putLong(bb, lower);
 
     return KEY_SIZE;
   }
 
   static Entry.Key readKey(ByteBuffer bb) {
-    long upper = bb.getLong();
-    long lower = bb.getLong();
-
-    long deadline = (upper >>> 2) & ((1L << 48) - 1);
-    long id = (lower >>> 2) | ((upper & 0b11) << 62);
-    var type = entryTypeFromBits(((int) lower) & 0b11);
-
-    return ImmutableEntry.Key.builder()
-        .deadline(ImmutableTimestamp.of(deadline))
-        .id(id)
-        .entryType(type)
-        .build();
+    return keyFromBits(bb.getLong(), bb.getLong());
   }
 
   static Entry.Key readKey(ByteBuf bb) {
-    long upper = bb.readLong();
-    long lower = bb.readLong();
+    return keyFromBits(bb.readLong(), bb.readLong());
+  }
 
+  static Entry.Key keyFromBits(long upper, long lower) {
     long deadline = (upper >>> 2) & ((1L << 48) - 1);
     long id = (lower >>> 2) | ((upper & 0b11) << 62);
     var type = entryTypeFromBits(((int) lower) & 0b11);
@@ -201,25 +170,6 @@ final class Encoding {
     return Entry.newPendingEntry(item);
   }
 
-  static byte[] toByteArray(Entry entry) {
-    var item = entry.item();
-
-    if (item == null) {
-      var bytes = new byte[KEY_SIZE];
-      writeKey(wrapByteBuffer(bytes), entry.key());
-      return bytes;
-    }
-
-    var value = item.value();
-    var bytes = new byte[KEY_SIZE + STATS_SIZE + 4 + value.size()];
-    var buffer = wrapByteBuffer(bytes);
-    writeKey(buffer, entry.key());
-    writeStats(buffer, item.stats());
-    buffer.putInt(value.size());
-    value.copyTo(buffer);
-    return bytes;
-  }
-
   static Entry.Type entryTypeFromBits(int bits) {
     switch (bits) {
       case 0b00:
@@ -243,8 +193,34 @@ final class Encoding {
     throw new IllegalArgumentException("unsupported type");
   }
 
-  static ByteBuffer wrapByteBuffer(byte[] array) {
-    return ByteBuffer.wrap(array).order(ByteOrder.LITTLE_ENDIAN);
+  private static final ByteBufferAdapter<ByteBuffer> BYTE_BUFFER = new ByteBufferAdapter<>() {
+    @Override
+    public void putLong(ByteBuffer bb, long value) {
+      bb.putLong(value);
+    }
+
+    @Override
+    public long getLong(ByteBuffer bb) {
+      return bb.getLong();
+    }
+  };
+
+  private static final ByteBufferAdapter<ByteBuf> BYTE_BUF = new ByteBufferAdapter<>() {
+    @Override
+    public void putLong(ByteBuf bb, long value) {
+      bb.writeLong(value);
+    }
+
+    @Override
+    public long getLong(ByteBuf bb) {
+      return bb.readLong();
+    }
+  };
+
+  private interface ByteBufferAdapter<B> {
+    void putLong(B bb, long value);
+
+    long getLong(B bb);
   }
 
   @Value.Immutable

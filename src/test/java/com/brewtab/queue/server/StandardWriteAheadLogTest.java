@@ -20,7 +20,7 @@ public class StandardWriteAheadLogTest {
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-  public void test(long n, int valueSize, Duration syncDuration, boolean memoizeValue)
+  public void benchmark(long n, int valueSize, Duration syncDuration, boolean memoizeValue)
       throws IOException {
     var baseTime = System.currentTimeMillis();
     var generator = new StandardIdGenerator(baseTime, 0);
@@ -61,15 +61,15 @@ public class StandardWriteAheadLogTest {
 
   @Ignore("benchmark")
   @Test
-  public void test() throws IOException {
-    test(1_000_000, 128, Duration.ofSeconds(1), true);
+  public void benchmark() throws IOException {
+    benchmark(1_000_000, 128, Duration.ofSeconds(1), true);
     System.out.println(Strings.repeat("-", 40));
 
     for (var size : List.of(32, 256, 1024)) {
       for (var duration : List
           .of(Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(5))) {
         for (var memoize : List.of(false, true)) {
-          test(1_000_000, size, duration, memoize);
+          benchmark(1_000_000, size, duration, memoize);
         }
       }
     }

@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -18,8 +19,9 @@ public class QueueTest {
   @Rule
   public TemporaryFolder dir = new TemporaryFolder();
 
+  @Ignore
   @Test
-  public void test() throws IOException {
+  public void benchmarkEnqueue() throws IOException {
     var path = dir.getRoot().toPath();
     var segmentWriter = new StandardSegmentWriter(path);
     var workerPool = new StaticIOWorkerPool(1);
@@ -27,11 +29,13 @@ public class QueueTest {
     var clock = Clock.systemUTC();
     var idGenerator = new StandardIdGenerator(currentTimeMillis(), 0);
     var data = new QueueData(path, workerPool, segmentWriter);
-    data.load();
+    data.startAsync().awaitRunning();
     var workingSet = new DiskBackedWorkingSet(path, 1 << 30);
     workingSet.startAsync().awaitRunning();
 
     var queue = new Queue(data, idGenerator, clock, workingSet);
+    queue.startAsync().awaitRunning();
+
     var value = ByteString.copyFromUtf8("Hello, world!");
 
     for (var n : List.of(5_000_000, 10_000_000, 10_000_000)) {

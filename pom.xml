@@ -89,6 +89,7 @@
             <argument>-Xmx4g</argument>
             <argument>-Dio.netty.buffer.checkAccessible=false</argument>
             <argument>-Dio.netty.buffer.checkBounds=false</argument>
+            <argument>-XX:+PreserveFramePointer</argument>
             <argument>com.brewtab.queue.server.Main</argument>
           </arguments>
         </configuration>
@@ -191,6 +192,11 @@
     <dependency>
       <groupId>io.netty</groupId>
       <artifactId>netty-codec-redis</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-transport-native-epoll</artifactId>
+      <classifier>linux-x86_64</classifier>
     </dependency>
 
     <dependency>

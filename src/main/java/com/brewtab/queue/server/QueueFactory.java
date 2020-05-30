@@ -1,7 +1,5 @@
 package com.brewtab.queue.server;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 
@@ -24,19 +22,19 @@ public class QueueFactory {
   }
 
   public Queue createQueue(String name) {
-    Path queueDirectory = directory.resolve(name);
-    StandardSegmentWriter segmentWriter = new StandardSegmentWriter(queueDirectory);
-    QueueData queueData = new QueueData(queueDirectory, ioScheduler, segmentWriter);
-    // TODO: This shouldn't be here and in Main
-    try {
-      queueData.load();
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-    return new Queue(queueData, idGenerator, Clock.systemUTC(), workingSet);
+    var queueDirectory = directory.resolve(name);
+    var segmentWriter = new StandardSegmentWriter(queueDirectory);
+
+    var queueData = new QueueData(queueDirectory, ioScheduler, segmentWriter);
+    queueData.startAsync().awaitRunning();
+
+    return createQueue(queueData);
   }
 
   public Queue createQueue(QueueData data) {
-    return new Queue(data, idGenerator, Clock.systemUTC(), workingSet);
+    var queue = new Queue(data, idGenerator, Clock.systemUTC(), workingSet);
+    queue.startAsync().awaitRunning();
+
+    return queue;
   }
 }

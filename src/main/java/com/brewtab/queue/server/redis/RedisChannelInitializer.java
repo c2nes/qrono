@@ -1,7 +1,7 @@
 package com.brewtab.queue.server.redis;
 
-import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+import static java.util.concurrent.CompletableFuture.failedFuture;
 
 import com.brewtab.queue.server.QueueService;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
@@ -35,6 +35,9 @@ import java.util.concurrent.CompletionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Redis protocol (RESP) interface to the Queue server.
+ */
 public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   private static final Logger log = LoggerFactory.getLogger(RedisChannelInitializer.class);
 
@@ -56,10 +59,12 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   }
 
   private class RequestHandler extends SimpleChannelInboundHandler<ArrayRedisMessage> {
+    // Response pipeline. Used to ensure responses are returned in the same order as requests are
+    // made. As a result, slow requests at the head of the pipeline may block complete responses.
     private final ArrayDeque<CompletableFuture<RedisMessage>> responses = new ArrayDeque<>();
 
     public RequestHandler() {
-      super(false);
+      super(/* autoRelease= */ false);
     }
 
     //
@@ -313,54 +318,57 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
 
       for (var head = responses.peek();
           head != null && head.isDone();
-          head = responses.peekFirst()) {
+          head = responses.peek()) {
 
         try {
           ctx.write(head.join());
           doFlush = true;
         } catch (CompletionException e) {
-          try {
-            // TODO: This is gross. Maybe we can handle this in the future chain with a function,
-            //  <X extends Throwable> handleException(Class<X> cls, Function<? super X, T> fn)
-            throwIfInstanceOf(e.getCause(), RedisRequestException.class);
-            ctx.fireExceptionCaught(e.getCause());
-          } catch (RedisRequestException rre) {
+          if (e.getCause() instanceof RedisRequestException) {
+            var rre = (RedisRequestException) e.getCause();
             ctx.write(new ErrorRedisMessage(rre.getMessage()));
             doFlush = true;
+          } else {
+            ctx.fireExceptionCaught(e.getCause());
           }
         }
 
         // Remove from dequeue
-        responses.removeFirst();
+        responses.remove();
       }
       if (doFlush) {
         ctx.flush();
       }
     }
 
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, ArrayRedisMessage msg) throws Exception {
-      var release = true;
+    private CompletableFuture<RedisMessage> handleMessageSafe(ArrayRedisMessage msg) {
       try {
-        var future = handleMessage(msg);
-
-        synchronized (this) {
-          responses.add(future);
-        }
-
-        // When complete release message and flush unblocked responses in the pipeline
-        future.thenRunAsync(() -> flushCompletedResponses(ctx), ctx.executor())
-            .whenCompleteAsync((result, e) -> ReferenceCountUtil.release(msg), ctx.executor());
-
-        // Release will happen on future completion
-        release = false;
+        return handleMessage(msg);
       } catch (RedisRequestException e) {
-        ctx.writeAndFlush(new ErrorRedisMessage(e.getMessage()));
-      } finally {
-        if (release) {
+        return completedFuture(new ErrorRedisMessage(e.getMessage()));
+      } catch (Exception e) {
+        return failedFuture(e);
+      }
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, ArrayRedisMessage msg) {
+      var future = handleMessageSafe(msg);
+
+      synchronized (this) {
+        responses.add(future);
+      }
+
+      // When complete release message and flush unblocked responses in the pipeline
+      future.whenCompleteAsync((result, ex) -> {
+        try {
+          flushCompletedResponses(ctx);
+        } finally {
+          // Note, we can not release until we've flushed the response because responses
+          // may reuse parts of the request (e.g. PING).
           ReferenceCountUtil.release(msg);
         }
-      }
+      }, ctx.executor());
     }
   }
 

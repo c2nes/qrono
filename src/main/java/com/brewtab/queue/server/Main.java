@@ -70,11 +70,8 @@ public class Main {
       if (Files.isDirectory(entry)) {
         var writer = new StandardSegmentWriter(entry);
         var data = new QueueData(entry, ioScheduler, writer);
-        try {
-          loadSummaries.add(data.load());
-        } catch (IOException e) {
-          throw new UncheckedIOException(e);
-        }
+        data.startAsync().awaitRunning();
+        loadSummaries.add(data.getQueueLoadSummary());
         queueData.put(entry, data);
       }
     });

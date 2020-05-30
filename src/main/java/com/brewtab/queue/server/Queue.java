@@ -9,8 +9,9 @@ import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.data.QueueInfo;
 import com.brewtab.queue.server.data.Timestamp;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.protobuf.ByteString;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.EventTranslatorOneArg;
@@ -18,6 +19,7 @@ import com.lmax.disruptor.EventTranslatorThreeArg;
 import com.lmax.disruptor.EventTranslatorTwoArg;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.util.DaemonThreadFactory;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
@@ -33,7 +35,7 @@ import org.slf4j.LoggerFactory;
 // TODO: When we "drop" a queue we'll need to ensure we clear its entries from the
 //   working set. Alternatively, we could that no items are dequeued when dropping
 //   a queue (i.e. make it the user's responsibility).
-public class Queue {
+public class Queue extends AbstractIdleService {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
 
   private final QueueData data;
@@ -43,7 +45,7 @@ public class Queue {
   private final WorkingSet workingSet;
   private final LongSet dequeuedIds = new LongOpenHashSet();
 
-  private final EventHandler<Op> batchOpHandler = new EventHandler<>() {
+  private class BatchEventHandler implements EventHandler<Op> {
     private final List<Op> ops = new ArrayList<>();
     private final List<Entry> entries = new ArrayList<>();
     private int entriesSizeBytes = 0;
@@ -80,7 +82,9 @@ public class Queue {
     }
   };
 
+  private final Disruptor<OpHolder> disruptor;
   private final RingBuffer<OpHolder> opBuffer;
+
   private final EnqueueTranslator enqueueTranslator = new EnqueueTranslator();
   private final ReleaseTranslator releaseTranslator = new ReleaseTranslator();
   private final RequeueTranslator requeueTranslator = new RequeueTranslator();
@@ -92,27 +96,25 @@ public class Queue {
     this.idGenerator = idGenerator;
     this.clock = clock;
     this.workingSet = workingSet;
-    opBuffer = buildRingBuffer();
+
+    disruptor = new Disruptor<>(OpHolder::new, 1024, DaemonThreadFactory.INSTANCE);
+    disruptor.handleEventsWith(new BatchEventHandler());
+    opBuffer = disruptor.getRingBuffer();
   }
 
-  public synchronized QueueLoadSummary load() throws IOException {
-    return data.load();
+  @Override
+  protected void startUp() {
+    data.awaitRunning();
+    disruptor.start();
   }
 
-  private RingBuffer<OpHolder> buildRingBuffer() {
-    Disruptor<OpHolder> disruptor = new Disruptor<>(
-        OpHolder::new,
-        1024,
-        new ThreadFactoryBuilder()
-            .setDaemon(true)
-            .setNameFormat("QueueDisruptor-%d")
-            .build());
-
-    disruptor.handleEventsWith(batchOpHandler);
-    return disruptor.start();
+  @Override
+  protected void shutDown() {
+    disruptor.shutdown();
   }
 
   public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
+    Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
     return result.thenApply(Entry::item);
@@ -128,6 +130,7 @@ public class Queue {
   }
 
   public CompletableFuture<Item> dequeueAsync() {
+    Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Item>();
     opBuffer.publishEvent(dequeueTranslator, result);
     return result;
@@ -143,6 +146,7 @@ public class Queue {
   }
 
   public CompletableFuture<Void> releaseAsync(long id) {
+    Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(releaseTranslator, result, id);
 
@@ -161,6 +165,7 @@ public class Queue {
   }
 
   public CompletableFuture<Timestamp> requeueAsync(long id, @Nullable Timestamp deadline) {
+    Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(requeueTranslator, result, id, deadline);
     return result.thenApply(entry -> entry.key().deadline());
@@ -176,6 +181,7 @@ public class Queue {
   }
 
   public CompletableFuture<QueueInfo> getQueueInfoAsync() {
+    Preconditions.checkState(isRunning());
     var result = new CompletableFuture<QueueInfo>();
     opBuffer.publishEvent(getQueueInfoTranslator, result);
     return result;
@@ -191,6 +197,7 @@ public class Queue {
   }
 
   public void runTestCompaction() throws IOException {
+    Preconditions.checkState(isRunning());
     data.runTestCompaction();
   }
 

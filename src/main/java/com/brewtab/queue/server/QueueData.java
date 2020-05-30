@@ -9,8 +9,9 @@ import com.brewtab.queue.server.data.ImmutableItem;
 import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
-import java.io.Closeable;
+import com.google.common.util.concurrent.AbstractIdleService;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -26,7 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 // TODO: Rename? Queue...Reader? PendingSet? EntryLog?
-public class QueueData implements Closeable {
+public class QueueData extends AbstractIdleService {
   private static final Logger logger = LoggerFactory.getLogger(QueueData.class);
 
   private final Path directory;
@@ -38,6 +39,9 @@ public class QueueData implements Closeable {
 
   private WritableSegment currentSegment = null;
 
+  // Initialized in startUp
+  private volatile QueueLoadSummary queueLoadSummary;
+
   // Last key dequeued by next()
   private volatile Key last = Key.ZERO;
 
@@ -47,9 +51,8 @@ public class QueueData implements Closeable {
     this.segmentWriter = segmentWriter;
   }
 
-  // TODO: Refactor loading process
-  // TODO: Load with Guava Service startUp
-  public synchronized QueueLoadSummary load() throws IOException {
+  @Override
+  protected void startUp() throws Exception {
     // TODO: Use some sort of file locking to prevent multiple processes
     //  from accessing the queue data simultaneously?
     Files.createDirectories(directory);
@@ -101,7 +104,19 @@ public class QueueData implements Closeable {
     // Initialize next segment
     currentSegment = nextWritableSegment();
 
-    return new QueueLoadSummary(maxId);
+    queueLoadSummary = new QueueLoadSummary(maxId);
+  }
+
+  @Override
+  protected synchronized void shutDown() throws Exception {
+    writeAndDeleteLog(currentSegment.freeze());
+    currentSegment.close();
+    immutableSegments.close();
+  }
+
+  public QueueLoadSummary getQueueLoadSummary() {
+    Preconditions.checkState(isRunning());
+    return queueLoadSummary;
   }
 
   private void runCompaction(List<Path> paths) {
@@ -358,12 +373,5 @@ public class QueueData implements Closeable {
         .sum()
         + currentSegment.pendingCount()
         - currentSegment.tombstoneCount();
-  }
-
-  @Override
-  public synchronized void close() throws IOException {
-    writeAndDeleteLog(currentSegment.freeze());
-    currentSegment.close();
-    immutableSegments.close();
   }
 }
