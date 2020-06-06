@@ -1,5 +1,6 @@
 package com.brewtab.queue.server;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static java.nio.file.StandardOpenOption.CREATE_NEW;
 import static java.nio.file.StandardOpenOption.READ;
 import static java.nio.file.StandardOpenOption.SPARSE;
@@ -13,6 +14,7 @@ import com.brewtab.queue.server.data.ImmutableTimestamp;
 import com.brewtab.queue.server.data.Item;
 import com.brewtab.queue.server.util.LinkedNode;
 import com.brewtab.queue.server.util.LinkedNodeList;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
 import com.google.protobuf.ByteString;
@@ -30,9 +32,15 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DiskBackedWorkingSet extends AbstractExecutionThreadService implements WorkingSet {
-  private static final String FILE_SUFFIX = ".tmp";
+  private static final Logger log = LoggerFactory.getLogger(DiskBackedWorkingSet.class);
+
+  @VisibleForTesting
+  static final String FILE_SUFFIX = ".tmp";
+
   private static final byte[] ZERO_BYTE = {0};
 
   private final Path directory;
@@ -43,6 +51,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   private final LinkedHashMap<Long, MappedFile> files = new LinkedHashMap<>();
   private final Deque<MappedFile> emptyFiles = new ArrayDeque<>();
   private MappedFile currentFile = null;
+  private boolean drainIsIdle = true;
 
   public DiskBackedWorkingSet(Path directory, int mappedFileSize) throws IOException {
     Preconditions.checkArgument(Integer.bitCount(mappedFileSize) == 1,
@@ -58,6 +67,14 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     this.directory = directory;
     this.mappedFileSize = mappedFileSize;
     mappedFileSizeBits = Integer.numberOfTrailingZeros(mappedFileSize);
+
+    // Add listener to log failures
+    addListener(new Listener() {
+      @Override
+      public void failed(State from, Throwable failure) {
+        log.error("Worker thread failed! previousState={}", from, failure);
+      }
+    }, directExecutor());
   }
 
   @Override
@@ -78,6 +95,19 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     files.put(currentFile.fileID, currentFile);
   }
 
+  // Only used by tests
+  @VisibleForTesting
+  synchronized void awaitDrainIsIdleForTest() throws InterruptedException {
+    // Force drainer to wake up.
+    notifyAll();
+
+    // Wait for drainer to signal us back that it has gone idle again.
+    drainIsIdle = false;
+    while (!drainIsIdle && isRunning()) {
+      wait();
+    }
+  }
+
   @Override
   protected void run() throws Exception {
     while (isRunning()) {
@@ -90,25 +120,15 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
   private synchronized MappedFile awaitFileToDrain() throws InterruptedException {
     while (isRunning()) {
-      if (!emptyFiles.isEmpty()) {
-        return emptyFiles.removeFirst();
+      MappedFile file = getFileToDrain();
+      if (file != null) {
+        return file;
       }
 
-      if (files.size() > 1) {
-        long totalSize = 0;
-        long totalUsed = 0;
-        for (MappedFile file : files.values()) {
-          totalSize += mappedFileSize;
-          totalUsed += file.usedBytes;
-        }
-
-        // Do not include the unused capacity in the current file in the total size.
-        totalSize -= currentFile.capacity();
-
-        // Drain first file if utilization is less than 50%
-        if (totalUsed < (totalSize / 2)) {
-          return files.values().iterator().next();
-        }
+      // Notify awaitDrainIsIdle() that we're idle. Used for testing only.
+      if (!drainIsIdle) {
+        drainIsIdle = true;
+        notifyAll();
       }
 
       // TODO: Make this configurable?
@@ -118,11 +138,36 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     return null;
   }
 
+  private synchronized MappedFile getFileToDrain() {
+    if (!emptyFiles.isEmpty()) {
+      return emptyFiles.removeFirst();
+    }
+
+    if (files.size() > 1) {
+      long totalSize = 0;
+      long totalUsed = 0;
+      for (MappedFile file : files.values()) {
+        totalSize += mappedFileSize;
+        totalUsed += file.usedBytes;
+      }
+
+      // Do not include the unused capacity in the current file in the total size.
+      totalSize -= currentFile.capacity();
+
+      // Drain first file if total utilization is less than 50%
+      if (totalUsed < (totalSize / 2)) {
+        return files.values().iterator().next();
+      }
+    }
+
+    return null;
+  }
+
   private void drain(MappedFile file) throws IOException {
     while (isRunning()) {
       synchronized (this) {
         if (!file.isEmpty()) {
-          add(file.pop());
+          addUnchecked(file.pop());
         } else {
           file.close();
           files.remove(file.fileID);
@@ -147,6 +192,12 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   @Override
   public synchronized void add(Item item) throws IOException {
     Preconditions.checkState(isRunning());
+    Preconditions.checkState(!entries.containsKey(item.id()), "duplicate item");
+    addUnchecked(item);
+  }
+
+  // Allows duplicates
+  private void addUnchecked(Item item) throws IOException {
     var size = itemSize(item);
 
     Preconditions.checkArgument(size <= mappedFileSize,
@@ -177,6 +228,14 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
   @Override
   public synchronized ItemRef get(long id) {
+    return getInternal(id);
+  }
+
+  /**
+   * Returns internal item ref representation for tests.
+   */
+  @VisibleForTesting
+  synchronized ItemRefImpl getInternal(long id) {
     Preconditions.checkState(isRunning());
 
     var entry = entries.get(id);
@@ -184,40 +243,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
       return null;
     }
 
-    var entryFile = entryFile(entry);
-
-    return new ItemRef() {
-      @Override
-      public Key key() {
-        return entry.toTombstoneKey();
-      }
-
-      @Override
-      public Item item() {
-        // TODO: This could be more fine grained
-        synchronized (DiskBackedWorkingSet.this) {
-          Item item = entry.item.get();
-          if (item != null) {
-            return item;
-          }
-
-          return entryFile.get(entry);
-        }
-      }
-
-      @Override
-      public boolean release() {
-        // TODO: This could be more fine grained? Maybe?
-        synchronized (DiskBackedWorkingSet.this) {
-          if (entries.remove(id) == null) {
-            return false;
-          }
-
-          removeFileEntry(entryFile, entry);
-          return true;
-        }
-      }
-    };
+    return new ItemRefImpl(entry);
   }
 
   private void removeFileEntry(MappedFile file, WorkingItem entry) {
@@ -239,6 +265,66 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
   int entryOffset(WorkingItem entry) {
     return (int) (entry.location & (mappedFileSize - 1));
+  }
+
+  private Item entryItem(WorkingItem entry, MappedFile entryFile) {
+    Item item = entry.item.get();
+    if (item != null) {
+      return item;
+    }
+
+    return entryFile.get(entry);
+  }
+
+  @VisibleForTesting
+  class ItemRefImpl implements ItemRef {
+    private final WorkingItem entry;
+    private final MappedFile entryFile;
+
+    private ItemRefImpl(WorkingItem entry) {
+      this.entry = entry;
+      entryFile = entryFile(entry);
+    }
+
+    private void checkNotReleased() {
+      synchronized (DiskBackedWorkingSet.this) {
+        Preconditions.checkState(entryFile.contains(entry), "released");
+      }
+    }
+
+    /**
+     * Force clear the item SoftReference in WorkingItem so {@link #item()} reads from disk.
+     */
+    @VisibleForTesting
+    void clearItemReferenceForTest() {
+      entry.item.clear();
+    }
+
+    @Override
+    public Key key() {
+      checkNotReleased();
+      return entry.toTombstoneKey();
+    }
+
+    @Override
+    public Item item() {
+      // TODO: This could be more fine grained
+      synchronized (DiskBackedWorkingSet.this) {
+        checkNotReleased();
+        return entryItem(entry, entryFile);
+      }
+    }
+
+    @Override
+    public void release() {
+      // TODO: This could be more fine grained? Maybe?
+      synchronized (DiskBackedWorkingSet.this) {
+        checkNotReleased();
+        // TODO: Verify this removes something?
+        entries.remove(entry.id);
+        removeFileEntry(entryFile, entry);
+      }
+    }
   }
 
   static class WorkingItem extends LinkedNode<WorkingItem> {
@@ -271,7 +357,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     return itemSize(item);
   }
 
-  static int itemSize(Item item) {
+  private static int itemSize(Item item) {
     return Encoding.STATS_SIZE + item.value().size();
   }
 
@@ -305,6 +391,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
       return entry;
     }
 
+    boolean contains(WorkingItem entry) {
+      return entries.contains(entry);
+    }
+
     void remove(WorkingItem entry) {
       entries.remove(entry);
       usedBytes -= entry.size;
@@ -330,11 +420,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     Item pop() {
       WorkingItem entry = entries.remove(0);
       usedBytes -= entry.size;
-      var item = entry.item.get();
-      if (item == null) {
-        item = get(entry);
-      }
-      return item;
+      return entryItem(entry, this);
     }
 
     void reset() {

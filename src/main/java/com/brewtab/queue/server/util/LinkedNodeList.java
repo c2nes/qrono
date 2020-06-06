@@ -5,10 +5,34 @@ import java.util.AbstractSequentialList;
 import java.util.ListIterator;
 import java.util.NoSuchElementException;
 
+/**
+ * Linked list implementation with next/prev pointers embedded within entries. Does not support
+ * entries belonging to multiple lists. The behavior of methods accepting entry parameters is
+ * undefined if those methods are called with entries contained in other {@code LinkedNodeLists}.
+ *
+ * @param <E> entry type, must extend {@link LinkedNode}
+ */
 public class LinkedNodeList<E extends LinkedNode<E>> extends AbstractSequentialList<E> {
   private int size = 0;
   private E head = null;
   private E tail = null;
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public boolean contains(Object o) {
+    return (o instanceof LinkedNode) && contains((LinkedNode<E>) o);
+  }
+
+  /**
+   * Returns true if the list contains the specified node. If the specified node is contained
+   * in any list <em>other</em> than this list then the behavior of this method is undefined.
+   */
+  public boolean contains(LinkedNode<E> node) {
+    // If the next pointer is null then the entry is the tail of this list, or
+    // isn't in this list at all. This check could be implemented equivalently
+    // using `prev` and `head`.
+    return node.next != null || node == tail;
+  }
 
   @Override
   @SuppressWarnings("unchecked")

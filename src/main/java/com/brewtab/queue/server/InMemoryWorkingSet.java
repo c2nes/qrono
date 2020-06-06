@@ -38,8 +38,8 @@ public class InMemoryWorkingSet implements WorkingSet {
       }
 
       @Override
-      public boolean release() {
-        return items.remove(id) != null;
+      public void release() {
+        items.remove(id);
       }
     };
   }

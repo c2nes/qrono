@@ -62,4 +62,19 @@ public class TestData {
     }
     return Entry.newPendingEntry(withValue(item, value));
   }
+
+  static Item withId(Item item, int id) {
+    return ImmutableItem.builder()
+        .from(item)
+        .id(id)
+        .build();
+  }
+
+  static Entry withId(Entry entry, int id) {
+    var item = entry.item();
+    if (item == null) {
+      throw new IllegalArgumentException("entry must be pending");
+    }
+    return Entry.newPendingEntry(withId(item, id));
+  }
 }
