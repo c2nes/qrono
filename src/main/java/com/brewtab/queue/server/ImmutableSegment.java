@@ -26,7 +26,8 @@ import java.nio.file.StandardCopyOption;
 import java.util.function.Supplier;
 
 public class ImmutableSegment implements Segment {
-  private static final int DEFAULT_BUFFER_SIZE = 4096;
+  @VisibleForTesting
+  static final int DEFAULT_BUFFER_SIZE = 4096;
 
   // TODO: Abstract the file opening for easier testing (e.g. Supplier<SeekableByteChannel>)
   private final Path path;
@@ -237,7 +238,7 @@ public class ImmutableSegment implements Segment {
         } else {
           var oldBuffer = buffer;
           buffer = newByteBuffer(required);
-          buffer.put(oldBuffer.flip());
+          buffer.put(oldBuffer);
         }
 
         // Do the read
@@ -337,7 +338,7 @@ public class ImmutableSegment implements Segment {
       // Footer fields
       var pendingCount = 0;
       var tombstoneCount = 0;
-      var maxId = Long.MIN_VALUE;
+      var maxId = 0L;
 
       for (var entry = source.next(); entry != null; entry = source.next()) {
         // Update our copy of the reader's position, but only if we're ahead of where

@@ -14,7 +14,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
 public class MergedSegmentReader implements SegmentReader {
@@ -24,31 +23,31 @@ public class MergedSegmentReader implements SegmentReader {
   private final Map<SegmentName, Segment> segments = new HashMap<>();
   private final PriorityQueue<SegmentReader> readers = new PriorityQueue<>(COMPARATOR);
   private final Map<SegmentName, SegmentReader> readersByName = new HashMap<>();
-  private final LongAdder headSwitches = new LongAdder();
+  private long headSwitches = 0;
 
   private SegmentReader head = null;
   private Entry next = null;
   private boolean closed = false;
 
   public long getHeadSwitchDebugCount() {
-    return headSwitches.sum();
+    return headSwitches;
   }
 
   private void updateHead() throws IOException {
     if (head == null) {
       head = readers.poll();
-      headSwitches.increment();
+      headSwitches++;
     } else if (head.peek() == null) {
       // Note, head will still be in namedReaders
       head.close();
       head = readers.poll();
-      headSwitches.increment();
+      headSwitches++;
     } else {
       var next = readers.peek();
       if (next != null && COMPARATOR.compare(next, head) < 0) {
         readers.add(head);
         head = readers.poll();
-        headSwitches.increment();
+        headSwitches++;
       }
     }
   }
@@ -213,7 +212,7 @@ public class MergedSegmentReader implements SegmentReader {
   /**
    * Same ID & deadline, but opposite types (one is a tombstone, the other is pending).
    */
-  static boolean matches(Entry.Key k1, Entry.Key k2) {
+  private static boolean matches(Entry.Key k1, Entry.Key k2) {
     return k1.id() == k2.id()
         && k1.deadline().equals(k2.deadline())
         && k1.entryType() != k2.entryType();

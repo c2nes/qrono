@@ -35,7 +35,7 @@ final class Encoding {
     return writeStats(BYTE_BUF, bb, stats);
   }
 
-  static <B> int writeStats(ByteBufferAdapter<B> adapter, B bb, Item.Stats stats) {
+  private static <B> int writeStats(ByteBufferAdapter<B> adapter, B bb, Item.Stats stats) {
     long enqueueTime = stats.enqueueTime().millis();
     long requeueTime = stats.requeueTime().millis();
     int dequeueCount = stats.dequeueCount();
@@ -56,7 +56,7 @@ final class Encoding {
     return statsFromBits(bb.readLong(), bb.readLong());
   }
 
-  static Item.Stats statsFromBits(long upper, long lower) {
+  private static Item.Stats statsFromBits(long upper, long lower) {
     long enqueueTime = upper >>> 16;
     long requeueTime = ((upper & ((1L << 16) - 1)) << 32) | (lower >>> 32);
     int dequeueCount = (int) (lower & ((1L << 32) - 1));
@@ -76,7 +76,7 @@ final class Encoding {
     return writeKey(BYTE_BUF, bb, key);
   }
 
-  static <B> int writeKey(ByteBufferAdapter<B> adapter, B bb, Entry.Key key) {
+  private static <B> int writeKey(ByteBufferAdapter<B> adapter, B bb, Entry.Key key) {
     var deadline = key.deadline().millis();
     var id = key.id();
     var type = key.entryType();
@@ -97,7 +97,7 @@ final class Encoding {
     return keyFromBits(bb.readLong(), bb.readLong());
   }
 
-  static Entry.Key keyFromBits(long upper, long lower) {
+  private static Entry.Key keyFromBits(long upper, long lower) {
     long deadline = (upper >>> 2) & ((1L << 48) - 1);
     long id = (lower >>> 2) | ((upper & 0b11) << 62);
     var type = entryTypeFromBits(((int) lower) & 0b11);
@@ -170,7 +170,7 @@ final class Encoding {
     return Entry.newPendingEntry(item);
   }
 
-  static Entry.Type entryTypeFromBits(int bits) {
+  private static Entry.Type entryTypeFromBits(int bits) {
     switch (bits) {
       case 0b00:
         return PENDING;
@@ -182,7 +182,7 @@ final class Encoding {
     throw new IllegalArgumentException("unsupported type");
   }
 
-  static int entryTypeToBits(Entry.Type type) {
+  private static int entryTypeToBits(Entry.Type type) {
     switch (type) {
       case PENDING:
         return 0b00;
@@ -193,34 +193,11 @@ final class Encoding {
     throw new IllegalArgumentException("unsupported type");
   }
 
-  private static final ByteBufferAdapter<ByteBuffer> BYTE_BUFFER = new ByteBufferAdapter<>() {
-    @Override
-    public void putLong(ByteBuffer bb, long value) {
-      bb.putLong(value);
-    }
-
-    @Override
-    public long getLong(ByteBuffer bb) {
-      return bb.getLong();
-    }
-  };
-
-  private static final ByteBufferAdapter<ByteBuf> BYTE_BUF = new ByteBufferAdapter<>() {
-    @Override
-    public void putLong(ByteBuf bb, long value) {
-      bb.writeLong(value);
-    }
-
-    @Override
-    public long getLong(ByteBuf bb) {
-      return bb.readLong();
-    }
-  };
+  private static final ByteBufferAdapter<ByteBuffer> BYTE_BUFFER = ByteBuffer::putLong;
+  private static final ByteBufferAdapter<ByteBuf> BYTE_BUF = ByteBuf::writeLong;
 
   private interface ByteBufferAdapter<B> {
     void putLong(B bb, long value);
-
-    long getLong(B bb);
   }
 
   @Value.Immutable

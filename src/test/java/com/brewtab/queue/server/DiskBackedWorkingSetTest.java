@@ -3,13 +3,10 @@ package com.brewtab.queue.server;
 import static com.brewtab.queue.server.TestData.ITEM_1_T5;
 import static com.brewtab.queue.server.TestData.withId;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 
-import com.brewtab.queue.server.data.Entry;
 import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -20,7 +17,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-public class DiskBackedWorkingSetTest {
+public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
   private static final int MAPPED_FILE_SIZE = 1024;
 
   @Rule
@@ -48,66 +45,6 @@ public class DiskBackedWorkingSetTest {
   }
 
   @Test
-  public void testAdd() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    assertEquals(1, workingSet.size());
-    assertNotNull(workingSet.get(1001));
-  }
-
-  @Test
-  public void testAdd_afterRemovingLastItem() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    assertEquals(1, workingSet.size());
-
-    workingSet.get(1001).release();
-    assertEquals(0, workingSet.size());
-
-    // Re-add item
-    workingSet.add(ITEM_1_T5);
-    assertEquals(1, workingSet.size());
-  }
-
-  @Test
-  public void testAdd_duplicate() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    assertThatThrownBy(() -> workingSet.add(ITEM_1_T5))
-        .isInstanceOf(IllegalStateException.class);
-    assertEquals(1, workingSet.size());
-  }
-
-  @Test
-  public void testGet_missingEntry() throws IOException {
-    assertNull(workingSet.get(0xDEADBEEF));
-  }
-
-  @Test
-  public void testGetKey() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-    assertEquals(Entry.newTombstoneKey(ITEM_1_T5), itemRef.key());
-  }
-
-  @Test
-  public void testGetKey_afterRelease() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-    itemRef.release();
-
-    assertThatThrownBy(itemRef::key)
-        .isInstanceOf(IllegalStateException.class);
-  }
-
-  @Test
-  public void testGetItem() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-    assertEquals(ITEM_1_T5, itemRef.item());
-  }
-
-  @Test
   public void testGetItem_fromDisk() throws IOException {
     workingSet.add(ITEM_1_T5);
     var itemRef = workingSet.getInternal(1001);
@@ -115,40 +52,6 @@ public class DiskBackedWorkingSetTest {
     // Force item to be re-read from disk
     itemRef.clearItemReferenceForTest();
     assertEquals(ITEM_1_T5, itemRef.item());
-  }
-
-  @Test
-  public void testGetItem_afterRelease() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-    itemRef.release();
-
-    assertThatThrownBy(itemRef::item)
-        .isInstanceOf(IllegalStateException.class);
-  }
-
-  @Test
-  public void testRelease() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-
-    // Silence is success
-    itemRef.release();
-  }
-
-  @Test
-  public void testRelease_twice() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.get(1001);
-    assertNotNull(itemRef);
-
-    // Silence is success
-    itemRef.release();
-
-    assertThatThrownBy(itemRef::item)
-        .isInstanceOf(IllegalStateException.class);
   }
 
   @Test
@@ -277,5 +180,10 @@ public class DiskBackedWorkingSetTest {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  @Override
+  protected WorkingSet workingSet() {
+    return workingSet;
   }
 }

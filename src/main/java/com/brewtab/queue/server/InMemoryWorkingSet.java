@@ -3,6 +3,7 @@ package com.brewtab.queue.server;
 import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.Entry.Key;
 import com.brewtab.queue.server.data.Item;
+import com.google.common.base.Preconditions;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -11,7 +12,9 @@ public class InMemoryWorkingSet implements WorkingSet {
 
   @Override
   public void add(Item item) {
-    items.put(item.id(), item);
+    if (items.putIfAbsent(item.id(), item) != null) {
+      throw new IllegalStateException("already added");
+    }
   }
 
   @Override
@@ -29,17 +32,21 @@ public class InMemoryWorkingSet implements WorkingSet {
     return new ItemRef() {
       @Override
       public Key key() {
+        Preconditions.checkState(items.containsKey(item.id()), "released");
         return Entry.newTombstoneKey(item);
       }
 
       @Override
       public Item item() {
+        Preconditions.checkState(items.containsKey(item.id()), "released");
         return item;
       }
 
       @Override
       public void release() {
-        items.remove(id);
+        if (items.remove(id) == null) {
+          throw new IllegalStateException("already released");
+        }
       }
     };
   }
