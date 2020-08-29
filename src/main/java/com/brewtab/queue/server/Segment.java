@@ -4,6 +4,9 @@ import com.brewtab.queue.server.data.Entry;
 import com.brewtab.queue.server.data.SegmentMetadata;
 import java.io.IOException;
 
+/**
+ * A segment is an immutable and ordered sequence of entries.
+ */
 public interface Segment {
 
   SegmentName name();

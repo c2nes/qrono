@@ -39,6 +39,20 @@ public class TestData {
       .value(VALUE)
       .build();
 
+  static final Item ITEM_4_T15 = ImmutableItem.builder()
+      .deadline(ImmutableTimestamp.of(BASE_TIME + 15))
+      .id(1004)
+      .stats(ZERO_STATS)
+      .value(VALUE)
+      .build();
+
+  static final Item ITEM_5_T20 = ImmutableItem.builder()
+      .deadline(ImmutableTimestamp.of(BASE_TIME + 20))
+      .id(1005)
+      .stats(ZERO_STATS)
+      .value(VALUE)
+      .build();
+
   static final Entry PENDING_1_T5 = Entry.newPendingEntry(ITEM_1_T5);
   static final Entry TOMBSTONE_1_T5 = Entry.newTombstoneEntry(ITEM_1_T5);
 
@@ -47,6 +61,12 @@ public class TestData {
 
   static final Entry PENDING_3_T10 = Entry.newPendingEntry(ITEM_3_T10);
   static final Entry TOMBSTONE_3_T10 = Entry.newTombstoneEntry(ITEM_3_T10);
+
+  static final Entry PENDING_4_T15 = Entry.newPendingEntry(ITEM_4_T15);
+  static final Entry TOMBSTONE_4_T15 = Entry.newTombstoneEntry(ITEM_4_T15);
+
+  static final Entry PENDING_5_T20 = Entry.newPendingEntry(ITEM_5_T20);
+  static final Entry TOMBSTONE_5_T20 = Entry.newTombstoneEntry(ITEM_5_T20);
 
   static Item withValue(Item item, ByteString value) {
     return ImmutableItem.builder()

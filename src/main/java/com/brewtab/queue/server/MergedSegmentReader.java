@@ -16,6 +16,10 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * A {@code MergedSegmentReader} combines multiple segments into a single segment reader. Segments
+ * can be added and removed on the fly.
+ */
 public class MergedSegmentReader implements SegmentReader {
   private static final Comparator<SegmentReader> COMPARATOR =
       Comparator.comparing(SegmentReader::peek);
@@ -52,6 +56,10 @@ public class MergedSegmentReader implements SegmentReader {
     }
   }
 
+  /**
+   * Adds the given segment to this reader. A new reader will be opened for the given segment,
+   * seeking to the provided position as specified by {@link Segment#newReader(Key)}.
+   */
   public synchronized void addSegment(Segment segment, Key position) throws IOException {
     var reader = segment.newReader(position);
 
