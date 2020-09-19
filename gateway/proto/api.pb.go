@@ -900,47 +900,47 @@ func file_proto_api_proto_rawDescGZIP() []byte {
 
 var file_proto_api_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_api_proto_goTypes = []interface{}{
-	(*EnqueueRequest)(nil),      // 0: com.brewtab.queue.EnqueueRequest
-	(*EnqueueResponse)(nil),     // 1: com.brewtab.queue.EnqueueResponse
-	(*DequeueRequest)(nil),      // 2: com.brewtab.queue.DequeueRequest
-	(*Item)(nil),                // 3: com.brewtab.queue.Item
-	(*Stats)(nil),               // 4: com.brewtab.queue.Stats
-	(*RequeueRequest)(nil),      // 5: com.brewtab.queue.RequeueRequest
-	(*RequeueResponse)(nil),     // 6: com.brewtab.queue.RequeueResponse
-	(*ReleaseRequest)(nil),      // 7: com.brewtab.queue.ReleaseRequest
-	(*GetQueueInfoRequest)(nil), // 8: com.brewtab.queue.GetQueueInfoRequest
-	(*QueueInfo)(nil),           // 9: com.brewtab.queue.QueueInfo
-	(*DropQueueRequest)(nil),    // 10: com.brewtab.queue.DropQueueRequest
-	(*CompactQueueRequest)(nil), // 11: com.brewtab.queue.CompactQueueRequest
-	(*GlobalState)(nil),         // 12: com.brewtab.queue.GlobalState
+	(*EnqueueRequest)(nil),      // 0: net.qrono.EnqueueRequest
+	(*EnqueueResponse)(nil),     // 1: net.qrono.EnqueueResponse
+	(*DequeueRequest)(nil),      // 2: net.qrono.DequeueRequest
+	(*Item)(nil),                // 3: net.qrono.Item
+	(*Stats)(nil),               // 4: net.qrono.Stats
+	(*RequeueRequest)(nil),      // 5: net.qrono.RequeueRequest
+	(*RequeueResponse)(nil),     // 6: net.qrono.RequeueResponse
+	(*ReleaseRequest)(nil),      // 7: net.qrono.ReleaseRequest
+	(*GetQueueInfoRequest)(nil), // 8: net.qrono.GetQueueInfoRequest
+	(*QueueInfo)(nil),           // 9: net.qrono.QueueInfo
+	(*DropQueueRequest)(nil),    // 10: net.qrono.DropQueueRequest
+	(*CompactQueueRequest)(nil), // 11: net.qrono.CompactQueueRequest
+	(*GlobalState)(nil),         // 12: net.qrono.GlobalState
 	(*timestamp.Timestamp)(nil), // 13: google.protobuf.Timestamp
 	(*empty.Empty)(nil),         // 14: google.protobuf.Empty
 }
 var file_proto_api_proto_depIdxs = []int32{
-	13, // 0: com.brewtab.queue.EnqueueRequest.deadline:type_name -> google.protobuf.Timestamp
-	13, // 1: com.brewtab.queue.EnqueueResponse.deadline:type_name -> google.protobuf.Timestamp
-	13, // 2: com.brewtab.queue.Item.deadline:type_name -> google.protobuf.Timestamp
-	4,  // 3: com.brewtab.queue.Item.stats:type_name -> com.brewtab.queue.Stats
-	13, // 4: com.brewtab.queue.Stats.enqueue_time:type_name -> google.protobuf.Timestamp
-	13, // 5: com.brewtab.queue.Stats.requeue_time:type_name -> google.protobuf.Timestamp
-	13, // 6: com.brewtab.queue.RequeueRequest.deadline:type_name -> google.protobuf.Timestamp
-	13, // 7: com.brewtab.queue.GlobalState.epoch:type_name -> google.protobuf.Timestamp
-	0,  // 8: com.brewtab.queue.QueueServer.Enqueue:input_type -> com.brewtab.queue.EnqueueRequest
-	0,  // 9: com.brewtab.queue.QueueServer.EnqueueStream:input_type -> com.brewtab.queue.EnqueueRequest
-	2,  // 10: com.brewtab.queue.QueueServer.Dequeue:input_type -> com.brewtab.queue.DequeueRequest
-	5,  // 11: com.brewtab.queue.QueueServer.Requeue:input_type -> com.brewtab.queue.RequeueRequest
-	7,  // 12: com.brewtab.queue.QueueServer.Release:input_type -> com.brewtab.queue.ReleaseRequest
-	8,  // 13: com.brewtab.queue.QueueServer.GetQueueInfo:input_type -> com.brewtab.queue.GetQueueInfoRequest
-	10, // 14: com.brewtab.queue.QueueServer.DropQueue:input_type -> com.brewtab.queue.DropQueueRequest
-	11, // 15: com.brewtab.queue.QueueServer.CompactQueue:input_type -> com.brewtab.queue.CompactQueueRequest
-	1,  // 16: com.brewtab.queue.QueueServer.Enqueue:output_type -> com.brewtab.queue.EnqueueResponse
-	1,  // 17: com.brewtab.queue.QueueServer.EnqueueStream:output_type -> com.brewtab.queue.EnqueueResponse
-	3,  // 18: com.brewtab.queue.QueueServer.Dequeue:output_type -> com.brewtab.queue.Item
-	6,  // 19: com.brewtab.queue.QueueServer.Requeue:output_type -> com.brewtab.queue.RequeueResponse
-	14, // 20: com.brewtab.queue.QueueServer.Release:output_type -> google.protobuf.Empty
-	9,  // 21: com.brewtab.queue.QueueServer.GetQueueInfo:output_type -> com.brewtab.queue.QueueInfo
-	14, // 22: com.brewtab.queue.QueueServer.DropQueue:output_type -> google.protobuf.Empty
-	14, // 23: com.brewtab.queue.QueueServer.CompactQueue:output_type -> google.protobuf.Empty
+	13, // 0: net.qrono.EnqueueRequest.deadline:type_name -> google.protobuf.Timestamp
+	13, // 1: net.qrono.EnqueueResponse.deadline:type_name -> google.protobuf.Timestamp
+	13, // 2: net.qrono.Item.deadline:type_name -> google.protobuf.Timestamp
+	4,  // 3: net.qrono.Item.stats:type_name -> net.qrono.Stats
+	13, // 4: net.qrono.Stats.enqueue_time:type_name -> google.protobuf.Timestamp
+	13, // 5: net.qrono.Stats.requeue_time:type_name -> google.protobuf.Timestamp
+	13, // 6: net.qrono.RequeueRequest.deadline:type_name -> google.protobuf.Timestamp
+	13, // 7: net.qrono.GlobalState.epoch:type_name -> google.protobuf.Timestamp
+	0,  // 8: net.qrono.QueueServer.Enqueue:input_type -> net.qrono.EnqueueRequest
+	0,  // 9: net.qrono.QueueServer.EnqueueStream:input_type -> net.qrono.EnqueueRequest
+	2,  // 10: net.qrono.QueueServer.Dequeue:input_type -> net.qrono.DequeueRequest
+	5,  // 11: net.qrono.QueueServer.Requeue:input_type -> net.qrono.RequeueRequest
+	7,  // 12: net.qrono.QueueServer.Release:input_type -> net.qrono.ReleaseRequest
+	8,  // 13: net.qrono.QueueServer.GetQueueInfo:input_type -> net.qrono.GetQueueInfoRequest
+	10, // 14: net.qrono.QueueServer.DropQueue:input_type -> net.qrono.DropQueueRequest
+	11, // 15: net.qrono.QueueServer.CompactQueue:input_type -> net.qrono.CompactQueueRequest
+	1,  // 16: net.qrono.QueueServer.Enqueue:output_type -> net.qrono.EnqueueResponse
+	1,  // 17: net.qrono.QueueServer.EnqueueStream:output_type -> net.qrono.EnqueueResponse
+	3,  // 18: net.qrono.QueueServer.Dequeue:output_type -> net.qrono.Item
+	6,  // 19: net.qrono.QueueServer.Requeue:output_type -> net.qrono.RequeueResponse
+	14, // 20: net.qrono.QueueServer.Release:output_type -> google.protobuf.Empty
+	9,  // 21: net.qrono.QueueServer.GetQueueInfo:output_type -> net.qrono.QueueInfo
+	14, // 22: net.qrono.QueueServer.DropQueue:output_type -> google.protobuf.Empty
+	14, // 23: net.qrono.QueueServer.CompactQueue:output_type -> google.protobuf.Empty
 	16, // [16:24] is the sub-list for method output_type
 	8,  // [8:16] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
@@ -1163,7 +1163,7 @@ func NewQueueServerClient(cc grpc.ClientConnInterface) QueueServerClient {
 
 func (c *queueServerClient) Enqueue(ctx context.Context, in *EnqueueRequest, opts ...grpc.CallOption) (*EnqueueResponse, error) {
 	out := new(EnqueueResponse)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/Enqueue", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/Enqueue", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1171,7 +1171,7 @@ func (c *queueServerClient) Enqueue(ctx context.Context, in *EnqueueRequest, opt
 }
 
 func (c *queueServerClient) EnqueueStream(ctx context.Context, opts ...grpc.CallOption) (QueueServer_EnqueueStreamClient, error) {
-	stream, err := c.cc.NewStream(ctx, &_QueueServer_serviceDesc.Streams[0], "/com.brewtab.queue.QueueServer/EnqueueStream", opts...)
+	stream, err := c.cc.NewStream(ctx, &_QueueServer_serviceDesc.Streams[0], "/net.qrono.QueueServer/EnqueueStream", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1203,7 +1203,7 @@ func (x *queueServerEnqueueStreamClient) Recv() (*EnqueueResponse, error) {
 
 func (c *queueServerClient) Dequeue(ctx context.Context, in *DequeueRequest, opts ...grpc.CallOption) (*Item, error) {
 	out := new(Item)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/Dequeue", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/Dequeue", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1212,7 +1212,7 @@ func (c *queueServerClient) Dequeue(ctx context.Context, in *DequeueRequest, opt
 
 func (c *queueServerClient) Requeue(ctx context.Context, in *RequeueRequest, opts ...grpc.CallOption) (*RequeueResponse, error) {
 	out := new(RequeueResponse)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/Requeue", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/Requeue", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1221,7 +1221,7 @@ func (c *queueServerClient) Requeue(ctx context.Context, in *RequeueRequest, opt
 
 func (c *queueServerClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	out := new(empty.Empty)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/Release", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/Release", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1230,7 +1230,7 @@ func (c *queueServerClient) Release(ctx context.Context, in *ReleaseRequest, opt
 
 func (c *queueServerClient) GetQueueInfo(ctx context.Context, in *GetQueueInfoRequest, opts ...grpc.CallOption) (*QueueInfo, error) {
 	out := new(QueueInfo)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/GetQueueInfo", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/GetQueueInfo", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1239,7 +1239,7 @@ func (c *queueServerClient) GetQueueInfo(ctx context.Context, in *GetQueueInfoRe
 
 func (c *queueServerClient) DropQueue(ctx context.Context, in *DropQueueRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	out := new(empty.Empty)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/DropQueue", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/DropQueue", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1248,7 +1248,7 @@ func (c *queueServerClient) DropQueue(ctx context.Context, in *DropQueueRequest,
 
 func (c *queueServerClient) CompactQueue(ctx context.Context, in *CompactQueueRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	out := new(empty.Empty)
-	err := c.cc.Invoke(ctx, "/com.brewtab.queue.QueueServer/CompactQueue", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/net.qrono.QueueServer/CompactQueue", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1310,7 +1310,7 @@ func _QueueServer_Enqueue_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/Enqueue",
+		FullMethod: "/net.qrono.QueueServer/Enqueue",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).Enqueue(ctx, req.(*EnqueueRequest))
@@ -1354,7 +1354,7 @@ func _QueueServer_Dequeue_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/Dequeue",
+		FullMethod: "/net.qrono.QueueServer/Dequeue",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).Dequeue(ctx, req.(*DequeueRequest))
@@ -1372,7 +1372,7 @@ func _QueueServer_Requeue_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/Requeue",
+		FullMethod: "/net.qrono.QueueServer/Requeue",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).Requeue(ctx, req.(*RequeueRequest))
@@ -1390,7 +1390,7 @@ func _QueueServer_Release_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/Release",
+		FullMethod: "/net.qrono.QueueServer/Release",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).Release(ctx, req.(*ReleaseRequest))
@@ -1408,7 +1408,7 @@ func _QueueServer_GetQueueInfo_Handler(srv interface{}, ctx context.Context, dec
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/GetQueueInfo",
+		FullMethod: "/net.qrono.QueueServer/GetQueueInfo",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).GetQueueInfo(ctx, req.(*GetQueueInfoRequest))
@@ -1426,7 +1426,7 @@ func _QueueServer_DropQueue_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/DropQueue",
+		FullMethod: "/net.qrono.QueueServer/DropQueue",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).DropQueue(ctx, req.(*DropQueueRequest))
@@ -1444,7 +1444,7 @@ func _QueueServer_CompactQueue_Handler(srv interface{}, ctx context.Context, dec
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/com.brewtab.queue.QueueServer/CompactQueue",
+		FullMethod: "/net.qrono.QueueServer/CompactQueue",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QueueServerServer).CompactQueue(ctx, req.(*CompactQueueRequest))
@@ -1453,7 +1453,7 @@ func _QueueServer_CompactQueue_Handler(srv interface{}, ctx context.Context, dec
 }
 
 var _QueueServer_serviceDesc = grpc.ServiceDesc{
-	ServiceName: "com.brewtab.queue.QueueServer",
+	ServiceName: "net.qrono.QueueServer",
 	HandlerType: (*QueueServerServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
