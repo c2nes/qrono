@@ -1,11 +1,11 @@
 package net.qrono.server;
 
+import com.google.protobuf.ByteString;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableItem.Stats;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Item;
-import com.google.protobuf.ByteString;
 
 public class TestData {
   static final long BASE_TIME = 1_234_567_000; // 2009-02-13T23:16:40Z

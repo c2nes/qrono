@@ -2,9 +2,6 @@ package net.qrono.server;
 
 import static java.util.Collections.unmodifiableCollection;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Key;
-import net.qrono.server.data.Entry.Type;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -15,6 +12,9 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Collectors;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
+import net.qrono.server.data.Entry.Type;
 
 /**
  * A {@code MergedSegmentReader} combines multiple segments into a single segment reader. Segments

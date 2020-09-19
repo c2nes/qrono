@@ -2,12 +2,6 @@ package net.qrono.server;
 
 import static java.util.Objects.requireNonNull;
 
-import net.qrono.server.IOScheduler.Parameters;
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Key;
-import net.qrono.server.data.ImmutableItem;
-import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.util.DataSize;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
@@ -23,6 +17,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import net.qrono.server.IOScheduler.Parameters;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
+import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.util.DataSize;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

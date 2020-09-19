@@ -5,8 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
-import net.qrono.server.data.Entry;
 import java.io.IOException;
+import net.qrono.server.data.Entry;
 import org.junit.Assert;
 import org.junit.Test;
 

@@ -1,12 +1,12 @@
 package net.qrono.server;
 
+import com.google.common.collect.ImmutableSortedSet;
+import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.ImmutableSegmentMetadata;
 import net.qrono.server.data.Item;
 import net.qrono.server.data.SegmentMetadata;
-import com.google.common.collect.ImmutableSortedSet;
-import javax.annotation.Nullable;
 
 public class InMemorySegment implements Segment {
   private final SegmentName name;

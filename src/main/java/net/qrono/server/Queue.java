@@ -2,13 +2,6 @@ package net.qrono.server;
 
 import static net.qrono.server.Encoding.entrySize;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.ImmutableItem;
-import net.qrono.server.data.ImmutableQueueInfo;
-import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.data.Item;
-import net.qrono.server.data.QueueInfo;
-import net.qrono.server.data.Timestamp;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
@@ -29,6 +22,13 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import javax.annotation.Nullable;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.ImmutableQueueInfo;
+import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.data.Item;
+import net.qrono.server.data.QueueInfo;
+import net.qrono.server.data.Timestamp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

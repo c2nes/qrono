@@ -4,7 +4,6 @@ import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
 import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
-import net.qrono.server.data.Entry;
 import com.google.common.collect.ImmutableList;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
@@ -16,6 +15,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.zip.Adler32;
+import net.qrono.server.data.Entry;
 
 public class StandardWriteAheadLog implements WriteAheadLog {
   public static final Duration DEFAULT_SYNC_INTERVAL = Duration.ofSeconds(1);

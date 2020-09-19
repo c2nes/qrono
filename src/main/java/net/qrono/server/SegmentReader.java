@@ -1,8 +1,8 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
 import java.io.Closeable;
 import java.io.IOException;
+import net.qrono.server.data.Entry;
 
 /**
  * A segment reader. Allows sequential reads of the entries in a segment.

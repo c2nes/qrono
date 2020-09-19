@@ -1,9 +1,9 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry.Key;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.function.Supplier;
+import net.qrono.server.data.Entry.Key;
 
 public class StandardSegmentWriter implements SegmentWriter {
   private final Path directory;

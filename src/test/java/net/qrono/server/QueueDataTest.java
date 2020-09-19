@@ -5,14 +5,14 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.ImmutableItem;
-import net.qrono.server.data.Item;
-import net.qrono.server.data.Timestamp;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.Item;
+import net.qrono.server.data.Timestamp;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;

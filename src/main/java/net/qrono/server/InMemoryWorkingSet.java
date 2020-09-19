@@ -1,11 +1,11 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Key;
-import net.qrono.server.data.Item;
 import com.google.common.base.Preconditions;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
+import net.qrono.server.data.Item;
 
 public class InMemoryWorkingSet implements WorkingSet {
   private final ConcurrentMap<Long, Item> items = new ConcurrentHashMap<>();

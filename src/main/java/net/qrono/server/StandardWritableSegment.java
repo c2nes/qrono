@@ -1,8 +1,5 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.ImmutableEntry;
-import net.qrono.server.data.Item;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -11,6 +8,9 @@ import java.util.List;
 import java.util.PriorityQueue;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.ImmutableEntry;
+import net.qrono.server.data.Item;
 
 public class StandardWritableSegment implements WritableSegment {
   private final SegmentName name;

@@ -1,8 +1,8 @@
 package net.qrono.server;
 
+import java.io.IOException;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.SegmentMetadata;
-import java.io.IOException;
 
 /**
  * A segment is an immutable and ordered sequence of entries.

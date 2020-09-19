@@ -3,9 +3,6 @@ package net.qrono.server.redis;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 
-import net.qrono.server.QueueService;
-import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.data.Timestamp;
 import com.google.protobuf.ByteString;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -32,6 +29,9 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import net.qrono.server.QueueService;
+import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.data.Timestamp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

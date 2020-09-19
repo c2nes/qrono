@@ -1,12 +1,12 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 import java.util.Arrays;
 import java.util.Collection;
+import net.qrono.server.data.Entry;
 
 public class InMemorySegmentReader implements SegmentReader {
   private final PeekingIterator<Entry> it;

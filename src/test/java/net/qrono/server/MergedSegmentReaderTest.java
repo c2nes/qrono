@@ -11,9 +11,9 @@ import static net.qrono.server.TestData.TOMBSTONE_5_T20;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-import net.qrono.server.data.Entry.Key;
 import java.io.IOException;
 import java.util.List;
+import net.qrono.server.data.Entry.Key;
 import org.junit.Test;
 
 public class MergedSegmentReaderTest {

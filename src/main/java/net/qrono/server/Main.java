@@ -1,11 +1,5 @@
 package net.qrono.server;
 
-import net.qrono.Api.GlobalState;
-import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.data.Item;
-import net.qrono.server.data.Timestamp;
-import net.qrono.server.grpc.QueueServerService;
-import net.qrono.server.redis.RedisChannelInitializer;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Server;
@@ -34,6 +28,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import net.qrono.Api.GlobalState;
+import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.data.Item;
+import net.qrono.server.data.Timestamp;
+import net.qrono.server.grpc.QueueServerService;
+import net.qrono.server.redis.RedisChannelInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

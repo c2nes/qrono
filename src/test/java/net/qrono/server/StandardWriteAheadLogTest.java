@@ -1,9 +1,5 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.ImmutableItem;
-import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.data.Timestamp;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
@@ -11,6 +7,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.function.Supplier;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.data.Timestamp;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;

@@ -14,13 +14,13 @@ import static net.qrono.server.TestData.withValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Key;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;

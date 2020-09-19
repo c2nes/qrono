@@ -3,13 +3,6 @@ package net.qrono.server;
 import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
-import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Key;
-import net.qrono.server.data.ImmutableEntry;
-import net.qrono.server.data.ImmutableItem;
-import net.qrono.server.data.ImmutableSegmentMetadata;
-import net.qrono.server.data.Item;
-import net.qrono.server.data.SegmentMetadata;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
@@ -24,6 +17,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.function.Supplier;
+import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
+import net.qrono.server.data.ImmutableEntry;
+import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.ImmutableSegmentMetadata;
+import net.qrono.server.data.Item;
+import net.qrono.server.data.SegmentMetadata;
 
 public class ImmutableSegment implements Segment {
   @VisibleForTesting

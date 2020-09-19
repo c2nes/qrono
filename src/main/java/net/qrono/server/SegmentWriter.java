@@ -1,8 +1,8 @@
 package net.qrono.server;
 
-import net.qrono.server.data.Entry;
 import java.io.IOException;
 import java.util.function.Supplier;
+import net.qrono.server.data.Entry;
 
 public interface SegmentWriter {
 

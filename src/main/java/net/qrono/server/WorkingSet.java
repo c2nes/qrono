@@ -1,8 +1,8 @@
 package net.qrono.server;
 
+import java.io.IOException;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.Item;
-import java.io.IOException;
 
 public interface WorkingSet {
   /**

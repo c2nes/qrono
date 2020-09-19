@@ -8,12 +8,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
+import java.io.IOException;
+import java.util.List;
 import net.qrono.server.data.Entry.Type;
 import net.qrono.server.data.ImmutableEntry.Key;
 import net.qrono.server.data.ImmutableSegmentMetadata;
 import net.qrono.server.data.ImmutableTimestamp;
-import java.io.IOException;
-import java.util.List;
 import org.junit.Test;
 
 public class InMemorySegmentTest {
