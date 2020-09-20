@@ -1,5 +1,6 @@
 package net.qrono.server;
 
+import com.google.common.net.HostAndPort;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Server;
@@ -19,6 +20,8 @@ import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.BodyHandler;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -41,10 +44,12 @@ public class Main {
   private static final Logger log = LoggerFactory.getLogger(Main.class);
 
   public static void main(String[] args) throws IOException, InterruptedException {
+    var config = new Config();
+    config.load("qrono.properties");
+
     Clock clock = Clock.systemUTC();
 
-    // TODO: This should be configurable...
-    Path root = Path.of("/tmp/queue-server-test");
+    Path root = config.dataRoot;
     Files.createDirectories(root);
 
     Path globalStatePath = root.resolve("state.bin");
@@ -61,7 +66,7 @@ public class Main {
     StaticIOWorkerPool ioScheduler = new StaticIOWorkerPool(4);
     ioScheduler.startAsync().awaitRunning();
 
-    Path queuesDirectory = root.resolve("queues");
+    Path queuesDirectory = root.resolve(config.dataQueuesDir);
     Files.createDirectories(queuesDirectory);
 
     Map<Path, QueueData> queueData = new HashMap<>();
@@ -84,9 +89,12 @@ public class Main {
     long epoch = Timestamps.toMillis(globalState.getEpoch());
     IdGenerator idGenerator = new StandardIdGenerator(clock, epoch, maxId);
 
-    Path workingSetDirectory = root.resolve("working");
+    Path workingSetDirectory = root.resolve(config.dataWorkingSetDir);
 
-    var workingSet = new DiskBackedWorkingSet(workingSetDirectory, 1 << 30);
+    var workingSet = new DiskBackedWorkingSet(
+        workingSetDirectory,
+        config.dataWorkingSetMappedFileSize);
+
     workingSet.startAsync().awaitRunning();
 
     QueueFactory queueFactory = new QueueFactory(
@@ -102,7 +110,8 @@ public class Main {
 
     var queueService = new QueueService(queueFactory, queues);
     QueueServerService service = new QueueServerService(queueService);
-    Server server = NettyServerBuilder.forPort(9090)
+
+    Server server = NettyServerBuilder.forAddress(toSocketAddress(config.netListenGrpc))
         .addService(service)
         .build();
 
@@ -151,7 +160,9 @@ public class Main {
               ctx.response().end();
             });
 
-        httpServer.requestHandler(router).listen(8081);
+        httpServer.requestHandler(router).listen(
+            config.netListenHttp.getPort(),
+            config.netListenHttp.getHost());
         super.start();
       }
     };
@@ -172,7 +183,9 @@ public class Main {
         .childOption(ChannelOption.SO_KEEPALIVE, true)
         .childHandler(new RedisChannelInitializer(queueService));
 
-    var channelFuture = redisServer.bind(16379).sync();
+    var channelFuture = redisServer
+        .bind(toSocketAddress(config.netListenResp))
+        .sync();
 
     // -----------------------------------------------------------------------
 
@@ -185,5 +198,9 @@ public class Main {
     }));
 
     server.start().awaitTermination();
+  }
+
+  private static SocketAddress toSocketAddress(HostAndPort hostAndPort) {
+    return new InetSocketAddress(hostAndPort.getHost(), hostAndPort.getPort());
   }
 }
