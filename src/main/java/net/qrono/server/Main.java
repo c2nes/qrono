@@ -1,5 +1,7 @@
 package net.qrono.server;
 
+import static java.lang.Math.toIntExact;
+
 import com.google.common.net.HostAndPort;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
@@ -44,12 +46,12 @@ public class Main {
   private static final Logger log = LoggerFactory.getLogger(Main.class);
 
   public static void main(String[] args) throws IOException, InterruptedException {
-    var config = new Config();
-    config.load("qrono.properties");
+    var config = Config.load();
+    log.info("Config {}", config);
 
     Clock clock = Clock.systemUTC();
 
-    Path root = config.dataRoot;
+    Path root = config.dataRoot();
     Files.createDirectories(root);
 
     Path globalStatePath = root.resolve("state.bin");
@@ -66,7 +68,7 @@ public class Main {
     StaticIOWorkerPool ioScheduler = new StaticIOWorkerPool(4);
     ioScheduler.startAsync().awaitRunning();
 
-    Path queuesDirectory = root.resolve(config.dataQueuesDir);
+    Path queuesDirectory = root.resolve(config.dataQueuesDir());
     Files.createDirectories(queuesDirectory);
 
     Map<Path, QueueData> queueData = new HashMap<>();
@@ -89,11 +91,11 @@ public class Main {
     long epoch = Timestamps.toMillis(globalState.getEpoch());
     IdGenerator idGenerator = new StandardIdGenerator(clock, epoch, maxId);
 
-    Path workingSetDirectory = root.resolve(config.dataWorkingSetDir);
+    Path workingSetDirectory = root.resolve(config.dataWorkingSetDir());
 
     var workingSet = new DiskBackedWorkingSet(
         workingSetDirectory,
-        config.dataWorkingSetMappedFileSize);
+        toIntExact(config.dataWorkingSetMappedFileSize().bytes()));
 
     workingSet.startAsync().awaitRunning();
 
@@ -111,9 +113,10 @@ public class Main {
     var queueService = new QueueService(queueFactory, queues);
     QueueServerService service = new QueueServerService(queueService);
 
-    Server server = NettyServerBuilder.forAddress(toSocketAddress(config.netListenGrpc))
-        .addService(service)
-        .build();
+    Server server =
+        NettyServerBuilder.forAddress(toSocketAddress(config.netListenGrpc()))
+            .addService(service)
+            .build();
 
     // -----------------------------------------------------------------------
     // Vert.x Web
@@ -161,8 +164,8 @@ public class Main {
             });
 
         httpServer.requestHandler(router).listen(
-            config.netListenHttp.getPort(),
-            config.netListenHttp.getHost());
+            config.netListenHttp().getPort(),
+            config.netListenHttp().getHost());
         super.start();
       }
     };
@@ -184,7 +187,7 @@ public class Main {
         .childHandler(new RedisChannelInitializer(queueService));
 
     var channelFuture = redisServer
-        .bind(toSocketAddress(config.netListenResp))
+        .bind(toSocketAddress(config.netListenResp()))
         .sync();
 
     // -----------------------------------------------------------------------
