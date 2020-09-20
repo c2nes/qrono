@@ -45,7 +45,8 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
   private final Path directory;
   private final int mappedFileSize;
-  private final int mappedFileSizeBits;
+  private final int offsetMask;
+  private final int offsetMaskLen;
 
   private final Map<Long, WorkingItem> entries = new HashMap<>();
   private final LinkedHashMap<Long, MappedFile> files = new LinkedHashMap<>();
@@ -54,9 +55,6 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   private boolean drainIsIdle = true;
 
   public DiskBackedWorkingSet(Path directory, int mappedFileSize) throws IOException {
-    Preconditions.checkArgument(Integer.bitCount(mappedFileSize) == 1,
-        "mappedFileSize must be a power of two");
-
     // STATS_SIZE sets a strict lower bound on file size, but actual size must be large
     // enough to hold the largest allowed item value (which is set elsewhere). Generally
     // mappedFileSize should be set to a value at least a few orders of magnitude larger
@@ -66,7 +64,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
     this.directory = directory;
     this.mappedFileSize = mappedFileSize;
-    mappedFileSizeBits = Integer.numberOfTrailingZeros(mappedFileSize);
+
+    var maxOffset = mappedFileSize - 1;
+    offsetMask = (Integer.highestOneBit(maxOffset) << 1) - 1;
+    offsetMaskLen = Integer.bitCount(offsetMask);
 
     // Add listener to log failures
     addListener(new Listener() {
@@ -260,11 +261,11 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   }
 
   long entryFileID(WorkingItem entry) {
-    return entry.location >>> mappedFileSizeBits;
+    return entry.location >>> offsetMaskLen;
   }
 
   int entryOffset(WorkingItem entry) {
-    return (int) (entry.location & (mappedFileSize - 1));
+    return (int) (entry.location & offsetMask);
   }
 
   private Item entryItem(WorkingItem entry, MappedFile entryFile) {
@@ -382,7 +383,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
     WorkingItem add(Item item) {
       var offset = buffer.position();
-      var location = (fileID << mappedFileSizeBits) | offset;
+      var location = (fileID << offsetMaskLen) | offset;
       var entry = new WorkingItem(item, location);
 
       usedBytes += writeItem(buffer, item);

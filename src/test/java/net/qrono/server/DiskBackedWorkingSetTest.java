@@ -18,7 +18,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
-  private static final int MAPPED_FILE_SIZE = 1024;
+  private static final int MAPPED_FILE_SIZE = 1025;
 
   @Rule
   public TemporaryFolder dir = new TemporaryFolder();
