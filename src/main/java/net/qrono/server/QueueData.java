@@ -3,7 +3,6 @@ package net.qrono.server;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import java.io.File;
@@ -41,9 +40,6 @@ public class QueueData extends AbstractIdleService {
   private final MergedSegmentReader immutableSegments = new MergedSegmentReader();
 
   private WritableSegment currentSegment = null;
-
-  // Initialized in startUp
-  private volatile QueueLoadSummary queueLoadSummary;
 
   // Last key dequeued by next()
   private volatile Key last = Key.ZERO;
@@ -83,16 +79,12 @@ public class QueueData extends AbstractIdleService {
     }
 
     long maxSegmentId = -1;
-    long maxId = 0;
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
       if (SegmentFiles.isIndexPath(path)) {
         var segment = ImmutableSegment.open(path);
         logger.debug("Opening segment {}; meta={}", path, segment.metadata());
         immutableSegments.addSegment(segment, Key.ZERO);
-        if (segment.metadata().maxId() > maxId) {
-          maxId = segment.metadata().maxId();
-        }
 
         var segmentName = SegmentName.fromPath(path);
         var segmentId = segmentName.id();
@@ -106,8 +98,6 @@ public class QueueData extends AbstractIdleService {
 
     // Initialize next segment
     currentSegment = nextWritableSegment();
-
-    queueLoadSummary = new QueueLoadSummary(maxId);
   }
 
   @Override
@@ -115,11 +105,6 @@ public class QueueData extends AbstractIdleService {
     writeAndDeleteLog(currentSegment.freeze());
     currentSegment.close();
     immutableSegments.close();
-  }
-
-  public QueueLoadSummary getQueueLoadSummary() {
-    Preconditions.checkState(isRunning());
-    return queueLoadSummary;
   }
 
   private void runCompaction(List<Path> paths) {
