@@ -40,8 +40,7 @@ import net.qrono.Api.RequeueResponse;
 import net.qrono.QueueServerGrpc;
 import net.qrono.server.IdGenerator;
 import net.qrono.server.InMemoryWorkingSet;
-import net.qrono.server.QueueFactory;
-import net.qrono.server.QueueService;
+import net.qrono.server.QueueManager;
 import net.qrono.server.StaticIOWorkerPool;
 import org.junit.Ignore;
 import org.junit.Rule;
@@ -183,9 +182,9 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    var queueService = new QueueService(queueFactory);
-    QueueServerService service = new QueueServerService(queueService);
+    var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
+    queueManager.startAsync().awaitRunning();
+    QueueServerService service = new QueueServerService(queueManager);
 
     var value = ByteString.copyFromUtf8(Strings.repeat("0", 256));
     var n = 1_000_000;
@@ -212,9 +211,9 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    var queueService = new QueueService(queueFactory);
-    QueueServerService service = new QueueServerService(queueService);
+    var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
+    queueManager.startAsync().awaitRunning();
+    QueueServerService service = new QueueServerService(queueManager);
 
     var value = ByteString.copyFromUtf8("Hello, world!");
     EnqueueResponse resp = service.enqueue(EnqueueRequest.newBuilder()
@@ -266,9 +265,9 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
     var workingSet = new InMemoryWorkingSet();
-    var queueFactory = new QueueFactory(directory, idGenerator, ioScheduler, workingSet);
-    var queueService = new QueueService(queueFactory);
-    QueueServerService service = new QueueServerService(queueService);
+    var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
+    queueManager.startAsync().awaitRunning();
+    QueueServerService service = new QueueServerService(queueManager);
     var queueName = "test-queue-" + System.currentTimeMillis();
 
     var start = Instant.now();

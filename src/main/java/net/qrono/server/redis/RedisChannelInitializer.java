@@ -29,7 +29,7 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import net.qrono.server.QueueService;
+import net.qrono.server.QueueManager;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Timestamp;
 import org.slf4j.Logger;
@@ -41,10 +41,10 @@ import org.slf4j.LoggerFactory;
 public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   private static final Logger log = LoggerFactory.getLogger(RedisChannelInitializer.class);
 
-  private final QueueService service;
+  private final QueueManager manager;
 
-  public RedisChannelInitializer(QueueService service) {
-    this.service = service;
+  public RedisChannelInitializer(QueueManager manager) {
+    this.manager = manager;
   }
 
   @Override
@@ -113,7 +113,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         }
       }
 
-      var queue = service.getOrCreateQueue(queueName);
+      var queue = manager.getOrCreateQueue(queueName);
       var itemFuture = queue.enqueueAsync(ByteString.copyFrom(value.nioBuffer()), deadline);
 
       return itemFuture.thenApply(item -> new ArrayRedisMessage(List.of(
@@ -135,7 +135,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
-      var queue = service.getQueue(queueName);
+      var queue = manager.getQueue(queueName);
       if (queue == null) {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
@@ -193,7 +193,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         }
       }
 
-      var queue = service.getQueue(queueName);
+      var queue = manager.getQueue(queueName);
       if (queue == null) {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
@@ -228,7 +228,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         throw RedisRequestException.syntaxError();
       }
 
-      var queue = service.getQueue(queueName);
+      var queue = manager.getQueue(queueName);
       if (queue == null) {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }
@@ -255,7 +255,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
-      var queue = service.getQueue(queueName);
+      var queue = manager.getQueue(queueName);
       if (queue == null) {
         return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
       }

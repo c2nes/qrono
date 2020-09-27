@@ -24,21 +24,21 @@ import net.qrono.Api.RequeueResponse;
 import net.qrono.Api.Stats;
 import net.qrono.QueueServerGrpc;
 import net.qrono.server.Queue;
-import net.qrono.server.QueueService;
+import net.qrono.server.QueueManager;
 import net.qrono.server.data.ImmutableTimestamp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   private static final Logger logger = LoggerFactory.getLogger(QueueServerService.class);
-  private final QueueService svc;
+  private final QueueManager manager;
 
-  public QueueServerService(QueueService svc) {
-    this.svc = svc;
+  public QueueServerService(QueueManager manager) {
+    this.manager = manager;
   }
 
   private synchronized Queue getQueue(String queueName) {
-    Queue queue = svc.getQueue(queueName);
+    Queue queue = manager.getQueue(queueName);
     if (queue == null) {
       throw Status.NOT_FOUND
           .withDescription("no such queue, " + queueName)
@@ -55,7 +55,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = svc.getOrCreateQueue(queueName);
+    Queue queue = manager.getOrCreateQueue(queueName);
     var item = queue.enqueue(
         request.getValue(),
         request.hasDeadline() ? ImmutableTimestamp.of(toMillis(request.getDeadline())) : null);

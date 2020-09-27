@@ -26,7 +26,6 @@ import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 import net.qrono.server.data.ImmutableTimestamp;
@@ -64,21 +63,10 @@ public class Main {
 
     workingSet.startAsync().awaitRunning();
 
-    QueueFactory queueFactory = new QueueFactory(
-        queuesDirectory,
-        idGenerator,
-        ioScheduler,
-        workingSet);
-    Map<String, Queue> queues = new HashMap<>();
-    Files.list(queuesDirectory).forEach(entry -> {
-      if (Files.isDirectory(entry)) {
-        String queueName = entry.getFileName().toString();
-        queues.put(queueName, queueFactory.createQueue(queueName));
-      }
-    });
+    var queueManager = new QueueManager(queuesDirectory, idGenerator, ioScheduler, workingSet);
+    queueManager.startAsync().awaitRunning();
 
-    var queueService = new QueueService(queueFactory, queues);
-    QueueServerService service = new QueueServerService(queueService);
+    QueueServerService service = new QueueServerService(queueManager);
 
     Server server =
         NettyServerBuilder.forAddress(toSocketAddress(config.netListenGrpc()))
@@ -101,7 +89,7 @@ public class Main {
             .handler(BodyHandler.create())
             .blockingHandler(ctx -> {
               var json = ctx.getBodyAsJson();
-              var queue = queueService.getOrCreateQueue(ctx.pathParam("queueName"));
+              var queue = queueManager.getOrCreateQueue(ctx.pathParam("queueName"));
               var value = ByteString.copyFrom(json.getBinary("value"));
               Timestamp deadline = null;
               var deadlineString = json.getString("deadline");
@@ -151,7 +139,7 @@ public class Main {
         .group(parentGroup, childGroup)
         .channel(EpollServerSocketChannel.class)
         .childOption(ChannelOption.SO_KEEPALIVE, true)
-        .childHandler(new RedisChannelInitializer(queueService));
+        .childHandler(new RedisChannelInitializer(queueManager));
 
     var channelFuture = redisServer
         .bind(toSocketAddress(config.netListenResp()))
