@@ -1,13 +1,12 @@
 package net.qrono.server;
 
-import static java.util.Collections.unmodifiableCollection;
-
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -112,7 +111,7 @@ public class MergedSegmentReader implements SegmentReader {
   }
 
   public synchronized Collection<Segment> getSegments() {
-    return unmodifiableCollection(segments.values());
+    return List.copyOf(segments.values());
   }
 
   private Entry.Key rawPeek() {
