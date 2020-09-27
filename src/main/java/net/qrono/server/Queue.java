@@ -522,12 +522,16 @@ public class Queue extends AbstractIdleService {
     class GetQueueInfo extends PreBatchWriteOp<QueueInfo> {
       @Override
       QueueInfo call() {
-        long totalSize = data.getQueueSize();
+        var storageStats = data.getStorageStats();
         long dequeuedSize = dequeuedIds.size();
-        long pendingSize = totalSize - dequeuedSize;
+        long pendingSize = storageStats.persistedPendingCount()
+            + storageStats.bufferedPendingCount()
+            - storageStats.persistedTombstoneCount()
+            - storageStats.bufferedTombstoneCount();
         return ImmutableQueueInfo.builder()
             .pendingCount(pendingSize)
             .dequeuedCount(dequeuedSize)
+            .storageStats(storageStats)
             .build();
       }
     }

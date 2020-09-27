@@ -21,7 +21,10 @@ import net.qrono.server.IOScheduler.Parameters;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.ImmutableItem;
+import net.qrono.server.data.ImmutableQueueStorageStats;
 import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.data.QueueStorageStats;
+import net.qrono.server.data.SegmentMetadata;
 import net.qrono.server.util.DataSize;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -366,12 +369,18 @@ public class QueueData extends AbstractIdleService {
     return immutableSegments;
   }
 
-  public synchronized long getQueueSize() {
-    return immutableSegments.getSegments().stream()
-        .map(Segment::metadata)
-        .mapToLong(m -> m.pendingCount() - m.tombstoneCount())
-        .sum()
-        + currentSegment.pendingCount()
-        - currentSegment.tombstoneCount();
+  public synchronized QueueStorageStats getStorageStats() {
+    return ImmutableQueueStorageStats.builder()
+        .persistedPendingCount(immutableSegments.getSegments().stream()
+            .map(Segment::metadata)
+            .mapToLong(SegmentMetadata::pendingCount)
+            .sum())
+        .persistedTombstoneCount(immutableSegments.getSegments().stream()
+            .map(Segment::metadata)
+            .mapToLong(SegmentMetadata::tombstoneCount)
+            .sum())
+        .bufferedPendingCount(currentSegment.pendingCount())
+        .bufferedTombstoneCount(currentSegment.tombstoneCount())
+        .build();
   }
 }

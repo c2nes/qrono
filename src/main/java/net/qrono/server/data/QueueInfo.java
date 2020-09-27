@@ -7,4 +7,6 @@ public interface QueueInfo {
   long pendingCount();
 
   long dequeuedCount();
+
+  QueueStorageStats storageStats();
 }
