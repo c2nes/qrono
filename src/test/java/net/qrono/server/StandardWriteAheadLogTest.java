@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -23,7 +24,7 @@ public class StandardWriteAheadLogTest {
   public void benchmark(long n, int valueSize, Duration syncDuration, boolean memoizeValue)
       throws IOException {
     var baseTime = System.currentTimeMillis();
-    var generator = new StandardIdGenerator(baseTime, 0);
+    IdGenerator generator = new AtomicLong()::incrementAndGet;
     var id = generator.generateId();
     var deadline = ImmutableTimestamp.of(baseTime);
     var value = ByteString.copyFromUtf8(Strings.repeat("0", valueSize));

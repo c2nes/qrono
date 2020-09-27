@@ -124,7 +124,3 @@ message DropQueueRequest {
 message CompactQueueRequest {
   string queue = 1;
 }
-
-message GlobalState {
-  google.protobuf.Timestamp epoch = 1;
-}

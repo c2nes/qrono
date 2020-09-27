@@ -1,7 +1,5 @@
 package net.qrono.server;
 
-import static java.lang.System.currentTimeMillis;
-
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.time.Clock;
@@ -10,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -27,7 +26,7 @@ public class QueueTest {
     var workerPool = new StaticIOWorkerPool(1);
     workerPool.startAsync().awaitRunning();
     var clock = Clock.systemUTC();
-    var idGenerator = new StandardIdGenerator(currentTimeMillis(), 0);
+    IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     var data = new QueueData(path, workerPool, segmentWriter);
     data.startAsync().awaitRunning();
     var workingSet = new DiskBackedWorkingSet(path, 1 << 30);

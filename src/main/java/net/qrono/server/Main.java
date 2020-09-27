@@ -4,7 +4,6 @@ import static java.lang.Math.toIntExact;
 
 import com.google.common.net.HostAndPort;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.util.Timestamps;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.bootstrap.ServerBootstrap;
@@ -26,14 +25,10 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Clock;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
-import net.qrono.Api.GlobalState;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Item;
 import net.qrono.server.data.Timestamp;
@@ -49,21 +44,8 @@ public class Main {
     var config = Config.load();
     log.info("Config {}", config);
 
-    Clock clock = Clock.systemUTC();
-
     Path root = config.dataRoot();
     Files.createDirectories(root);
-
-    Path globalStatePath = root.resolve("state.bin");
-    GlobalState globalState;
-    if (Files.exists(globalStatePath)) {
-      globalState = GlobalState.parseFrom(Files.readAllBytes(globalStatePath));
-    } else {
-      globalState = GlobalState.newBuilder()
-          .setEpoch(Timestamps.fromMillis(clock.millis()))
-          .build();
-      Files.write(globalStatePath, globalState.toByteArray());
-    }
 
     StaticIOWorkerPool ioScheduler = new StaticIOWorkerPool(4);
     ioScheduler.startAsync().awaitRunning();
@@ -71,25 +53,8 @@ public class Main {
     Path queuesDirectory = root.resolve(config.dataQueuesDir());
     Files.createDirectories(queuesDirectory);
 
-    Map<Path, QueueData> queueData = new HashMap<>();
-    List<QueueLoadSummary> loadSummaries = new ArrayList<>();
-    Files.list(queuesDirectory).forEach(entry -> {
-      if (Files.isDirectory(entry)) {
-        var writer = new StandardSegmentWriter(entry);
-        var data = new QueueData(entry, ioScheduler, writer);
-        data.startAsync().awaitRunning();
-        loadSummaries.add(data.getQueueLoadSummary());
-        queueData.put(entry, data);
-      }
-    });
-
-    long maxId = loadSummaries.stream()
-        .mapToLong(QueueLoadSummary::getMaxId)
-        .max()
-        .orElse(0);
-
-    long epoch = Timestamps.toMillis(globalState.getEpoch());
-    IdGenerator idGenerator = new StandardIdGenerator(clock, epoch, maxId);
+    var idGenerator = new PersistentIdGenerator(root.resolve("last-id"));
+    idGenerator.startAsync().awaitRunning();
 
     Path workingSetDirectory = root.resolve(config.dataWorkingSetDir());
 
@@ -105,9 +70,11 @@ public class Main {
         ioScheduler,
         workingSet);
     Map<String, Queue> queues = new HashMap<>();
-    queueData.forEach((path, data) -> {
-      String queueName = path.getFileName().toString();
-      queues.put(queueName, queueFactory.createQueue(data));
+    Files.list(queuesDirectory).forEach(entry -> {
+      if (Files.isDirectory(entry)) {
+        String queueName = entry.getFileName().toString();
+        queues.put(queueName, queueFactory.createQueue(queueName));
+      }
     });
 
     var queueService = new QueueService(queueFactory, queues);

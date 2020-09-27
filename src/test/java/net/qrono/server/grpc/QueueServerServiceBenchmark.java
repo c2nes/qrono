@@ -38,10 +38,10 @@ import net.qrono.Api.ReleaseRequest;
 import net.qrono.Api.RequeueRequest;
 import net.qrono.Api.RequeueResponse;
 import net.qrono.QueueServerGrpc;
+import net.qrono.server.IdGenerator;
 import net.qrono.server.InMemoryWorkingSet;
 import net.qrono.server.QueueFactory;
 import net.qrono.server.QueueService;
-import net.qrono.server.StandardIdGenerator;
 import net.qrono.server.StaticIOWorkerPool;
 import org.junit.Ignore;
 import org.junit.Rule;
@@ -178,7 +178,7 @@ public class QueueServerServiceBenchmark {
 
   @Test
   public void testEnqueueThroughput() throws InterruptedException, IOException {
-    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
+    IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
@@ -207,7 +207,7 @@ public class QueueServerServiceBenchmark {
 
   @Test
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
-    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
+    IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
@@ -261,7 +261,7 @@ public class QueueServerServiceBenchmark {
 
   @Test
   public void testEnqueueDequeueReleaseMany() throws IOException {
-    StandardIdGenerator idGenerator = new StandardIdGenerator(System.currentTimeMillis(), 0);
+    IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new StaticIOWorkerPool(1);
     ioScheduler.startAsync().awaitRunning();
