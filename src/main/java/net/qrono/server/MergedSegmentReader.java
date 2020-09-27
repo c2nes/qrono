@@ -60,11 +60,13 @@ public class MergedSegmentReader implements SegmentReader {
    * seeking to the provided position as specified by {@link Segment#newReader(Key)}.
    */
   public synchronized void addSegment(Segment segment, Key position) throws IOException {
+    // Always add to `segments' so that it will be returned by `getSegments'.
+    segments.put(segment.name(), segment);
+
     var reader = segment.newReader(position);
 
-    // If peek is non-null then reinsert into the heap
+    // If peek is non-null then insert into the heap
     if (reader.peek() != null) {
-      segments.put(segment.name(), segment);
       readers.add(reader);
       readersByName.put(segment.name(), reader);
 
