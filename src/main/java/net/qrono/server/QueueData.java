@@ -140,6 +140,12 @@ public class QueueData extends AbstractIdleService {
   }
 
   public void compact() throws IOException {
+    var stats = getStorageStats();
+    // Skip compaction if we do not have enough tombstones
+    if (stats.totalTombstoneCount() < 0.2 * stats.bufferedPendingCount()) {
+      return;
+    }
+
     // Force flush current segment so it is included in the compaction.
     forceFlushCurrentSegment().join();
 

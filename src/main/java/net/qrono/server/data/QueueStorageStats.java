@@ -11,4 +11,12 @@ public interface QueueStorageStats {
   long bufferedPendingCount();
 
   long bufferedTombstoneCount();
+
+  default long totalPendingCount() {
+    return persistedPendingCount() + bufferedPendingCount();
+  }
+
+  default long totalTombstoneCount() {
+    return persistedTombstoneCount() + bufferedTombstoneCount();
+  }
 }
