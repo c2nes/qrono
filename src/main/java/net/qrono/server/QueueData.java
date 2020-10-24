@@ -56,6 +56,8 @@ public class QueueData extends AbstractIdleService {
     //  from accessing the queue data simultaneously?
     Files.createDirectories(directory);
 
+    // TODO: Recover from failed compaction
+
     // Load any segment logs and write out segments
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
@@ -105,53 +107,6 @@ public class QueueData extends AbstractIdleService {
     writeAndDeleteLog(currentSegment.freeze());
     currentSegment.close();
     immutableSegments.close();
-  }
-
-  private void runCompaction(List<Path> paths) {
-    // Merge paths -> new path
-    // How do we name the paths to know what replaces what?
-    // 0-000 -> 1-000
-    // 0-001 -> 1-001
-    // ...
-    // 1-*   -> 2-*
-    // Level 0 = Written from in-memory segment
-    // Level 1 = Written from level 0 segments
-    // Level N = Written from level n-1 segments
-    //
-    // 0-000000000001.p-idx
-    // 0-000000000002.p-idx
-    // 0-000000000003.p-idx
-    // 0-000000000004.p-idx
-    // 0-000000000005.p-idx
-    //
-    // 1-000000000005.p-idx = Merged version of all level 0 segments <= 5
-    //
-    // 1-000000000010.p-idx = Merged version of all level 0, 5 < segments <= 10 ?
-    //
-    //
-    // .p-idx.tmp -> .p-idx
-    //
-    // Any new level zero segments will be > 5
-    // There will never be new level 0 segments <= 5
-    //
-    // Start compaction at level N,
-    //  1) Identify all input files (level N-1). Find MaxID.
-    //  2) Write N-MaxID.idx
-    //  3) Swap in-process. How do we know where to skip to?
-    //
-    // Well, we need to keep track of the last returned key "K".
-    // Any keys k_1 < K in written segments have already been returned (right? if k_1 < K and )
-    //
-    // Recovery,
-    //  1) Remove tmp files
-    //  2) Remove overlapping segment files in lower levels
-    //  3) Compact log file (if exists)
-    //
-
-    // We can pass a reference to the watermark to the segment writer and ask it to track
-    // the location of the first key after this value?
-
-    // Unrelated, is it okay that we reuse IDs when requeueing items?
   }
 
   public void runTestCompaction() throws IOException {
@@ -284,9 +239,7 @@ public class QueueData extends AbstractIdleService {
       frozen = freezeAndReplaceCurrentSegment();
     }
 
-    if (frozen != null) {
-      flush(frozen);
-    }
+    flush(frozen);
   }
 
   @VisibleForTesting
