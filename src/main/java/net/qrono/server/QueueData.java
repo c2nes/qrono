@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
@@ -58,7 +59,7 @@ public class QueueData extends AbstractIdleService {
 
     // TODO: Recover from failed compaction
 
-    // Load any segment logs and write out segments
+    // Load any segment logs and write out segments. Also remove any temporary files.
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
 
@@ -78,21 +79,50 @@ public class QueueData extends AbstractIdleService {
         segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
       }
+
+      if (SegmentFiles.isTemporaryPath(path)) {
+        logger.warn("Removing orphaned temporary file {}", path);
+        Files.delete(path);
+      }
     }
 
-    long maxSegmentId = -1;
+    var segmentPaths = new HashMap<SegmentName, Path>();
     for (File file : requireNonNull(directory.toFile().listFiles())) {
       Path path = file.toPath();
       if (SegmentFiles.isIndexPath(path)) {
-        var segment = ImmutableSegment.open(path);
-        logger.debug("Opening segment {}; meta={}", path, segment.metadata());
-        immutableSegments.addSegment(segment, Key.ZERO);
+        var name = SegmentName.fromPath(path);
+        segmentPaths.put(name, path);
+      }
+    }
 
-        var segmentName = SegmentName.fromPath(path);
-        var segmentId = segmentName.id();
-        if (segmentId > maxSegmentId) {
-          maxSegmentId = segmentId;
+    var compactedSegments = new ArrayList<SegmentName>();
+    for (SegmentName a : segmentPaths.keySet()) {
+      for (SegmentName b : segmentPaths.keySet()) {
+        if (a.level() < b.level() && a.id() <= b.id()) {
+          var compacted = segmentPaths.get(a);
+          var replacement = segmentPaths.get(b);
+          logger.warn("Removing previously compacted segment {} (superseded by {})",
+              compacted, replacement);
+          Files.delete(compacted);
+          compactedSegments.add(a);
         }
+      }
+    }
+
+    // Remove all of the segment paths we just deleted.
+    segmentPaths.keySet().removeAll(compactedSegments);
+
+    // Open all of the remaining segments
+    long maxSegmentId = -1;
+    for (Path path : segmentPaths.values()) {
+      var segment = ImmutableSegment.open(path);
+      logger.debug("Opening segment {}; meta={}", path, segment.metadata());
+      immutableSegments.addSegment(segment, Key.ZERO);
+
+      var segmentName = SegmentName.fromPath(path);
+      var segmentId = segmentName.id();
+      if (segmentId > maxSegmentId) {
+        maxSegmentId = segmentId;
       }
     }
 
