@@ -41,6 +41,6 @@ class SegmentFiles {
   }
 
   static Path getTemporaryPath(Path path) {
-    return path.getParent().resolve(path.getFileName().toString() + TMP_SUFFIX);
+    return path.resolveSibling(path.getFileName() + TMP_SUFFIX);
   }
 }
