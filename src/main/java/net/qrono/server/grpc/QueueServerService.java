@@ -196,7 +196,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   Empty compactQueue(CompactQueueRequest request) throws IOException {
     String queueName = request.getQueue();
     Queue queue = getQueue(queueName);
-    queue.runTestCompaction();
+    queue.compact();
     return Empty.getDefaultInstance();
   }
 

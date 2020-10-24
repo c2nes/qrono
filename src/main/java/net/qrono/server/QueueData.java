@@ -109,7 +109,7 @@ public class QueueData extends AbstractIdleService {
     immutableSegments.close();
   }
 
-  public void runTestCompaction() throws IOException {
+  public void compact() throws IOException {
     // Force flush current segment so it is included in the compaction.
     forceFlushCurrentSegment().join();
 

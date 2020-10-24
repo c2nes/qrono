@@ -196,9 +196,9 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public void runTestCompaction() throws IOException {
+  public void compact() throws IOException {
     Preconditions.checkState(isRunning());
-    data.runTestCompaction();
+    data.compact();
   }
 
   class OpHolder implements Op {

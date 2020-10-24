@@ -87,7 +87,7 @@ public class QueueManager extends AbstractScheduledService {
     var maybeQueue = queues.values().stream().max(comparing(QueueManager::compactionScore));
     if (maybeQueue.isPresent()) {
       var queue = maybeQueue.get();
-      queue.runTestCompaction();
+      queue.compact();
     }
   }
 
