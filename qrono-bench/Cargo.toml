@@ -10,13 +10,12 @@ edition = "2018"
 debug = true
 
 [dependencies]
-
 futures = "0.3"
 
-[dependencies.async-std]
-version = "1.8.0"
-features = ["unstable"]
+[dependencies.tokio]
+version = "0.3"
+features = ["full"]
 
 [dependencies.redis]
 version = "*"
-features = ["aio", "async-std-comp"]
+features = ["aio", "tokio-comp"]
