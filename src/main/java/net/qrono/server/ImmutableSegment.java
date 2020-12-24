@@ -24,8 +24,12 @@ import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableSegmentMetadata;
 import net.qrono.server.data.Item;
 import net.qrono.server.data.SegmentMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ImmutableSegment implements Segment {
+  private static final Logger log = LoggerFactory.getLogger(ImmutableSegment.class);
+
   @VisibleForTesting
   static final int DEFAULT_BUFFER_SIZE = 4096;
 
@@ -58,11 +62,14 @@ public class ImmutableSegment implements Segment {
   public SegmentReader newReader(Key position) throws IOException {
     var reader = new Reader(FileChannel.open(path));
     if (position.compareTo(knownOffset.key()) < 0) {
-      // TODO: Log a warning. "knownOffset" was tracked by the Writer based on a hint about
-      //  where the head of the queue is currently. The head of the queue may have since moved
-      //  ahead of this known position, but if the requested position is _behind_ our known
-      //  position then something has gone wrong and seeking to the appropriate position may
-      //  be slow.
+      // "knownOffset" was tracked by the Writer based on a hint about where the head of the
+      // queue is currently. The head of the queue may have since moved ahead of this known
+      // position, but if the requested position is _behind_ our known position then something
+      // has gone wrong and seeking to the appropriate position may be slow.
+      log.warn("Segment reader opened at seemingly stale offset. Performance may suffer."
+              + " This is likely a bug; path={}, position={}, knownOffset={}",
+          path, position, knownOffset);
+
       reader.position(0);
     } else {
       reader.position(knownOffset.position());
@@ -373,8 +380,6 @@ public class ImmutableSegment implements Segment {
         }
       }
 
-      // TODO: Consider versioning the footer
-
       var footer = ImmutableEncoding.Footer.builder()
           .pendingCount(pendingCount)
           .tombstoneCount(tombstoneCount)
@@ -410,6 +415,14 @@ public class ImmutableSegment implements Segment {
 
     public long position() {
       return position;
+    }
+
+    @Override
+    public String toString() {
+      return "KnownOffset{" +
+          "key=" + key +
+          ", position=" + position +
+          '}';
     }
   }
 }

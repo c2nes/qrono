@@ -1,5 +1,6 @@
 package net.qrono.server;
 
+import static com.google.common.base.Verify.verify;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static java.nio.file.StandardOpenOption.CREATE_NEW;
 import static java.nio.file.StandardOpenOption.READ;
@@ -8,6 +9,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
 import com.google.protobuf.ByteString;
 import java.io.Closeable;
@@ -35,6 +37,10 @@ import net.qrono.server.util.LinkedNodeList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Disk backed working set with in-memory caching. While disk backed, this working set
+ * implementation is not persistent and the contents will be lost when the process exits.
+ */
 public class DiskBackedWorkingSet extends AbstractExecutionThreadService implements WorkingSet {
   private static final Logger log = LoggerFactory.getLogger(DiskBackedWorkingSet.class);
 
@@ -42,6 +48,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   static final String FILE_SUFFIX = ".tmp";
 
   private static final byte[] ZERO_BYTE = {0};
+  /**
+   * Interval between checking working set residency and draining mapped files.
+   */
+  private static final long CHECK_DRAIN_INTERVAL_MS = 1000;
 
   private final Path directory;
   private final int mappedFileSize;
@@ -132,8 +142,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
         notifyAll();
       }
 
-      // TODO: Make this configurable?
-      wait(250);
+      wait(CHECK_DRAIN_INTERVAL_MS);
     }
 
     return null;
@@ -309,7 +318,6 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
     @Override
     public Item item() {
-      // TODO: This could be more fine grained
       synchronized (DiskBackedWorkingSet.this) {
         checkNotReleased();
         return entryItem(entry, entryFile);
@@ -318,11 +326,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
 
     @Override
     public void release() {
-      // TODO: This could be more fine grained? Maybe?
       synchronized (DiskBackedWorkingSet.this) {
         checkNotReleased();
-        // TODO: Verify this removes something?
-        entries.remove(entry.id);
+        verify(entries.remove(entry.id) != null,
+            "BUG: global entries map and mapped file node list out of sync");
         removeFileEntry(entryFile, entry);
       }
     }
