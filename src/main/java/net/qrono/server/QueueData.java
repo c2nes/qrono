@@ -142,7 +142,7 @@ public class QueueData extends AbstractIdleService {
   public void compact() throws IOException {
     var stats = getStorageStats();
     // Skip compaction if we do not have enough tombstones
-    if (stats.totalTombstoneCount() < 0.2 * stats.bufferedPendingCount()) {
+    if (stats.totalTombstoneCount() < 0.2 * stats.totalPendingCount()) {
       return;
     }
 
