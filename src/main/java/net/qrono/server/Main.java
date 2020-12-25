@@ -14,6 +14,8 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 import net.qrono.server.grpc.QueueServerService;
 import net.qrono.server.redis.RedisChannelInitializer;
 import org.slf4j.Logger;
@@ -52,7 +54,7 @@ public class Main {
     QueueServerService service = new QueueServerService(queueManager);
 
     Server server =
-        NettyServerBuilder.forAddress(toSocketAddress(config.netListenGrpc()))
+        NettyServerBuilder.forAddress(toSocketAddress(config.netGrpcListen()))
             .addService(service)
             .build();
 
@@ -69,8 +71,25 @@ public class Main {
         .childHandler(new RedisChannelInitializer(queueManager));
 
     var channelFuture = redisServer
-        .bind(toSocketAddress(config.netListenResp()))
+        .bind(toSocketAddress(config.netRespListen()))
         .sync();
+
+    // -----------------------------------------------------------------------
+    // gRPC Gateway (HTTP interface)
+    // -----------------------------------------------------------------------
+
+    if (config.netHttpGatewayPath().isPresent()) {
+      var gatewayPath = config.netHttpGatewayPath().get();
+      if (Files.isExecutable(gatewayPath)) {
+        var cmd = List.of(
+            gatewayPath.toString(),
+            "-target", config.netGrpcListen().toString(),
+            "-listen", config.netHttpListen().toString()
+        );
+
+        new ProcessBuilder(cmd).inheritIO().start();
+      }
+    }
 
     // -----------------------------------------------------------------------
 

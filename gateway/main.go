@@ -14,7 +14,8 @@ import (
 )
 
 var (
-	echoEndpoint = flag.String("echo_endpoint", "localhost:9090", "endpoint of YourService")
+	target = flag.String("target", "localhost:16381", "gRPC backend address")
+	listen = flag.String("listen", "localhost:16380", "listen address")
 )
 
 func run() error {
@@ -24,12 +25,12 @@ func run() error {
 
 	mux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithInsecure()}
-	err := gw.RegisterQueueServerHandlerFromEndpoint(ctx, mux, *echoEndpoint, opts)
+	err := gw.RegisterQueueServerHandlerFromEndpoint(ctx, mux, *target, opts)
 	if err != nil {
 		return err
 	}
 
-	return http.ListenAndServe(":8080", mux)
+	return http.ListenAndServe(*listen, mux)
 }
 
 func main() {

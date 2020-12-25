@@ -3,14 +3,17 @@ package net.qrono.server;
 import static com.google.common.base.Strings.emptyToNull;
 
 import com.google.common.net.HostAndPort;
+import com.google.common.reflect.TypeToken;
 import java.io.IOException;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.Optional;
 import java.util.Properties;
 import net.qrono.server.util.DataSize;
 import org.immutables.value.Value;
@@ -18,14 +21,17 @@ import org.immutables.value.Value;
 @Value.Immutable
 @SuppressWarnings("UnstableApiUsage")
 public interface Config {
-  @Option("net.listen.resp")
-  HostAndPort netListenResp();
+  @Option("net.resp.listen")
+  HostAndPort netRespListen();
 
-  @Option("net.listen.http")
-  HostAndPort netListenHttp();
+  @Option("net.http.listen")
+  HostAndPort netHttpListen();
 
-  @Option("net.listen.grpc")
-  HostAndPort netListenGrpc();
+  @Option("net.http.gatewayPath")
+  Optional<Path> netHttpGatewayPath();
+
+  @Option("net.grpc.listen")
+  HostAndPort netGrpcListen();
 
   @Option("data.root")
   Path dataRoot();
@@ -49,6 +55,18 @@ public interface Config {
         var valueName = option.value();
         var valueStr = readStringOption(properties, valueName);
         var type = method.getReturnType();
+
+        if (Optional.class.equals(type)) {
+          if (valueStr == null) {
+            return Optional.empty();
+          }
+
+          var optionalType = (Class<?>) ((ParameterizedType) method.getGenericReturnType())
+              .getActualTypeArguments()[0];
+
+          return Optional.of(parseOption(optionalType, valueStr));
+        }
+
         return valueStr == null ? null : parseOption(type, valueStr);
       }
 
