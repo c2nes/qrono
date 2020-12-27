@@ -1,7 +1,7 @@
 
 # Qrono
 
-![ci](https://github.com/c2nes/qrono/workflows/ci/badge.svg)
+[![build](https://github.com/c2nes/qrono/workflows/build/badge.svg)](https://github.com/c2nes/qrono/actions?query=workflow%3Abuild)
 
 Qrono is a time-ordered queue server.
 
