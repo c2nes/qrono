@@ -1,1 +1,4 @@
 theme: jekyll-theme-minimal
+title: "Qrono: time-ordered queue server"
+description: "Qrono is a time-ordered queue server"
+logo: assets/images/logo.png
