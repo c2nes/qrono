@@ -78,7 +78,7 @@ public interface Config {
   }
 
   private static Properties loadProperties(ClassLoader classLoader) throws IOException {
-    var defaults = new Properties(System.getProperties());
+    var defaults = new Properties();
     try (var in = classLoader.getResourceAsStream("qrono-defaults.properties")) {
       if (in != null) {
         defaults.load(in);
@@ -96,6 +96,11 @@ public interface Config {
   }
 
   private static String readStringOption(Properties properties, String name) {
+    var sysPropValue = emptyToNull(System.getProperty(name));
+    if (sysPropValue != null) {
+      return sysPropValue;
+    }
+
     var envVarName = name
         .replaceAll("([a-z])([A-Z])", "$1_$2")
         .replace('.', '_')
