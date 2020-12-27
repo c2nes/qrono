@@ -15,6 +15,6 @@ VOLUME /var/lib/qrono
 WORKDIR /app
 
 CMD java \
-    -Dnet.http.gatewayPath=/app/gateway \
+    -Dqrono.net.http.gatewayPath=/app/gateway \
     -cp /app/qrono-server.jar:/app/config \
     net.qrono.server.Main

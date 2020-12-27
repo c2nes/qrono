@@ -20,28 +20,28 @@ import org.immutables.value.Value;
 @Value.Immutable
 @SuppressWarnings("UnstableApiUsage")
 public interface Config {
-  @Option("net.resp.listen")
+  @Option("qrono.net.resp.listen")
   HostAndPort netRespListen();
 
-  @Option("net.http.listen")
+  @Option("qrono.net.http.listen")
   HostAndPort netHttpListen();
 
-  @Option("net.http.gatewayPath")
+  @Option("qrono.net.http.gatewayPath")
   Optional<Path> netHttpGatewayPath();
 
-  @Option("net.grpc.listen")
+  @Option("qrono.net.grpc.listen")
   HostAndPort netGrpcListen();
 
-  @Option("data.root")
+  @Option("qrono.data.root")
   Path dataRoot();
 
-  @Option("data.queues.dir")
+  @Option("qrono.data.queues.dir")
   Path dataQueuesDir();
 
-  @Option("data.workingSet.dir")
+  @Option("qrono.data.workingSet.dir")
   Path dataWorkingSetDir();
 
-  @Option("data.workingSet.mappedFileSize")
+  @Option("qrono.data.workingSet.mappedFileSize")
   DataSize dataWorkingSetMappedFileSize();
 
   static Config load() throws IOException {
