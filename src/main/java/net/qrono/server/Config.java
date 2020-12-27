@@ -3,7 +3,6 @@ package net.qrono.server;
 import static com.google.common.base.Strings.emptyToNull;
 
 import com.google.common.net.HostAndPort;
-import com.google.common.reflect.TypeToken;
 import java.io.IOException;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -79,7 +78,7 @@ public interface Config {
   }
 
   private static Properties loadProperties(ClassLoader classLoader) throws IOException {
-    var defaults = new Properties();
+    var defaults = new Properties(System.getProperties());
     try (var in = classLoader.getResourceAsStream("qrono-defaults.properties")) {
       if (in != null) {
         defaults.load(in);
