@@ -5,6 +5,8 @@
 
 Qrono is a time-ordered queue server.
 
+> :warning: Qrono is a hobby project. **It is not production ready.**
+
 Values in a Qrono queue are ordered by their _deadline_ and can only be dequeued once their deadline has passed. A deadline can be specified when enqueuing or requeuing a value and defaults to the current time. Values with equal deadlines are processed in FIFO order.
 
 Qrono provides multiple interfaces. In addition to standard HTTP and gRPC interfaces, Qrono provides a Redis-compatible [RESP](https://redis.io/topics/protocol) interface allowing `redis-cli` and many existing Redis client libraries to be used.
