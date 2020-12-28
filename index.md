@@ -3,7 +3,7 @@
 
 Qrono is a time-ordered queue server.
 
-> :warning: Qrono is a hobby project. **It is not production ready.**
+> ⚠️ Qrono is a hobby project. **It is not production ready.**
 
 Values in a Qrono queue are ordered by their _deadline_ and can only be dequeued once their deadline has passed. A deadline can be specified when enqueuing or requeuing a value and defaults to the current time. Values with equal deadlines are processed in FIFO order.
 
