@@ -246,10 +246,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       });
     }
 
-    // INFO queue
+    // STAT queue
     //   (integer) pending-count
     //   (integer) dequeued-count
-    private CompletableFuture<RedisMessage> handleInfo(List<RedisMessage> args) {
+    private CompletableFuture<RedisMessage> handleStat(List<RedisMessage> args) {
       if (args.size() != 2) {
         throw RedisRequestException.wrongNumberOfArguments();
       }
@@ -302,8 +302,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         case "release":
           return handleRelease(args);
 
-        case "info":
-          return handleInfo(args);
+        case "stat":
+          return handleStat(args);
 
         // For compatibility with Redis
         case "ping":
