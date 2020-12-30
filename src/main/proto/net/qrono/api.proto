@@ -39,6 +39,12 @@ service QueueServer {
     };
   }
 
+  rpc Peek (PeekRequest) returns (Item) {
+    option (google.api.http) = {
+      get: "/v1/queues/{queue}:peek"
+    };
+  }
+
   rpc GetQueueInfo (GetQueueInfoRequest) returns (QueueInfo) {
     option (google.api.http) = {
       get: "/v1/queues/{queue}"
@@ -71,6 +77,10 @@ message EnqueueResponse {
 
 // Blocking?
 message DequeueRequest {
+  string queue = 1;
+}
+
+message PeekRequest {
   string queue = 1;
 }
 

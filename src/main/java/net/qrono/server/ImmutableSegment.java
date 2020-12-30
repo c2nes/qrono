@@ -134,6 +134,8 @@ public class ImmutableSegment implements Segment {
     private final BufferedReadableChannel channel;
     private final long footerPosition;
     private Entry.Key nextKey = null;
+    // Only populated when peekEntry is called
+    private Entry nextEntry = null;
     private boolean closed = false;
 
     @VisibleForTesting
@@ -153,6 +155,9 @@ public class ImmutableSegment implements Segment {
     @Override
     public Entry.Key peek() {
       checkOpen();
+      if (nextEntry != null) {
+        return nextEntry.key();
+      }
       return nextKey;
     }
 
@@ -201,9 +206,30 @@ public class ImmutableSegment implements Segment {
     @Override
     public Entry next() throws IOException {
       checkOpen();
+
+      // Return entry buffered by peekNext if available.
+      // peekNext also populates nextKey with the subsequent key so we
+      // do not need to call readNextKey here.
+      if (nextEntry != null) {
+        var entry = nextEntry;
+        nextEntry = null;
+        return entry;
+      }
+
       var entry = readNextEntry();
       nextKey = readNextKey();
       return entry;
+    }
+
+    @Override
+    public Entry peekEntry() throws IOException {
+      checkOpen();
+      // Ensure the next entry is buffered
+      if (nextEntry == null) {
+        nextEntry = readNextEntry();
+        nextKey = readNextKey();
+      }
+      return nextEntry;
     }
 
     @Override

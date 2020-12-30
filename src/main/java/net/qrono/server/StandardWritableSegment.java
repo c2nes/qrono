@@ -123,10 +123,10 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public synchronized Entry.Key peek() {
+  public synchronized Entry peekEntry() {
     Preconditions.checkState(!closed, "closed");
     Item item = pending.peek();
-    return item == null ? null : Entry.newPendingKey(item);
+    return item == null ? null : Entry.newPendingEntry(item);
   }
 
   @Override

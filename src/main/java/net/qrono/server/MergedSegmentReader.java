@@ -125,6 +125,10 @@ public class MergedSegmentReader implements SegmentReader {
     return head == null ? null : head.peek();
   }
 
+  private Entry rawPeekEntry() throws IOException {
+    return head == null ? null : head.peekEntry();
+  }
+
   private Entry rawNext() throws IOException {
     if (head == null) {
       return null;
@@ -174,6 +178,19 @@ public class MergedSegmentReader implements SegmentReader {
   }
 
   @Override
+  public synchronized Entry peekEntry() throws IOException {
+    Preconditions.checkState(!closed, "closed");
+
+    try {
+      advanceToNextUnpairedEntry();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return next != null ? next : rawPeekEntry();
+  }
+
+  @Override
   public synchronized Entry next() throws IOException {
     Preconditions.checkState(!closed, "closed");
 
@@ -206,8 +223,8 @@ public class MergedSegmentReader implements SegmentReader {
     }
 
     @Override
-    public synchronized Key peek() {
-      return entry == null ? null : entry.key();
+    public synchronized Entry peekEntry() {
+      return entry == null ? null : entry;
     }
 
     @Override

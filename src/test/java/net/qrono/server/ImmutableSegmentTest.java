@@ -285,4 +285,21 @@ public class ImmutableSegmentTest {
     reader.position(0);
     return reader;
   }
+
+  @Test
+  public void testReaderPeekEntry() throws IOException {
+    var memSegment = new InMemorySegmentReader(PENDING_1_T5, PENDING_2_T0, PENDING_3_T10);
+    var segmentName = new SegmentName(123, 456);
+    var path = SegmentFiles.getIndexPath(dir.getRoot().toPath(), segmentName);
+    var segment = ImmutableSegment.write(path, memSegment, () -> Key.ZERO);
+     var reader = segment.newReader();
+
+    assertEquals(PENDING_2_T0, reader.next());
+    assertEquals(PENDING_1_T5, reader.peekEntry());
+    assertEquals(PENDING_1_T5.key(), reader.peek());
+    assertEquals(PENDING_1_T5, reader.next());
+    assertEquals(PENDING_3_T10.key(), reader.peek());
+    assertEquals(PENDING_3_T10, reader.next());
+    assertNull(reader.next());
+  }
 }

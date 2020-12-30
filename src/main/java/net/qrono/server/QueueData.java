@@ -326,6 +326,10 @@ public class QueueData extends AbstractIdleService {
     return headReader().peek();
   }
 
+  public synchronized Entry peekEntry() throws IOException {
+    return headReader().peekEntry();
+  }
+
   public synchronized Entry next() throws IOException {
     var entry = headReader().next();
     if (entry != null) {

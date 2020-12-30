@@ -284,6 +284,34 @@ public class MergedSegmentReaderTest {
     assertNull(reader.next());
   }
 
+  @Test
+  public void testPeekEntry() throws IOException {
+    MergedSegmentReader reader = new MergedSegmentReader();
+    Segment segment0 = new InMemorySegment(
+        new SegmentName(0, 0),
+        List.of(PENDING_2_T0, PENDING_3_T10));
+
+    Segment segment1 = new InMemorySegment(
+        new SegmentName(0, 1),
+        List.of(PENDING_1_T5, PENDING_4_T15));
+
+    reader.addSegment(segment0, Key.ZERO);
+    reader.addSegment(segment1, Key.ZERO);
+
+    // Entries are interleaved so reads should alternate between the segments
+    assertEquals(PENDING_2_T0, reader.next());
+
+    assertEquals(PENDING_1_T5, reader.peekEntry());
+    assertEquals(PENDING_1_T5.key(), reader.peek());
+    assertEquals(PENDING_1_T5, reader.next());
+
+    assertEquals(PENDING_3_T10, reader.next());
+
+    assertEquals(PENDING_4_T15, reader.peekEntry());
+    assertEquals(PENDING_4_T15, reader.next());
+    assertNull(reader.next());
+  }
+
   // Empty
   // Single segment
   // Matching entries (tombstone and pending)

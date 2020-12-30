@@ -21,9 +21,9 @@ public class InMemorySegmentReader implements SegmentReader {
   }
 
   @Override
-  public Entry.Key peek() {
+  public Entry peekEntry() {
     Preconditions.checkState(!closed, "closed");
-    return it.hasNext() ? it.peek().key() : null;
+    return it.hasNext() ? it.peek() : null;
   }
 
   @Override

@@ -157,6 +157,41 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       });
     }
 
+    // PEEK queue
+    //   (integer) id
+    //   (integer) deadline
+    //   (integer) enqueue-time
+    //   (integer) requeue-time
+    //   (integer) dequeue-count
+    //   (bulk) value
+    private CompletableFuture<RedisMessage> handlePeek(List<RedisMessage> args) {
+      if (args.size() != 2) {
+        throw RedisRequestException.wrongNumberOfArguments();
+      }
+
+      var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
+      var queue = manager.getQueue(queueName);
+      if (queue == null) {
+        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
+      }
+
+      return queue.peekAsync().thenApply(item -> {
+        if (item == null) {
+          return FullBulkStringRedisMessage.NULL_INSTANCE;
+        }
+
+        return new ArrayRedisMessage(List.of(
+            new IntegerRedisMessage(item.id()),
+            new IntegerRedisMessage(item.deadline().millis()),
+            new IntegerRedisMessage(item.stats().enqueueTime().millis()),
+            new IntegerRedisMessage(item.stats().requeueTime().millis()),
+            new IntegerRedisMessage(item.stats().dequeueCount()),
+            new FullBulkStringRedisMessage(
+                Unpooled.wrappedBuffer(item.value().asReadOnlyByteBuffer()))
+        ));
+      });
+    }
+
     // REQUEUE queue id [DEADLINE milliseconds-timestamp]
     //   OK
     private CompletableFuture<RedisMessage> handleRequeue(List<RedisMessage> args)
@@ -301,6 +336,9 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
 
         case "release":
           return handleRelease(args);
+
+        case "peek":
+          return handlePeek(args);
 
         case "stat":
           return handleStat(args);

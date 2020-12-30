@@ -89,6 +89,7 @@ public class Queue extends AbstractIdleService {
   private final ReleaseTranslator releaseTranslator = new ReleaseTranslator();
   private final RequeueTranslator requeueTranslator = new RequeueTranslator();
   private final DequeueTranslator dequeueTranslator = new DequeueTranslator();
+  private final PeekTranslator peekTranslator = new PeekTranslator();
   private final GetQueueInfoTranslator getQueueInfoTranslator = new GetQueueInfoTranslator();
 
   public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet workingSet) {
@@ -180,6 +181,22 @@ public class Queue extends AbstractIdleService {
     }
   }
 
+  public CompletableFuture<Item> peekAsync() {
+    Preconditions.checkState(isRunning());
+    var result = new CompletableFuture<Item>();
+    opBuffer.publishEvent(peekTranslator, result);
+    return result;
+  }
+
+  public Item peek() throws IOException {
+    try {
+      return peekAsync().join();
+    } catch (CompletionException e) {
+      Throwables.propagateIfPossible(e.getCause(), IOException.class);
+      throw new RuntimeException(e);
+    }
+  }
+
   public CompletableFuture<QueueInfo> getQueueInfoAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<QueueInfo>();
@@ -206,6 +223,7 @@ public class Queue extends AbstractIdleService {
     private final Dequeue dequeue = new Dequeue();
     private final Release release = new Release();
     private final Requeue requeue = new Requeue();
+    private final Peek peek = new Peek();
     private final GetQueueInfo getQueueInfo = new GetQueueInfo();
 
     private Op op = null;
@@ -519,6 +537,21 @@ public class Queue extends AbstractIdleService {
       }
     }
 
+    class Peek extends PreBatchWriteOp<Item> {
+      @Override
+      Item call() throws IOException {
+        var entry = data.peekEntry();
+        if (entry == null) {
+          return null;
+        }
+        var item = entry.item();
+        if (item == null) {
+          throw new UnsupportedOperationException("tombstone dequeue handling not implemented");
+        }
+        return item;
+      }
+    }
+
     class GetQueueInfo extends PreBatchWriteOp<QueueInfo> {
       @Override
       QueueInfo call() {
@@ -619,6 +652,13 @@ public class Queue extends AbstractIdleService {
     @Override
     public void translateTo(OpHolder event, long sequence, CompletableFuture<Item> result) {
       event.set(event.dequeue, result);
+    }
+  }
+
+  class PeekTranslator implements EventTranslatorOneArg<OpHolder, CompletableFuture<Item>> {
+    @Override
+    public void translateTo(OpHolder event, long sequence, CompletableFuture<Item> result) {
+      event.set(event.peek, result);
     }
   }
 

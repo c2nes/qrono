@@ -17,6 +17,7 @@ import net.qrono.Api.EnqueueRequest;
 import net.qrono.Api.EnqueueResponse;
 import net.qrono.Api.GetQueueInfoRequest;
 import net.qrono.Api.Item;
+import net.qrono.Api.PeekRequest;
 import net.qrono.Api.QueueInfo;
 import net.qrono.Api.ReleaseRequest;
 import net.qrono.Api.RequeueRequest;
@@ -166,6 +167,36 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
           .withDescription(e.getMessage())
           .asRuntimeException();
     }
+  }
+
+  @Override
+  public void peek(PeekRequest request, StreamObserver<Item> responseObserver) {
+    process(responseObserver, () -> peek(request));
+  }
+
+  @VisibleForTesting
+  Item peek(PeekRequest request) throws IOException {
+    String queueName = request.getQueue();
+    Queue queue = getQueue(queueName);
+
+    var item = queue.peek();
+    if (item == null) {
+      throw Status.NOT_FOUND
+          .withDescription("no items pending")
+          .asRuntimeException();
+    }
+
+    // Convert to API model
+    return Item.newBuilder()
+        .setDeadline(fromMillis(item.deadline().millis()))
+        .setId(item.id())
+        .setStats(Stats.newBuilder()
+            .setDequeueCount(item.stats().dequeueCount())
+            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+            .build())
+        .setValue(item.value())
+        .build();
   }
 
   @Override
