@@ -66,9 +66,15 @@ public class ImmutableSegment implements Segment {
       // queue is currently. The head of the queue may have since moved ahead of this known
       // position, but if the requested position is _behind_ our known position then something
       // has gone wrong and seeking to the appropriate position may be slow.
-      log.warn("Segment reader opened at seemingly stale offset. Performance may suffer."
-              + " This is likely a bug; path={}, position={}, knownOffset={}",
-          path, position, knownOffset);
+      //
+      // The exception to this is when the requested position is Key.ZERO which is the standard
+      // way of opening the reader to the beginning of the segment (as is done during rewriting
+      // compactions).
+      if (!position.equals(Key.ZERO)) {
+        log.warn("Segment reader opened at seemingly stale offset. Performance may suffer."
+                + " This is likely a bug; path={}, position={}, knownOffset={}",
+            path, position, knownOffset);
+      }
 
       reader.position(0);
     } else {
