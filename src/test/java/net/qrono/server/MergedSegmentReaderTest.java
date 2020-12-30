@@ -258,6 +258,32 @@ public class MergedSegmentReaderTest {
     assertNull(reader.next());
   }
 
+  @Test
+  public void testReplaceSegments_ReplacementIsExhausted() throws IOException {
+    MergedSegmentReader reader = new MergedSegmentReader();
+    Segment segment0 = new InMemorySegment(
+        new SegmentName(0, 0),
+        List.of(PENDING_1_T5, PENDING_2_T0));
+    Segment segment1 = new InMemorySegment(
+        new SegmentName(0, 1),
+        List.of(PENDING_3_T10, PENDING_4_T15));
+    Segment segment2 = new InMemorySegment(
+        new SegmentName(0, 2),
+        List.of(PENDING_5_T20));
+
+    reader.addSegment(segment0, Key.ZERO);
+    reader.addSegment(segment1, Key.ZERO);
+
+    assertEquals(PENDING_2_T0, reader.next());
+    // Here we replace segment0 (which has one value left to read) with segment2.
+    // However, we specify a position at the very end of segment2 so there will not be
+    // any values to read. Thus, the remaining values we read should all come from segment1.
+    reader.replaceSegments(List.of(segment0), segment2, PENDING_5_T20.key());
+    assertEquals(PENDING_3_T10, reader.next());
+    assertEquals(PENDING_4_T15, reader.next());
+    assertNull(reader.next());
+  }
+
   // Empty
   // Single segment
   // Matching entries (tombstone and pending)

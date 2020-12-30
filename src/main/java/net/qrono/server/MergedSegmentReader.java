@@ -110,6 +110,11 @@ public class MergedSegmentReader implements SegmentReader {
     }
 
     addSegment(newSegment, position);
+
+    // addSegment does not always call updateHead so make sure we do so if head is still null.
+    if (head == null) {
+      updateHead();
+    }
   }
 
   public synchronized Collection<Segment> getSegments() {
