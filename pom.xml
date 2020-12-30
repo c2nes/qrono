@@ -91,6 +91,7 @@
             <argument>-Xmx4g</argument>
             <argument>-Dio.netty.buffer.checkAccessible=false</argument>
             <argument>-Dio.netty.buffer.checkBounds=false</argument>
+            <argument>-Dqrono.data.root=${project.build.directory}/data</argument>
             <argument>-XX:+PreserveFramePointer</argument>
             <argument>net.qrono.server.Main</argument>
           </arguments>
