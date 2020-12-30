@@ -178,10 +178,12 @@ public class QueueData extends AbstractIdleService {
 
     var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
     var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
-    logger.info("Merged {} segments; entries={}, size={}, writeDuration={}, "
-            + "switches={}, seekDuration={}",
+    logger.info("Merged {} segments; entries={}, pending={}, tombstone={}, "
+            + "size={}, writeDuration={}, switches={}, seekDuration={}",
         segments.size(),
         mergedSegment.size(),
+        mergedSegment.metadata().pendingCount(),
+        mergedSegment.metadata().tombstoneCount(),
         DataSize.fromBytes(Files.size(mergedPath)),
         Duration.between(start, Instant.now()),
         pendingMerge.getHeadSwitchDebugCount(),
@@ -305,8 +307,11 @@ public class QueueData extends AbstractIdleService {
       return null;
     });
 
-    logger.debug("Scheduled in-memory segment for compaction; waitTime={}",
-        Duration.between(start, Instant.now()));
+    logger.debug("Scheduled in-memory segment for compaction; waitTime={}"
+            + ", pending={}, tombstone={}",
+        Duration.between(start, Instant.now()),
+        frozen.metadata().pendingCount(),
+        frozen.metadata().tombstoneCount());
 
     return future;
   }
@@ -343,7 +348,7 @@ public class QueueData extends AbstractIdleService {
     return immutableSegments;
   }
 
-  public synchronized QueueStorageStats getStorageStats() {
+  static QueueStorageStats getStorageStats(MergedSegmentReader immutableSegments) {
     return ImmutableQueueStorageStats.builder()
         .persistedPendingCount(immutableSegments.getSegments().stream()
             .map(Segment::metadata)
@@ -353,8 +358,14 @@ public class QueueData extends AbstractIdleService {
             .map(Segment::metadata)
             .mapToLong(SegmentMetadata::tombstoneCount)
             .sum())
-        .bufferedPendingCount(currentSegment.pendingCount())
-        .bufferedTombstoneCount(currentSegment.tombstoneCount())
+        .bufferedPendingCount(0)
+        .bufferedTombstoneCount(0)
         .build();
+  }
+
+  public synchronized QueueStorageStats getStorageStats() {
+    return ImmutableQueueStorageStats.copyOf(getStorageStats(immutableSegments))
+        .withBufferedPendingCount(currentSegment.pendingCount())
+        .withBufferedTombstoneCount(currentSegment.tombstoneCount());
   }
 }
