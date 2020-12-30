@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use clap::{App, Arg, ArgMatches};
-use redis::{FromRedisValue, RedisResult, Value};
+use redis::{
+    ConnectionAddr, ConnectionInfo, FromRedisValue, IntoConnectionInfo, RedisResult, Value,
+};
 use time::Duration;
 use tokio::sync::{mpsc, Barrier};
 use tokio::task;
@@ -52,8 +54,52 @@ impl FromRedisValue for DequeueResult {
     }
 }
 
+#[derive(Debug, Clone)]
+struct HostAndPort(String, u16);
+
+impl FromStr for HostAndPort {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("[") {
+            if let Some(idx) = s.find("]") {
+                let (host, rest) = s.split_at(idx);
+                let port: u16 = match rest.strip_prefix("]:").map(str::parse::<u16>) {
+                    Some(Ok(port)) => port,
+                    _ => return Err("invalid port"),
+                };
+                return Ok(HostAndPort(host.to_string(), port));
+            }
+            return Err("invalid IPv6 literal");
+        }
+
+        if let Some(idx) = s.find(":") {
+            let (host, rest) = s.split_at(idx);
+            let port = match rest[1..].parse::<u16>() {
+                Ok(port) => port,
+                _ => return Err("invalid port"),
+            };
+            return Ok(HostAndPort(host.to_string(), port));
+        }
+
+        return Err("port required");
+    }
+}
+
+impl IntoConnectionInfo for &HostAndPort {
+    fn into_connection_info(self) -> RedisResult<ConnectionInfo> {
+        Ok(ConnectionInfo {
+            addr: Box::new(ConnectionAddr::Tcp(self.0.clone(), self.1)),
+            db: 0,
+            username: None,
+            passwd: None,
+        })
+    }
+}
+
 // TODO: Add address
 struct Benchmark {
+    target: HostAndPort,
     queue_name: String,
     count: u64,
     size: usize,
@@ -64,7 +110,7 @@ struct Benchmark {
 
 impl Benchmark {
     async fn run(&self) -> Result<(), Error> {
-        let client = redis::Client::open(("127.0.0.1", 16379)).unwrap();
+        let client = redis::Client::open(&self.target).unwrap();
         let conn = client.get_multiplexed_async_connection().await.unwrap();
 
         // Make copies of these to avoid issues with Sending &self
@@ -183,6 +229,17 @@ fn arg_or<T: FromStr, F: Fn() -> T>(matches: &ArgMatches, name: &str, f: F) -> T
     }
 }
 
+fn validate<T, E>(s: String) -> Result<(), String>
+where
+    T: FromStr<Err = E>,
+    E: Display,
+{
+    match T::from_str(&s) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn validate_min<T, E>(s: String, min: T) -> Result<(), String>
 where
     T: FromStr<Err = E> + PartialOrd + Display,
@@ -200,6 +257,15 @@ where
 #[tokio::main]
 async fn main() {
     let matches = App::new("Qrono Benchmark Utility")
+        .arg(
+            Arg::with_name("target")
+                .short("t")
+                .long("target")
+                .default_value("localhost:16379")
+                .validator(validate::<HostAndPort, _>)
+                .help("Qrono server address")
+                .takes_value(true),
+        )
         .arg(
             Arg::with_name("count")
                 .short("n")
@@ -256,6 +322,7 @@ async fn main() {
     });
 
     let benchmark = Benchmark {
+        target: arg(&matches, "target"),
         queue_name: name,
         count: arg(&matches, "count"),
         size: arg(&matches, "size"),
