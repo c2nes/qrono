@@ -53,12 +53,12 @@ RELEASE queue id
 
 Release a dequeued value by `id`.
 
-### Info
+### Stat
 
 ```
-INFO queue
+STAT queue
   (integer) pending-count
   (integer) dequeued-count
 ```
 
-Returns information for the `queue` including the number of _pending_ and _dequeued_ values. The total size of the queue is equal to the sum of these values.
+Returns statistics for the `queue` including the number of _pending_ and _dequeued_ values. The pending count includes dequeued values.
