@@ -11,19 +11,20 @@ debug = true
 
 [dependencies]
 futures = "0.3"
-bytes = "0.6"
+bytes = "1.0"
+tokio-stream = "0.1"
+rand = "0.8"
 
 [dependencies.tokio-util]
-version = "0.5"
-#features = ["codec"]
+version = "0.6"
 
 [dependencies.tokio]
-version = "0.3"
+version = "1.0"
 features = ["full"]
 
-[dependencies.redis-async]
-version = "0.7"
+[dependencies.redis]
+version = "0.19"
+features = ["aio", "tokio-comp"]
 
-#[dependencies.redis]
-#version = "*"
-#features = ["aio", "tokio-comp"]
+[dependencies.clap]
+version = "2"
