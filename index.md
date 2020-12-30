@@ -53,6 +53,20 @@ RELEASE queue id
 
 Release a dequeued value by `id`.
 
+### Peek
+
+```
+PEEK queue
+  (integer) id
+  (integer) deadline
+  (integer) enqueue-time
+  (integer) requeue-time
+  (integer) dequeue-count
+  (bulk) value
+```
+
+Returns, but does not dequeue the next pending value from the `queue`. Returns `null` if the queue is empty.
+
 ### Stat
 
 ```
