@@ -14,6 +14,7 @@ futures = "0.3"
 bytes = "1.0"
 tokio-stream = "0.1"
 rand = "0.8"
+hdrhistogram = "7"
 
 [dependencies.tokio-util]
 version = "0.6"

@@ -1,11 +1,13 @@
 use std::cmp::Ordering;
+use std::convert::TryInto;
 use std::fmt::Display;
 use std::io::Error;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use clap::{App, Arg, ArgMatches};
+use hdrhistogram::Histogram;
 use redis::{
     ConnectionAddr, ConnectionInfo, FromRedisValue, IntoConnectionInfo, RedisResult, Value,
 };
@@ -97,7 +99,6 @@ impl IntoConnectionInfo for &HostAndPort {
     }
 }
 
-// TODO: Add address
 struct Benchmark {
     target: HostAndPort,
     queue_name: String,
@@ -106,12 +107,31 @@ struct Benchmark {
     consumer_count: u64,
     publish_rate: f64,
     wait_to_consume: bool,
+    connection_count: u64,
+
+    // Latency histograms
+    // Enqueue, Dequeue, Release, End-to-end
+    hist_enqueue: Arc<Mutex<Histogram<u64>>>,
+    hist_dequeue: Arc<Mutex<Histogram<u64>>>,
+    hist_release: Arc<Mutex<Histogram<u64>>>,
+    hist_end_to_end: Arc<Mutex<Histogram<u64>>>,
 }
 
 impl Benchmark {
+    fn record_latency(hist: &Arc<Mutex<Histogram<u64>>>, start: Instant) {
+        let nanos = start.elapsed().as_nanos() as u64;
+        hist.lock().unwrap().saturating_record(nanos);
+    }
+
     async fn run(&self) -> Result<(), Error> {
         let client = redis::Client::open(&self.target).unwrap();
-        let conn = client.get_multiplexed_async_connection().await.unwrap();
+
+        // Make our connection pool
+        let mut conns = Vec::new();
+        for _ in 0..self.connection_count {
+            conns.push(client.get_multiplexed_async_connection().await.unwrap());
+        }
+        let mut conns = conns.iter().cycle();
 
         // Make copies of these to avoid issues with Sending &self
         let n = self.count;
@@ -123,6 +143,9 @@ impl Benchmark {
                 rx.recv().await.unwrap();
             }
         });
+
+        // Base time for end-to-end latencies
+        let base_time = Instant::now();
 
         // Need to dequeue as many items as are enqueued
         let mut consumers = Vec::new();
@@ -137,24 +160,40 @@ impl Benchmark {
             if i < n % m {
                 my_count += 1;
             }
-            let mut conn = conn.clone();
+
+            let mut conn = conns.next().unwrap().clone();
             let queue_name = self.queue_name.clone();
             let consumer_start = Arc::clone(&consumer_start);
+            let hist_dequeue = Arc::clone(&self.hist_dequeue);
+            let hist_release = Arc::clone(&self.hist_release);
+            let hist_end_to_end = Arc::clone(&self.hist_end_to_end);
             let handle = task::spawn(async move {
                 consumer_start.wait().await;
                 while my_count > 0 {
+                    let dequeue_start = Instant::now();
                     let resp: Option<DequeueResult> = redis::cmd("DEQUEUE")
                         .arg(&queue_name)
                         .query_async(&mut conn)
                         .await
                         .unwrap();
+
                     if let Some(res) = resp {
+                        Self::record_latency(&hist_dequeue, dequeue_start);
+                        let release_start = Instant::now();
                         redis::cmd("RELEASE")
                             .arg(&queue_name)
                             .arg(res.id)
                             .query_async::<_, bool>(&mut conn)
                             .await
                             .unwrap();
+                        Self::record_latency(&hist_release, release_start);
+
+                        // Extract timestamp and record end-to-end latency
+                        let enqueue_offset_bytes: [u8; 8] = res.data[0..8].try_into().unwrap();
+                        let enqueue_offset_nanos = u64::from_be_bytes(enqueue_offset_bytes);
+                        let enqueue_time = base_time + Duration::from_nanos(enqueue_offset_nanos);
+                        Self::record_latency(&hist_end_to_end, enqueue_time);
+
                         my_count -= 1;
                     } else {
                         time::sleep(Duration::from_millis(10)).await;
@@ -172,18 +211,26 @@ impl Benchmark {
         for _ in 0..n {
             rate.tick().await;
 
-            let mut conn = conn.clone();
+            let mut conn = conns.next().unwrap().clone();
             let tx = tx.clone();
             let queue_name = self.queue_name.clone();
-            let value = value.clone();
+            let hist = Arc::clone(&self.hist_enqueue);
+            let mut value = value.clone();
 
             task::spawn(async move {
+                let start = Instant::now();
+
+                // Write timestamp prefix to value
+                let timestamp = base_time.elapsed().as_nanos() as u64;
+                value[0..8].copy_from_slice(&timestamp.to_be_bytes());
+
                 redis::cmd("ENQUEUE")
                     .arg(&queue_name)
                     .arg(value)
                     .query_async::<_, EnqueueResult>(&mut conn)
                     .await
                     .unwrap();
+                Self::record_latency(&hist, start);
                 tx.send(()).unwrap();
             });
         }
@@ -191,15 +238,17 @@ impl Benchmark {
         // Wait for producers to complete
         handle.await.unwrap();
 
+        let end_production = Instant::now();
+
         // Signal consumer to start if necessary
         if self.wait_to_consume {
             consumer_start.wait().await;
         }
 
-        let produce_duration = start_production.elapsed();
+        let produce_duration = end_production - start_production;
         let per_second = n as f64 / produce_duration.as_secs_f64();
         println!(
-            "Producer done; duration={}, rate={}",
+            "Producer done; duration={:.3}, rate={:.3}",
             produce_duration.as_secs_f64(),
             per_second
         );
@@ -207,6 +256,20 @@ impl Benchmark {
         for consumer in consumers {
             consumer.await.unwrap();
         }
+
+        let start_consume = if self.wait_to_consume {
+            end_production
+        } else {
+            start_production
+        };
+
+        let consume_duration = start_consume.elapsed();
+        let per_second = n as f64 / consume_duration.as_secs_f64();
+        println!(
+            "Consumer done; duration={:.3}, rate={:.3}",
+            consume_duration.as_secs_f64(),
+            per_second
+        );
 
         Ok(())
     }
@@ -254,6 +317,33 @@ where
     }
 }
 
+fn new_latency_histogram(max_seconds: u64) -> Histogram<u64> {
+    return Histogram::new_with_bounds(
+        Duration::from_micros(1).as_nanos() as u64,
+        Duration::from_secs(max_seconds).as_nanos() as u64,
+        3,
+    )
+    .unwrap();
+}
+
+fn format_histogram(hist: &Histogram<u64>) -> String {
+    let p50 = Duration::from_nanos(hist.value_at_quantile(0.5));
+    let p90 = Duration::from_nanos(hist.value_at_quantile(0.9));
+    let p99 = Duration::from_nanos(hist.value_at_quantile(0.99));
+    let p999 = Duration::from_nanos(hist.value_at_quantile(0.999));
+    fn fmt(duration: Duration) -> String {
+        format!("{:.3?}", duration)
+    }
+    format!(
+        "p50={:>width$}, p90={:>width$}, p99={:>width$}, p999={:>width$}",
+        fmt(p50),
+        fmt(p90),
+        fmt(p99),
+        fmt(p999),
+        width = 9
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let matches = App::new("Qrono Benchmark Utility")
@@ -279,9 +369,9 @@ async fn main() {
             Arg::with_name("size")
                 .short("s")
                 .long("size")
-                .default_value("16")
-                .validator(|x| validate_min::<usize, _>(x, 16))
-                .help("Size of each value (min 16)")
+                .default_value("8")
+                .validator(|x| validate_min::<usize, _>(x, 8))
+                .help("Size of each value (min 8)")
                 .takes_value(true),
         )
         .arg(
@@ -291,6 +381,15 @@ async fn main() {
                 .default_value("1")
                 .validator(|x| validate_min::<u64, _>(x, 1))
                 .help("Number of consumers")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("connection_count")
+                .short("c")
+                .long("connection-count")
+                .default_value("1")
+                .validator(|x| validate_min::<u64, _>(x, 1))
+                .help("Number of client connections")
                 .takes_value(true),
         )
         .arg(
@@ -329,8 +428,29 @@ async fn main() {
         consumer_count: arg(&matches, "consumer_count"),
         publish_rate: arg(&matches, "publish_rate"),
         wait_to_consume: matches.is_present("wait_to_consume"),
+        connection_count: arg(&matches, "connection_count"),
+        // Latency histograms
+        hist_enqueue: Arc::new(Mutex::new(new_latency_histogram(60))),
+        hist_dequeue: Arc::new(Mutex::new(new_latency_histogram(60))),
+        hist_release: Arc::new(Mutex::new(new_latency_histogram(60))),
+        hist_end_to_end: Arc::new(Mutex::new(new_latency_histogram(300))),
     };
 
     benchmark.run().await.unwrap();
-    println!("Done!");
+    println!(
+        "Enqueue:    {}",
+        format_histogram(&benchmark.hist_enqueue.lock().unwrap())
+    );
+    println!(
+        "Dequeue:    {}",
+        format_histogram(&benchmark.hist_dequeue.lock().unwrap())
+    );
+    println!(
+        "Release:    {}",
+        format_histogram(&benchmark.hist_release.lock().unwrap())
+    );
+    println!(
+        "End-to-end: {}",
+        format_histogram(&benchmark.hist_end_to_end.lock().unwrap())
+    );
 }
