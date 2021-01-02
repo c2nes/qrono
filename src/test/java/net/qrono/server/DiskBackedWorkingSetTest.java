@@ -1,5 +1,6 @@
 package net.qrono.server;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static net.qrono.server.TestData.ITEM_1_T5;
 import static net.qrono.server.TestData.withId;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,11 +24,13 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
   @Rule
   public TemporaryFolder dir = new TemporaryFolder();
 
+  private IOScheduler ioScheduler;
   private DiskBackedWorkingSet workingSet;
 
   @Before
   public void setUp() throws IOException {
-    workingSet = new DiskBackedWorkingSet(dir.getRoot().toPath(), MAPPED_FILE_SIZE);
+    ioScheduler = new ExecutorIOScheduler(directExecutor());
+    workingSet = new DiskBackedWorkingSet(dir.getRoot().toPath(), MAPPED_FILE_SIZE, ioScheduler);
     workingSet.startAsync().awaitRunning();
   }
 
@@ -79,9 +82,6 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
       itemRef.release();
     }
 
-    // Wait for background drain thread to go idle
-    workingSet.awaitDrainIsIdleForTest();
-
     // Empty files should be removed and we should exactly one file again
     assertThat(currentFileCount()).isEqualTo(1);
   }
@@ -105,7 +105,7 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
     //  files are cleaned up on startup and on shutdown.
     assertThat(currentFileCount()).isGreaterThan(1);
 
-    workingSet = new DiskBackedWorkingSet(dir.getRoot().toPath(), MAPPED_FILE_SIZE);
+    workingSet = new DiskBackedWorkingSet(dir.getRoot().toPath(), MAPPED_FILE_SIZE, ioScheduler);
     workingSet.startAsync().awaitRunning();
 
     // Existing files are removed and a single new file is opened.
@@ -129,9 +129,6 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
         workingSet.get(i).release();
       }
     }
-
-    // Let drainer run until it is idle again.
-    workingSet.awaitDrainIsIdleForTest();
 
     // The drainer is configured to continue draining until file utilization is above X%
     // (currently set to 50%).

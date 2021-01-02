@@ -9,8 +9,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Verify;
-import com.google.common.util.concurrent.AbstractExecutionThreadService;
+import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.protobuf.ByteString;
 import java.io.Closeable;
 import java.io.IOException;
@@ -41,17 +40,14 @@ import org.slf4j.LoggerFactory;
  * Disk backed working set with in-memory caching. While disk backed, this working set
  * implementation is not persistent and the contents will be lost when the process exits.
  */
-public class DiskBackedWorkingSet extends AbstractExecutionThreadService implements WorkingSet {
+public class DiskBackedWorkingSet extends AbstractIdleService implements WorkingSet {
   private static final Logger log = LoggerFactory.getLogger(DiskBackedWorkingSet.class);
 
   @VisibleForTesting
   static final String FILE_SUFFIX = ".tmp";
 
   private static final byte[] ZERO_BYTE = {0};
-  /**
-   * Interval between checking working set residency and draining mapped files.
-   */
-  private static final long CHECK_DRAIN_INTERVAL_MS = 1000;
+  private static final double OCCUPANCY_DRAIN_THRESHOLD = 0.5;
 
   private final Path directory;
   private final int mappedFileSize;
@@ -62,9 +58,13 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   private final LinkedHashMap<Long, MappedFile> files = new LinkedHashMap<>();
   private final Deque<MappedFile> emptyFiles = new ArrayDeque<>();
   private MappedFile currentFile = null;
-  private boolean drainIsIdle = true;
 
-  public DiskBackedWorkingSet(Path directory, int mappedFileSize) throws IOException {
+  private long totalSize = 0;
+  private long totalUsed = 0;
+
+  private final IOScheduler.Handle drainer;
+
+  public DiskBackedWorkingSet(Path directory, int mappedFileSize, IOScheduler ioScheduler) {
     // STATS_SIZE sets a strict lower bound on file size, but actual size must be large
     // enough to hold the largest allowed item value (which is set elsewhere). Generally
     // mappedFileSize should be set to a value at least a few orders of magnitude larger
@@ -78,6 +78,17 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     var maxOffset = mappedFileSize - 1;
     offsetMask = (Integer.highestOneBit(maxOffset) << 1) - 1;
     offsetMaskLen = Integer.bitCount(offsetMask);
+
+    // Register drain task with scheduler
+    drainer = ioScheduler.register(() -> {
+      var file = getFileToDrain();
+      if (file == null) {
+        return false;
+      }
+
+      drain(file);
+      return true;
+    });
 
     // Add listener to log failures
     addListener(new Listener() {
@@ -106,71 +117,20 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     files.put(currentFile.fileID, currentFile);
   }
 
-  // Only used by tests
-  @VisibleForTesting
-  synchronized void awaitDrainIsIdleForTest() throws InterruptedException {
-    // Force drainer to wake up.
-    notifyAll();
-
-    // Wait for drainer to signal us back that it has gone idle again.
-    drainIsIdle = false;
-    while (!drainIsIdle && isRunning()) {
-      wait();
-    }
-  }
-
-  @Override
-  protected void run() throws Exception {
-    while (isRunning()) {
-      MappedFile file = awaitFileToDrain();
-      if (file != null) {
-        drain(file);
-      }
-    }
-  }
-
-  private synchronized MappedFile awaitFileToDrain() throws InterruptedException {
-    while (isRunning()) {
-      MappedFile file = getFileToDrain();
-      if (file != null) {
-        return file;
-      }
-
-      // Notify awaitDrainIsIdle() that we're idle. Used for testing only.
-      if (!drainIsIdle) {
-        drainIsIdle = true;
-        notifyAll();
-      }
-
-      wait(CHECK_DRAIN_INTERVAL_MS);
-    }
-
-    return null;
-  }
-
   private synchronized MappedFile getFileToDrain() {
     if (!emptyFiles.isEmpty()) {
       return emptyFiles.removeFirst();
     }
 
-    if (files.size() > 1) {
-      long totalSize = 0;
-      long totalUsed = 0;
-      for (MappedFile file : files.values()) {
-        totalSize += mappedFileSize;
-        totalUsed += file.usedBytes;
-      }
-
-      // Do not include the unused capacity in the current file in the total size.
-      totalSize -= currentFile.capacity();
-
-      // Drain first file if total utilization is less than 50%
-      if (totalUsed < (totalSize / 2)) {
-        return files.values().iterator().next();
-      }
+    if (isOccupancyLow()) {
+      return files.values().iterator().next();
     }
 
     return null;
+  }
+
+  private boolean isOccupancyLow() {
+    return files.size() > 1 && ((double) totalUsed) / totalSize < OCCUPANCY_DRAIN_THRESHOLD;
   }
 
   private void drain(MappedFile file) throws IOException {
@@ -181,6 +141,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
         } else {
           file.close();
           files.remove(file.fileID);
+          totalSize -= mappedFileSize;
           return;
         }
       }
@@ -188,13 +149,9 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
   }
 
   @Override
-  protected synchronized void triggerShutdown() {
-    notifyAll();
-  }
-
-  @Override
   protected void shutDown() {
     // Shutdown fast; no cleanup
+    drainer.cancel();
     entries.clear();
     files.clear();
   }
@@ -214,7 +171,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
         "item size (%s) must be < mappedFileSize (%s)",
         size, mappedFileSize);
 
-    if (currentFile.capacity() < size) {
+    var capacity = currentFile.capacity();
+    if (capacity < size) {
+      // Remaining capacity is unused, but contributes to total size.
+      totalSize += capacity;
       currentFile = new MappedFile(currentFile.fileID + 1);
       files.put(currentFile.fileID, currentFile);
     }
@@ -264,8 +224,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
       } else {
         // Remove in background thread
         emptyFiles.addLast(file);
-        notifyAll();
+        drainer.schedule();
       }
+    } else if (isOccupancyLow()) {
+      drainer.schedule();
     }
   }
 
@@ -393,7 +355,10 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
       var location = (fileID << offsetMaskLen) | offset;
       var entry = new WorkingItem(item, location);
 
-      usedBytes += writeItem(buffer, item);
+      var n = writeItem(buffer, item);
+      usedBytes += n;
+      totalSize += n;
+      totalUsed += n;
       entries.add(entry);
 
       return entry;
@@ -406,6 +371,7 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     void remove(WorkingItem entry) {
       entries.remove(entry);
       usedBytes -= entry.size;
+      totalUsed -= entry.size;
     }
 
     Item get(WorkingItem entry) {
@@ -428,10 +394,12 @@ public class DiskBackedWorkingSet extends AbstractExecutionThreadService impleme
     Item pop() {
       WorkingItem entry = entries.remove(0);
       usedBytes -= entry.size;
+      totalUsed -= entry.size;
       return entryItem(entry, this);
     }
 
     void reset() {
+      totalSize -= buffer.position();
       buffer.clear();
     }
 

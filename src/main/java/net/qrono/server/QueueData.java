@@ -15,9 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
-import net.qrono.server.IOScheduler.Parameters;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.ImmutableItem;
@@ -34,7 +32,6 @@ public class QueueData extends AbstractIdleService {
   private static final Logger logger = LoggerFactory.getLogger(QueueData.class);
 
   private final Path directory;
-  private final IOScheduler ioScheduler;
   private final SegmentWriter segmentWriter;
 
   private final AtomicLong segmentCounter = new AtomicLong();
@@ -45,10 +42,19 @@ public class QueueData extends AbstractIdleService {
   // Last key dequeued by next()
   private volatile Key last = Key.ZERO;
 
+  private final IOScheduler.Handle segmentFlusher;
+
   public QueueData(Path directory, IOScheduler ioScheduler, SegmentWriter segmentWriter) {
     this.directory = directory;
-    this.ioScheduler = ioScheduler;
     this.segmentWriter = segmentWriter;
+
+    segmentFlusher = ioScheduler.register(() -> {
+      if (isCurrentSegmentFlushRequired()) {
+        flushCurrentSegment();
+      }
+
+      return false;
+    });
   }
 
   @Override
@@ -135,6 +141,7 @@ public class QueueData extends AbstractIdleService {
   @Override
   protected synchronized void shutDown() throws Exception {
     writeAndDeleteLog(currentSegment.freeze());
+    segmentFlusher.cancel();
     currentSegment.close();
     immutableSegments.close();
   }
@@ -146,8 +153,8 @@ public class QueueData extends AbstractIdleService {
       return;
     }
 
-    // Force flush current segment so it is included in the compaction.
-    forceFlushCurrentSegment().join();
+    // Flush current segment so it is included in the compaction.
+    flushCurrentSegment();
 
     var segments = immutableSegments.getSegments();
     var pendingMerge = new MergedSegmentReader();
@@ -250,7 +257,7 @@ public class QueueData extends AbstractIdleService {
       currentSegment.addAll(entries);
     }
 
-    checkFlushCurrentSegment();
+    maybeScheduleCurrentSegmentFlush();
     return entries;
   }
 
@@ -260,24 +267,18 @@ public class QueueData extends AbstractIdleService {
       currentSegment.add(entry);
     }
 
-    checkFlushCurrentSegment();
+    maybeScheduleCurrentSegmentFlush();
     return entry;
   }
 
-  private void checkFlushCurrentSegment() throws IOException {
-    Segment frozen;
-
-    synchronized (this) {
-      // TODO: This should consider memory usage
-      if (currentSegment.size() < 128 * 1024) {
-        // Do not freeze or flush
-        return;
-      }
-
-      frozen = freezeAndReplaceCurrentSegment();
+  private void maybeScheduleCurrentSegmentFlush() {
+    if (isCurrentSegmentFlushRequired()) {
+      segmentFlusher.schedule();
     }
+  }
 
-    flush(frozen);
+  private synchronized boolean isCurrentSegmentFlushRequired() {
+    return currentSegment.size() >= 128 * 1024;
   }
 
   @VisibleForTesting
@@ -290,30 +291,19 @@ public class QueueData extends AbstractIdleService {
   }
 
   @VisibleForTesting
-  CompletableFuture<Void> forceFlushCurrentSegment() throws IOException {
-    return flush(freezeAndReplaceCurrentSegment());
-  }
-
-  private CompletableFuture<Void> flush(Segment frozen) {
+  void flushCurrentSegment() throws IOException {
     var start = Instant.now();
+    var frozen = freezeAndReplaceCurrentSegment();
+    var segment = writeAndDeleteLog(frozen);
 
-    // Schedule the write operation to happen asynchronously
-    CompletableFuture<Void> future = ioScheduler.schedule(new Parameters(), () -> {
-      // TODO: Handle exceptional completion of the future
-      Segment segment = writeAndDeleteLog(frozen);
-      synchronized (QueueData.this) {
-        immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
-      }
-      return null;
-    });
+    synchronized (this) {
+      immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
+    }
 
-    logger.debug("Scheduled in-memory segment for compaction; waitTime={}"
-            + ", pending={}, tombstone={}",
+    logger.debug("Flushed in-memory segment; time={}, pending={}, tombstone={}",
         Duration.between(start, Instant.now()),
         frozen.metadata().pendingCount(),
         frozen.metadata().tombstoneCount());
-
-    return future;
   }
 
   private Segment writeAndDeleteLog(Segment source) throws IOException {

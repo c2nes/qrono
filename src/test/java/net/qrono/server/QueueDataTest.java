@@ -1,5 +1,6 @@
 package net.qrono.server;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -7,8 +8,6 @@ import static org.junit.Assert.assertTrue;
 
 import com.google.protobuf.ByteString;
 import java.io.IOException;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CompletableFuture;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.Item;
@@ -27,7 +26,7 @@ public class QueueDataTest {
   public void testLoad() throws IOException, InterruptedException {
     var directory = temporaryFolder.getRoot().toPath();
     var writer = new StandardSegmentWriter(directory);
-    var data = new QueueData(directory, new DirectIOScheduler(), writer);
+    var data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
     var item = ImmutableItem.builder()
         .deadline(Timestamp.ZERO)
         .stats(ImmutableItem.Stats.builder()
@@ -42,7 +41,7 @@ public class QueueDataTest {
     data.stopAsync().awaitTerminated();
 
     // Re-open
-    data = new QueueData(directory, new DirectIOScheduler(), writer);
+    data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
     data.startAsync().awaitRunning();
 
     for (int i = 0; i < 10 * 128 * 1024; i++) {
@@ -56,7 +55,7 @@ public class QueueDataTest {
   public void testLoadWithTombstons() throws IOException, InterruptedException {
     var directory = temporaryFolder.getRoot().toPath();
     var writer = new StandardSegmentWriter(directory);
-    var data = new QueueData(directory, new DirectIOScheduler(), writer);
+    var data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
     var item = ImmutableItem.builder()
         .deadline(Timestamp.ZERO)
         .stats(ImmutableItem.Stats.builder()
@@ -76,8 +75,7 @@ public class QueueDataTest {
 
     // Force flush otherwise entry and tombstone will be merged
     // in-memory and not written to disk.
-    data.forceFlushCurrentSegment().join();
-//    data.freezeAndReplaceCurrentSegment();
+    data.flushCurrentSegment();
 
     assertEquals(1, assertPending(data.next()).id());
     assertEquals(2, assertPending(data.next()).id());
@@ -90,7 +88,7 @@ public class QueueDataTest {
 
     // Close and re-open
     data.stopAsync().awaitTerminated();
-    data = new QueueData(directory, new DirectIOScheduler(), writer);
+    data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
     data.startAsync().awaitRunning();
 
     assertEquals(0, assertPending(data.next()).id());
@@ -107,16 +105,5 @@ public class QueueDataTest {
     assertNotNull(item);
     assertTrue(entry.isPending());
     return item;
-  }
-
-  static class DirectIOScheduler implements IOScheduler {
-    @Override
-    public <V> CompletableFuture<V> schedule(Parameters parameters, Callable<V> operation) {
-      try {
-        return CompletableFuture.completedFuture(operation.call());
-      } catch (Exception e) {
-        return CompletableFuture.failedFuture(e);
-      }
-    }
   }
 }

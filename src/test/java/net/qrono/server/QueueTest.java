@@ -1,5 +1,7 @@
 package net.qrono.server;
 
+import static java.util.concurrent.Executors.newSingleThreadExecutor;
+
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.time.Clock;
@@ -23,13 +25,12 @@ public class QueueTest {
   public void benchmarkEnqueue() throws IOException {
     var path = dir.getRoot().toPath();
     var segmentWriter = new StandardSegmentWriter(path);
-    var workerPool = new StaticIOWorkerPool(1);
-    workerPool.startAsync().awaitRunning();
+    var workerPool = new ExecutorIOScheduler(newSingleThreadExecutor());
     var clock = Clock.systemUTC();
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     var data = new QueueData(path, workerPool, segmentWriter);
     data.startAsync().awaitRunning();
-    var workingSet = new DiskBackedWorkingSet(path, 1 << 30);
+    var workingSet = new DiskBackedWorkingSet(path, 1 << 30, workerPool);
     workingSet.startAsync().awaitRunning();
 
     var queue = new Queue(data, idGenerator, clock, workingSet);

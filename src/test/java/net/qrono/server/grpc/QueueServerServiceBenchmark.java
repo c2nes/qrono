@@ -1,5 +1,6 @@
 package net.qrono.server.grpc;
 
+import static java.util.concurrent.Executors.newSingleThreadExecutor;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
@@ -40,8 +41,8 @@ import net.qrono.Api.RequeueResponse;
 import net.qrono.QueueServerGrpc;
 import net.qrono.server.IdGenerator;
 import net.qrono.server.InMemoryWorkingSet;
+import net.qrono.server.ExecutorIOScheduler;
 import net.qrono.server.QueueManager;
-import net.qrono.server.StaticIOWorkerPool;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -179,8 +180,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueThroughput() throws InterruptedException, IOException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new StaticIOWorkerPool(1);
-    ioScheduler.startAsync().awaitRunning();
+    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
     queueManager.startAsync().awaitRunning();
@@ -208,8 +208,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new StaticIOWorkerPool(1);
-    ioScheduler.startAsync().awaitRunning();
+    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
     queueManager.startAsync().awaitRunning();
@@ -262,8 +261,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueDequeueReleaseMany() throws IOException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new StaticIOWorkerPool(1);
-    ioScheduler.startAsync().awaitRunning();
+    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var queueManager = new QueueManager(directory, idGenerator, ioScheduler, workingSet);
     queueManager.startAsync().awaitRunning();

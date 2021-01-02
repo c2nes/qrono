@@ -3,6 +3,7 @@ package net.qrono.server;
 import static java.lang.Math.toIntExact;
 
 import com.google.common.net.HostAndPort;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.bootstrap.ServerBootstrap;
@@ -14,8 +15,8 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
+import java.util.concurrent.Executors;
 import net.qrono.server.grpc.QueueServerService;
 import net.qrono.server.redis.RedisChannelInitializer;
 import org.slf4j.Logger;
@@ -25,14 +26,22 @@ public class Main {
   private static final Logger log = LoggerFactory.getLogger(Main.class);
 
   public static void main(String[] args) throws IOException, InterruptedException {
+    Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
+      log.error("Caught unhandled exception. Terminating; thread={}", thread, ex);
+      System.exit(1);
+    });
+
     var config = Config.load();
     log.info("Config {}", config);
 
     Path root = config.dataRoot();
     Files.createDirectories(root);
 
-    StaticIOWorkerPool ioScheduler = new StaticIOWorkerPool(4);
-    ioScheduler.startAsync().awaitRunning();
+    ExecutorIOScheduler ioScheduler = new ExecutorIOScheduler(
+        Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
+            .setDaemon(true)
+            .setNameFormat("Qrono-IOWorker-%d")
+            .build()));
 
     Path queuesDirectory = root.resolve(config.dataQueuesDir());
     Files.createDirectories(queuesDirectory);
@@ -44,7 +53,8 @@ public class Main {
 
     var workingSet = new DiskBackedWorkingSet(
         workingSetDirectory,
-        toIntExact(config.dataWorkingSetMappedFileSize().bytes()));
+        toIntExact(config.dataWorkingSetMappedFileSize().bytes()),
+        ioScheduler);
 
     workingSet.startAsync().awaitRunning();
 
