@@ -238,11 +238,11 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           return new IntegerRedisMessage(updatedDeadline.millis());
         }
 
-        if (ex instanceof IllegalStateException) {
+        if (unwrapCompletionException(ex) instanceof IllegalStateException) {
           return new ErrorRedisMessage("ERR item not dequeued");
         }
 
-        throw new CompletionException(ex);
+        throw propagateCompletionException(ex);
       });
     }
 
@@ -273,11 +273,11 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           return new SimpleStringRedisMessage("OK");
         }
 
-        if (ex instanceof IllegalStateException) {
+        if (unwrapCompletionException(ex) instanceof IllegalStateException) {
           return new ErrorRedisMessage("ERR item not dequeued");
         }
 
-        throw new CompletionException(ex);
+        throw propagateCompletionException(ex);
       });
     }
 
@@ -367,7 +367,9 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
             ctx.write(new ErrorRedisMessage(rre.getMessage()));
             doFlush = true;
           } else {
-            ctx.fireExceptionCaught(e.getCause());
+            log.error("Unhandled server error. Closing connection", e);
+            ctx.writeAndFlush(new ErrorRedisMessage("ERR server error"))
+                .addListener(ChannelFutureListener.CLOSE);
           }
         }
 
@@ -456,5 +458,21 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         ctx.fireExceptionCaught(cause);
       }
     }
+  }
+
+  private static Throwable unwrapCompletionException(Throwable ex) {
+    if (ex instanceof CompletionException) {
+      return ex.getCause();
+    }
+
+    return ex;
+  }
+
+  private static RuntimeException propagateCompletionException(Throwable ex) {
+    if (ex instanceof CompletionException) {
+      throw (CompletionException) ex;
+    }
+
+    throw new CompletionException(ex);
   }
 }
