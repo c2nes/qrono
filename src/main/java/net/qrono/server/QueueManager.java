@@ -20,6 +20,7 @@ public class QueueManager extends AbstractScheduledService {
   private final IdGenerator idGenerator;
   private final IOScheduler ioScheduler;
   private final WorkingSet workingSet;
+  private final SegmentFlushScheduler segmentFlushScheduler;
 
   private final Map<String, Queue> queues = new HashMap<>();
 
@@ -27,12 +28,14 @@ public class QueueManager extends AbstractScheduledService {
       Path directory,
       IdGenerator idGenerator,
       IOScheduler ioScheduler,
-      WorkingSet workingSet
+      WorkingSet workingSet,
+      SegmentFlushScheduler segmentFlushScheduler
   ) {
     this.directory = directory;
     this.idGenerator = idGenerator;
     this.ioScheduler = ioScheduler;
     this.workingSet = workingSet;
+    this.segmentFlushScheduler = segmentFlushScheduler;
 
     addListener(new Listener() {
       @Override
@@ -69,7 +72,11 @@ public class QueueManager extends AbstractScheduledService {
     var queueDirectory = directory.resolve(name);
     var segmentWriter = new StandardSegmentWriter(queueDirectory);
 
-    var queueData = new QueueData(queueDirectory, ioScheduler, segmentWriter);
+    var queueData = new QueueData(
+        queueDirectory,
+        ioScheduler,
+        segmentWriter,
+        segmentFlushScheduler);
     queueData.startAsync().awaitRunning();
 
     var queue = new Queue(queueData, idGenerator, Clock.systemUTC(), workingSet);

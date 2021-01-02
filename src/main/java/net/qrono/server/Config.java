@@ -44,6 +44,9 @@ public interface Config {
   @Option("qrono.data.workingSet.mappedFileSize")
   DataSize dataWorkingSetMappedFileSize();
 
+  @Option("qrono.segmentFlushThreshold")
+  DataSize segmentFlushThreshold();
+
   static Config load() throws IOException {
     var classLoader = Config.class.getClassLoader();
     var properties = loadProperties(classLoader);

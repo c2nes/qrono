@@ -22,7 +22,7 @@ public interface WritableSegment extends SegmentReader {
 
   long tombstoneCount();
 
-  long size();
+  long sizeBytes();
 
   /**
    * Freeze the segment, making it read-only.

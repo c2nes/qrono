@@ -22,11 +22,15 @@ public class QueueDataTest {
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
+  private final IOScheduler ioScheduler = new ExecutorIOScheduler(directExecutor());
+  private final SegmentFlushScheduler segmentFlushScheduler =
+      new SegmentFlushScheduler(1024 * 1024);
+
   @Test
   public void testLoad() throws IOException, InterruptedException {
     var directory = temporaryFolder.getRoot().toPath();
     var writer = new StandardSegmentWriter(directory);
-    var data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
+    var data = new QueueData(directory, ioScheduler, writer, segmentFlushScheduler);
     var item = ImmutableItem.builder()
         .deadline(Timestamp.ZERO)
         .stats(ImmutableItem.Stats.builder()
@@ -41,7 +45,7 @@ public class QueueDataTest {
     data.stopAsync().awaitTerminated();
 
     // Re-open
-    data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
+    data = new QueueData(directory, ioScheduler, writer, segmentFlushScheduler);
     data.startAsync().awaitRunning();
 
     for (int i = 0; i < 10 * 128 * 1024; i++) {
@@ -55,7 +59,7 @@ public class QueueDataTest {
   public void testLoadWithTombstons() throws IOException, InterruptedException {
     var directory = temporaryFolder.getRoot().toPath();
     var writer = new StandardSegmentWriter(directory);
-    var data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
+    var data = new QueueData(directory, ioScheduler, writer, segmentFlushScheduler);
     var item = ImmutableItem.builder()
         .deadline(Timestamp.ZERO)
         .stats(ImmutableItem.Stats.builder()
@@ -88,7 +92,7 @@ public class QueueDataTest {
 
     // Close and re-open
     data.stopAsync().awaitTerminated();
-    data = new QueueData(directory, new ExecutorIOScheduler(directExecutor()), writer);
+    data = new QueueData(directory, ioScheduler, writer, segmentFlushScheduler);
     data.startAsync().awaitRunning();
 
     assertEquals(0, assertPending(data.next()).id());

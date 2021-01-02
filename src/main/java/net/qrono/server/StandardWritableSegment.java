@@ -13,6 +13,11 @@ import net.qrono.server.data.ImmutableEntry;
 import net.qrono.server.data.Item;
 
 public class StandardWritableSegment implements WritableSegment {
+  // This is a crude approximation of the amount of overhead required to store an entry in memory.
+  // It is added to the value size of pending items and is used as the approximate size of
+  // tombstones.
+  private static final long ENTRY_OVERHEAD_BYTES = 64;
+
   private final SegmentName name;
   private final WriteAheadLog wal;
 
@@ -28,6 +33,9 @@ public class StandardWritableSegment implements WritableSegment {
   // requires that it was returned by a next() call.
   private final LinkedHashMap<Long, Item> removed = new LinkedHashMap<>();
   private Item lastRemoved = null;
+
+  // Estimated total size of this segment in bytes
+  private long sizeBytes = 0;
 
   private boolean frozen = false;
   private boolean closed = false;
@@ -61,10 +69,17 @@ public class StandardWritableSegment implements WritableSegment {
     var item = entry.item();
     if (item != null) {
       pending.add(item);
+      //
+      sizeBytes += item.value().size() + ENTRY_OVERHEAD_BYTES;
     } else {
       Entry.Key tombstone = entry.key();
-      if (removed.remove(tombstone.id()) == null) {
+      Item removedItem = removed.remove(tombstone.id());
+      if (removedItem == null) {
         tombstones.add(tombstone);
+        sizeBytes += ENTRY_OVERHEAD_BYTES;
+      } else {
+        // The tombstone Entry canceled out a removed Item
+        sizeBytes -= (removedItem.value().size() + ENTRY_OVERHEAD_BYTES);
       }
     }
   }
@@ -118,8 +133,8 @@ public class StandardWritableSegment implements WritableSegment {
   }
 
   @Override
-  public synchronized long size() {
-    return pendingCount() + tombstoneCount();
+  public synchronized long sizeBytes() {
+    return sizeBytes;
   }
 
   @Override

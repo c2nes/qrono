@@ -28,7 +28,8 @@ public class QueueTest {
     var workerPool = new ExecutorIOScheduler(newSingleThreadExecutor());
     var clock = Clock.systemUTC();
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
-    var data = new QueueData(path, workerPool, segmentWriter);
+    var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
+    var data = new QueueData(path, workerPool, segmentWriter, segmentFlushScheduler);
     data.startAsync().awaitRunning();
     var workingSet = new DiskBackedWorkingSet(path, 1 << 30, workerPool);
     workingSet.startAsync().awaitRunning();

@@ -45,12 +45,19 @@ public class QueueData extends AbstractIdleService {
   @GuardedBy("this")
   private volatile Key last = Key.ZERO;
 
+  private final SegmentFlushScheduler.Handle flushSchedule;
   private final IOScheduler.Handle segmentFlusher;
 
-  public QueueData(Path directory, IOScheduler ioScheduler, SegmentWriter segmentWriter) {
+  public QueueData(
+      Path directory,
+      IOScheduler ioScheduler,
+      SegmentWriter segmentWriter,
+      SegmentFlushScheduler segmentFlushScheduler
+  ) {
     this.directory = directory;
     this.segmentWriter = segmentWriter;
 
+    flushSchedule = segmentFlushScheduler.register();
     segmentFlusher = ioScheduler.register(() -> {
       if (isCurrentSegmentFlushRequired()) {
         flushCurrentSegment();
@@ -147,6 +154,7 @@ public class QueueData extends AbstractIdleService {
   protected synchronized void shutDown() throws Exception {
     writeAndDeleteLog(currentSegment.freeze());
     segmentFlusher.cancel();
+    flushSchedule.cancel();
     currentSegment.close();
     immutableSegments.close();
   }
@@ -284,7 +292,7 @@ public class QueueData extends AbstractIdleService {
   }
 
   private synchronized boolean isCurrentSegmentFlushRequired() {
-    return currentSegment.size() >= 128 * 1024;
+    return flushSchedule.isFlushRequired(currentSegment.sizeBytes());
   }
 
   @VisibleForTesting
@@ -293,6 +301,7 @@ public class QueueData extends AbstractIdleService {
     var frozen = currentSegment.freeze();
     immutableSegments.addSegment(frozen, last);
     currentSegment = nextWritableSegment();
+    flushSchedule.update(currentSegment.sizeBytes());
     return frozen;
   }
 
