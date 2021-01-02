@@ -324,8 +324,7 @@ public class ImmutableSegment implements Segment {
       // that this should be the case unless the concrete type specifies
       // otherwise (e.g. non-blocking socket channel).
       buffer.compact();
-      Verify.verifyNotNull(buffer.position() == 0,
-          "short write (unsupported channel type?)");
+      Verify.verify(buffer.position() == 0, "short write (unsupported channel type?)");
     }
 
     // Ensure there is capacity to write the requested number of bytes

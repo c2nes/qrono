@@ -5,6 +5,7 @@ import static java.util.Objects.requireNonNull;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -37,9 +38,11 @@ public class QueueData extends AbstractIdleService {
   private final AtomicLong segmentCounter = new AtomicLong();
   private final MergedSegmentReader immutableSegments = new MergedSegmentReader();
 
+  @GuardedBy("this")
   private WritableSegment currentSegment = null;
 
   // Last key dequeued by next()
+  @GuardedBy("this")
   private volatile Key last = Key.ZERO;
 
   private final IOScheduler.Handle segmentFlusher;
@@ -135,7 +138,9 @@ public class QueueData extends AbstractIdleService {
     segmentCounter.set(maxSegmentId + 1);
 
     // Initialize next segment
-    currentSegment = nextWritableSegment();
+    synchronized (this) {
+      currentSegment = nextWritableSegment();
+    }
   }
 
   @Override
@@ -144,6 +149,13 @@ public class QueueData extends AbstractIdleService {
     segmentFlusher.cancel();
     currentSegment.close();
     immutableSegments.close();
+  }
+
+  // Provide read-only access to "last" while suppressing Error Prone GuardedBy warnings.
+  // All intentionally unsynchronized reads of "last" should use this method.
+  @SuppressWarnings("GuardedBy")
+  private Key volatileReadLast() {
+    return last;
   }
 
   public void compact() throws IOException {
@@ -173,7 +185,7 @@ public class QueueData extends AbstractIdleService {
             .orElse(0));
 
     var start = Instant.now();
-    var mergedSegment = segmentWriter.write(mergeName, pendingMerge, () -> last);
+    var mergedSegment = segmentWriter.write(mergeName, pendingMerge, this::volatileReadLast);
     var writeDuration = Duration.between(start, Instant.now());
 
     // Synchronized to ensure "last" doesn't change while we replace the segments.
@@ -208,7 +220,7 @@ public class QueueData extends AbstractIdleService {
     return new StandardWritableSegment(name, wal);
   }
 
-  private Entry adjustEntryDeadline(Entry entry) {
+  private synchronized Entry adjustEntryDeadline(Entry entry) {
     // If item is non-null then this is a pending entry
     var item = entry.item();
     if (item != null && entry.key().compareTo(last) < 0) {
@@ -234,7 +246,7 @@ public class QueueData extends AbstractIdleService {
     return entry;
   }
 
-  private List<Entry> adjustEntryDeadlines(List<Entry> entries) {
+  private synchronized List<Entry> adjustEntryDeadlines(List<Entry> entries) {
     List<Entry> updatedEntries = entries;
     int i = 0;
     for (Entry entry : entries) {
@@ -251,22 +263,16 @@ public class QueueData extends AbstractIdleService {
     return updatedEntries;
   }
 
-  public List<Entry> write(List<Entry> entries) throws IOException {
-    synchronized (this) {
-      entries = adjustEntryDeadlines(entries);
-      currentSegment.addAll(entries);
-    }
-
+  public synchronized List<Entry> write(List<Entry> entries) throws IOException {
+    entries = adjustEntryDeadlines(entries);
+    currentSegment.addAll(entries);
     maybeScheduleCurrentSegmentFlush();
     return entries;
   }
 
-  public Entry write(Entry entry) throws IOException {
-    synchronized (this) {
-      entry = adjustEntryDeadline(entry);
-      currentSegment.add(entry);
-    }
-
+  public synchronized Entry write(Entry entry) throws IOException {
+    entry = adjustEntryDeadline(entry);
+    currentSegment.add(entry);
     maybeScheduleCurrentSegmentFlush();
     return entry;
   }
@@ -307,7 +313,10 @@ public class QueueData extends AbstractIdleService {
   }
 
   private Segment writeAndDeleteLog(Segment source) throws IOException {
-    var frozenSegment = segmentWriter.write(source.name(), source.newReader(), () -> last);
+    var frozenSegment = segmentWriter.write(
+        source.name(),
+        source.newReader(),
+        this::volatileReadLast);
     StandardWriteAheadLog.delete(directory, source.name());
     return frozenSegment;
   }
@@ -328,7 +337,7 @@ public class QueueData extends AbstractIdleService {
     return entry;
   }
 
-  private SegmentReader headReader() {
+  private synchronized SegmentReader headReader() {
     var currentSegmentKey = currentSegment.peek();
     if (currentSegmentKey == null) {
       return immutableSegments;
