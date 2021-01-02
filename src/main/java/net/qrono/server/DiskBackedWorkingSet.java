@@ -250,17 +250,27 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
 
   @VisibleForTesting
   class ItemRefImpl implements ItemRef {
-    private final WorkingItem entry;
-    private final MappedFile entryFile;
+    private WorkingItem entry;
+    private MappedFile entryFile;
 
     private ItemRefImpl(WorkingItem entry) {
       this.entry = entry;
       entryFile = entryFile(entry);
     }
 
-    private void checkNotReleased() {
-      synchronized (DiskBackedWorkingSet.this) {
-        Preconditions.checkState(entryFile.contains(entry), "released");
+    // Draining involves atomically removing and re-adding items from the working set. This
+    // operation causes a new WorkingItem to be created for the item so the copy we have may no
+    // longer be valid once we've left a synchronized block.
+    //
+    // All ItemRef methods must call revalidate after synchronizing on DiskBackedWorkingSet.this
+    private void revalidate() {
+      if (!entryFile.contains(entry)) {
+        var updatedEntry = entries.get(entry.id);
+        if (updatedEntry == null) {
+          throw new IllegalStateException("released");
+        }
+        entry = updatedEntry;
+        entryFile = entryFile(entry);
       }
     }
 
@@ -269,19 +279,23 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
      */
     @VisibleForTesting
     void clearItemReferenceForTest() {
-      entry.item.clear();
+      synchronized (DiskBackedWorkingSet.this) {
+        entry.item.clear();
+      }
     }
 
     @Override
     public Key key() {
-      checkNotReleased();
-      return entry.toTombstoneKey();
+      synchronized (DiskBackedWorkingSet.this) {
+        revalidate();
+        return entry.toTombstoneKey();
+      }
     }
 
     @Override
     public Item item() {
       synchronized (DiskBackedWorkingSet.this) {
-        checkNotReleased();
+        revalidate();
         return entryItem(entry, entryFile);
       }
     }
@@ -289,7 +303,7 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     @Override
     public void release() {
       synchronized (DiskBackedWorkingSet.this) {
-        checkNotReleased();
+        revalidate();
         verify(entries.remove(entry.id) != null,
             "BUG: global entries map and mapped file node list out of sync");
         removeFileEntry(entryFile, entry);

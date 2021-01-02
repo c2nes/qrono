@@ -170,6 +170,34 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
     assertThat(currentFileCount()).isCloseTo(peakFileCount / 5, within(1));
   }
 
+  @Test
+  public void testItemRefValidAcrossDrain() throws Exception {
+    // Add 10x "MAPPED_FILE_SIZE" number of entries. Each entry is at least 1 byte
+    // so this should cause > 10 mapped file to be opened.
+    for (int i = 0; i < 10 * MAPPED_FILE_SIZE; i++) {
+      workingSet.add(withId(ITEM_1_T5, i));
+    }
+
+    int peakFileCount = currentFileCount();
+    assertThat(peakFileCount).isGreaterThan(10);
+
+    // This ref should still be valid after the drain we're about to trigger.
+    var ref = workingSet.get(0);
+    var item = ref.item();
+    var key = ref.key();
+
+    // Remove 90% of items evenly across all files
+    for (int i = 0; i < 10 * MAPPED_FILE_SIZE; i++) {
+      if (i % 10 != 0) {
+        workingSet.get(i).release();
+      }
+    }
+
+    assertThat(ref.key()).isEqualTo(key);
+    assertThat(ref.item()).isEqualTo(item);
+    ref.release();
+  }
+
   private int currentFileCount() {
     var pattern = "*" + DiskBackedWorkingSet.FILE_SUFFIX;
     try (var children = Files.newDirectoryStream(dir.getRoot().toPath(), pattern)) {
