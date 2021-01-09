@@ -6,7 +6,6 @@ import static java.util.Comparator.comparing;
 import com.google.common.util.concurrent.AbstractScheduledService;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
@@ -17,25 +16,12 @@ public class QueueManager extends AbstractScheduledService {
   private static final Logger log = LoggerFactory.getLogger(QueueManager.class);
 
   private final Path directory;
-  private final IdGenerator idGenerator;
-  private final IOScheduler ioScheduler;
-  private final WorkingSet workingSet;
-  private final SegmentFlushScheduler segmentFlushScheduler;
-
+  private final QueueFactory factory;
   private final Map<String, Queue> queues = new HashMap<>();
 
-  public QueueManager(
-      Path directory,
-      IdGenerator idGenerator,
-      IOScheduler ioScheduler,
-      WorkingSet workingSet,
-      SegmentFlushScheduler segmentFlushScheduler
-  ) {
+  public QueueManager(Path directory, QueueFactory factory) {
     this.directory = directory;
-    this.idGenerator = idGenerator;
-    this.ioScheduler = ioScheduler;
-    this.workingSet = workingSet;
-    this.segmentFlushScheduler = segmentFlushScheduler;
+    this.factory = factory;
 
     addListener(new Listener() {
       @Override
@@ -50,7 +36,7 @@ public class QueueManager extends AbstractScheduledService {
     Files.list(directory).forEach(entry -> {
       if (Files.isDirectory(entry)) {
         var queueName = entry.getFileName().toString();
-        queues.put(queueName, createQueue(queueName));
+        queues.put(queueName, factory.createQueue(queueName));
       }
     });
   }
@@ -62,26 +48,9 @@ public class QueueManager extends AbstractScheduledService {
   public synchronized Queue getOrCreateQueue(String queueName) {
     Queue queue = queues.get(queueName);
     if (queue == null) {
-      queue = createQueue(queueName);
+      queue = factory.createQueue(queueName);
       queues.put(queueName, queue);
     }
-    return queue;
-  }
-
-  private Queue createQueue(String name) {
-    var queueDirectory = directory.resolve(name);
-    var segmentWriter = new StandardSegmentWriter(queueDirectory);
-
-    var queueData = new QueueData(
-        queueDirectory,
-        ioScheduler,
-        segmentWriter,
-        segmentFlushScheduler);
-    queueData.startAsync().awaitRunning();
-
-    var queue = new Queue(queueData, idGenerator, Clock.systemUTC(), workingSet);
-    queue.startAsync().awaitRunning();
-
     return queue;
   }
 

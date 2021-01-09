@@ -59,12 +59,13 @@ public class Main {
     workingSet.startAsync().awaitRunning();
 
     var segmentFlushScheduler = new SegmentFlushScheduler(config.segmentFlushThreshold().bytes());
-    var queueManager = new QueueManager(
+    var queueFactory = new QueueFactory(
         queuesDirectory,
         idGenerator,
         ioScheduler,
         workingSet,
         segmentFlushScheduler);
+    var queueManager = new QueueManager(queuesDirectory, queueFactory);
     queueManager.startAsync().awaitRunning();
 
     QueueServerService service = new QueueServerService(queueManager);

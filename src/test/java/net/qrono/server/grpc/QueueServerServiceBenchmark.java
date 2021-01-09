@@ -42,6 +42,7 @@ import net.qrono.QueueServerGrpc;
 import net.qrono.server.ExecutorIOScheduler;
 import net.qrono.server.IdGenerator;
 import net.qrono.server.InMemoryWorkingSet;
+import net.qrono.server.QueueFactory;
 import net.qrono.server.QueueManager;
 import net.qrono.server.SegmentFlushScheduler;
 import org.junit.Ignore;
@@ -184,12 +185,13 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
-    var queueManager = new QueueManager(
+    var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
         workingSet,
         segmentFlushScheduler);
+    var queueManager = new QueueManager(directory, queueFactory);
     queueManager.startAsync().awaitRunning();
     QueueServerService service = new QueueServerService(queueManager);
 
@@ -218,12 +220,13 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
-    var queueManager = new QueueManager(
+    var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
         workingSet,
         segmentFlushScheduler);
+    var queueManager = new QueueManager(directory, queueFactory);
     queueManager.startAsync().awaitRunning();
     QueueServerService service = new QueueServerService(queueManager);
 
@@ -277,12 +280,13 @@ public class QueueServerServiceBenchmark {
     var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
-    var queueManager = new QueueManager(
+    var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
         workingSet,
         segmentFlushScheduler);
+    var queueManager = new QueueManager(directory, queueFactory);
     queueManager.startAsync().awaitRunning();
     QueueServerService service = new QueueServerService(queueManager);
     var queueName = "test-queue-" + System.currentTimeMillis();
