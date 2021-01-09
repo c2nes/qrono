@@ -139,9 +139,11 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
         if (!file.isEmpty()) {
           addUnchecked(file.pop());
         } else {
-          file.close();
-          files.remove(file.fileID);
-          totalSize -= mappedFileSize;
+          if (files.containsKey(file.fileID)) {
+            file.close();
+            files.remove(file.fileID);
+            totalSize -= mappedFileSize;
+          }
           return;
         }
       }
