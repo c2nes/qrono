@@ -105,13 +105,14 @@ public class Queue extends AbstractIdleService {
 
   @Override
   protected void startUp() {
-    data.awaitRunning();
+    data.startAsync().awaitRunning();
     disruptor.start();
   }
 
   @Override
   protected void shutDown() {
     disruptor.shutdown();
+    data.stopAsync().awaitTerminated();
   }
 
   public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
