@@ -24,14 +24,18 @@ import io.netty.handler.codec.redis.RedisEncoder;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import io.netty.util.ReferenceCountUtil;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import net.qrono.server.Queue;
 import net.qrono.server.QueueManager;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Timestamp;
+import net.qrono.server.exceptions.QronoException;
+import net.qrono.server.exceptions.QueueNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -93,7 +97,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       // TODO: What characters are allowed in a queue name?
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
       var value = arg(args, 2);
-      Timestamp deadline = null;
+      Timestamp deadline;
 
       if (args.size() == 5) {
         var deadlineKeyword = arg(args, 3)
@@ -111,10 +115,12 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         } catch (NumberFormatException e) {
           throw RedisRequestException.syntaxError();
         }
+      } else {
+        deadline = null;
       }
 
-      var queue = manager.getOrCreateQueue(queueName);
-      var itemFuture = queue.enqueueAsync(ByteString.copyFrom(value.nioBuffer()), deadline);
+      var itemFuture = manager.withQueueAsync(queueName,
+          queue -> queue.enqueueAsync(ByteString.copyFrom(value.nioBuffer()), deadline));
 
       return itemFuture.thenApply(item -> new ArrayRedisMessage(List.of(
           new IntegerRedisMessage(item.id()),
@@ -135,12 +141,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
-      var queue = manager.getQueue(queueName);
-      if (queue == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
-
-      return queue.dequeueAsync().thenApply(item -> {
+      var futureItem = manager.withExistingQueueAsync(queueName, Queue::dequeueAsync);
+      return futureItem.thenApply(item -> {
         if (item == null) {
           return FullBulkStringRedisMessage.NULL_INSTANCE;
         }
@@ -170,12 +172,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
-      var queue = manager.getQueue(queueName);
-      if (queue == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
-
-      return queue.peekAsync().thenApply(item -> {
+      var futureItem = manager.withExistingQueueAsync(queueName, Queue::peekAsync);
+      return futureItem.thenApply(item -> {
         if (item == null) {
           return FullBulkStringRedisMessage.NULL_INSTANCE;
         }
@@ -209,7 +207,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         throw RedisRequestException.syntaxError();
       }
 
-      Timestamp deadline = null;
+      Timestamp deadline;
       if (args.size() == 5) {
         var deadlineKeyword = arg(args, 3)
             .toString(StandardCharsets.US_ASCII)
@@ -226,14 +224,14 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         } catch (NumberFormatException e) {
           throw RedisRequestException.syntaxError();
         }
+      } else {
+        deadline = null;
       }
 
-      var queue = manager.getQueue(queueName);
-      if (queue == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
+      var future = manager.withExistingQueueAsync(
+          queueName, queue -> queue.requeueAsync(id, deadline));
 
-      return queue.requeueAsync(id, deadline).handle((updatedDeadline, ex) -> {
+      return future.handle((updatedDeadline, ex) -> {
         if (ex == null) {
           return new IntegerRedisMessage(updatedDeadline.millis());
         }
@@ -263,12 +261,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         throw RedisRequestException.syntaxError();
       }
 
-      var queue = manager.getQueue(queueName);
-      if (queue == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
-
-      return queue.releaseAsync(id).handle((_result, ex) -> {
+      var future = manager.withExistingQueueAsync(queueName, queue -> queue.releaseAsync(id));
+      return future.handle((_result, ex) -> {
         if (ex == null) {
           return new SimpleStringRedisMessage("OK");
         }
@@ -290,14 +284,28 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
-      var queue = manager.getQueue(queueName);
-      if (queue == null) {
-        return completedFuture(FullBulkStringRedisMessage.NULL_INSTANCE);
-      }
-
-      return queue.getQueueInfoAsync().thenApply(info -> new ArrayRedisMessage(List.of(
+      var future = manager.withExistingQueueAsync(queueName, Queue::getQueueInfoAsync);
+      return future.thenApply(info -> new ArrayRedisMessage(List.of(
           new IntegerRedisMessage(info.pendingCount()),
           new IntegerRedisMessage(info.dequeuedCount()))));
+    }
+
+    // DEL(ETE) queue
+    //   OK
+    private CompletableFuture<RedisMessage> handleDelete(List<RedisMessage> args) {
+      if (args.size() != 2) {
+        throw RedisRequestException.wrongNumberOfArguments();
+      }
+
+      var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
+      return CompletableFuture.supplyAsync(() -> {
+        try {
+          manager.deleteQueue(queueName);
+          return new SimpleStringRedisMessage("OK");
+        } catch (IOException e) {
+          throw new CompletionException(e);
+        }
+      });
     }
 
     private CompletableFuture<RedisMessage> handlePing(List<RedisMessage> args) {
@@ -343,6 +351,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         case "stat":
           return handleStat(args);
 
+        case "del":
+        case "delete":
+          return handleDelete(args);
+
         // For compatibility with Redis
         case "ping":
           return handlePing(args);
@@ -365,6 +377,13 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           if (e.getCause() instanceof RedisRequestException) {
             var rre = (RedisRequestException) e.getCause();
             ctx.write(new ErrorRedisMessage(rre.getMessage()));
+            doFlush = true;
+          } else if (e.getCause() instanceof QueueNotFoundException) {
+            ctx.write(FullBulkStringRedisMessage.NULL_INSTANCE);
+            doFlush = true;
+          } else if (e.getCause() instanceof QronoException) {
+            var qe = (QronoException) e.getCause();
+            ctx.write(new ErrorRedisMessage(qe.getMessage()));
             doFlush = true;
           } else {
             log.error("Unhandled server error. Closing connection", e);

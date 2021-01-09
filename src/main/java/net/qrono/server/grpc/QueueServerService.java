@@ -27,6 +27,7 @@ import net.qrono.QueueServerGrpc;
 import net.qrono.server.Queue;
 import net.qrono.server.QueueManager;
 import net.qrono.server.data.ImmutableTimestamp;
+import net.qrono.server.exceptions.QueueNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,16 +39,6 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     this.manager = manager;
   }
 
-  private synchronized Queue getQueue(String queueName) {
-    Queue queue = manager.getQueue(queueName);
-    if (queue == null) {
-      throw Status.NOT_FOUND
-          .withDescription("no such queue, " + queueName)
-          .asRuntimeException();
-    }
-    return queue;
-  }
-
   @Override
   public void enqueue(EnqueueRequest request, StreamObserver<EnqueueResponse> responseObserver) {
     process(responseObserver, () -> enqueue(request));
@@ -56,10 +47,14 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   EnqueueResponse enqueue(EnqueueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = manager.getOrCreateQueue(queueName);
-    var item = queue.enqueue(
-        request.getValue(),
-        request.hasDeadline() ? ImmutableTimestamp.of(toMillis(request.getDeadline())) : null);
+
+    var deadline = request.hasDeadline()
+        ? ImmutableTimestamp.of(toMillis(request.getDeadline()))
+        : null;
+
+    var item = manager.withQueue(
+        queueName,
+        queue -> queue.enqueueAsync(request.getValue(), deadline));
 
     return EnqueueResponse.newBuilder()
         .setId(item.id())
@@ -101,9 +96,8 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   Item dequeue(DequeueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
 
-    var item = queue.dequeue();
+    var item = manager.withExistingQueue(queueName, Queue::dequeueAsync);
     if (item == null) {
       throw Status.NOT_FOUND
           .withDescription("no items ready")
@@ -131,10 +125,9 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   Empty release(ReleaseRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
 
     try {
-      queue.release(request.getId());
+      manager.withExistingQueue(queueName, queue -> queue.releaseAsync(request.getId()));
     } catch (IllegalStateException e) {
       throw Status.FAILED_PRECONDITION
           .withDescription(e.getMessage())
@@ -152,13 +145,14 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   RequeueResponse requeue(RequeueRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
+
     var deadline = request.hasDeadline()
         ? ImmutableTimestamp.of(toMillis(request.getDeadline()))
         : null;
 
     try {
-      var newDeadlineMillis = queue.requeue(request.getId(), deadline).millis();
+      var newDeadlineMillis = manager.withExistingQueue(queueName,
+          queue -> queue.requeueAsync(request.getId(), deadline)).millis();
       return RequeueResponse.newBuilder()
           .setDeadline(fromMillis(newDeadlineMillis))
           .build();
@@ -177,9 +171,8 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   Item peek(PeekRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
 
-    var item = queue.peek();
+    var item = manager.withExistingQueue(queueName, Queue::peekAsync);
     if (item == null) {
       throw Status.NOT_FOUND
           .withDescription("no items pending")
@@ -210,8 +203,7 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   @VisibleForTesting
   QueueInfo getQueueInfo(GetQueueInfoRequest request) throws IOException {
     String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
-    var info = queue.getQueueInfo();
+    var info = manager.withExistingQueue(queueName, Queue::getQueueInfoAsync);
     return QueueInfo.newBuilder()
         .setName(queueName)
         .setPending(info.pendingCount())
@@ -225,16 +217,17 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   }
 
   Empty compactQueue(CompactQueueRequest request) throws IOException {
-    String queueName = request.getQueue();
-    Queue queue = getQueue(queueName);
-    queue.compact();
-    return Empty.getDefaultInstance();
+    throw Status.UNIMPLEMENTED.asRuntimeException();
   }
 
   private static <R> void process(StreamObserver<R> observer, Callable<R> operation) {
     try {
       observer.onNext(operation.call());
       observer.onCompleted();
+    } catch (QueueNotFoundException e) {
+      observer.onError(Status.NOT_FOUND
+          .withDescription(e.getMessage())
+          .asRuntimeException());
     } catch (StatusException | StatusRuntimeException e) {
       observer.onError(e);
     } catch (Exception e) {

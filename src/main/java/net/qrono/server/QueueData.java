@@ -3,6 +3,7 @@ package net.qrono.server;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
@@ -47,6 +48,8 @@ public class QueueData extends AbstractIdleService {
 
   private final SegmentFlushScheduler.Handle flushSchedule;
   private final IOScheduler.Handle segmentFlusher;
+
+  private final Object compactionLock = new Object();
 
   public QueueData(
       Path directory,
@@ -152,11 +155,32 @@ public class QueueData extends AbstractIdleService {
 
   @Override
   protected synchronized void shutDown() throws Exception {
+    // Wait for any ongoing compaction to complete.
+    synchronized (compactionLock) {
+      // No-op. Future compactions will abort immediately now
+      // that we are no longer running.
+    }
+
     writeAndDeleteLog(currentSegment.freeze());
     segmentFlusher.cancel();
     flushSchedule.cancel();
     currentSegment.close();
     immutableSegments.close();
+  }
+
+  /**
+   * Delete the queue from disk. May only be called after terminating.
+   */
+  public synchronized void delete() throws IOException {
+    Preconditions.checkState(state() == State.TERMINATED);
+
+    try (var children = Files.newDirectoryStream(directory)) {
+      for (Path child : children) {
+        Files.delete(child);
+      }
+    }
+
+    Files.delete(directory);
   }
 
   // Provide read-only access to "last" while suppressing Error Prone GuardedBy warnings.
@@ -167,58 +191,65 @@ public class QueueData extends AbstractIdleService {
   }
 
   public void compact() throws IOException {
-    var stats = getStorageStats();
-    // Skip compaction if we do not have enough tombstones
-    if (stats.totalTombstoneCount() < 0.2 * stats.totalPendingCount()) {
-      return;
-    }
+    synchronized (compactionLock) {
+      // Skip compaction if we are no longer running
+      if (!isRunning()) {
+        return;
+      }
 
-    // Flush current segment so it is included in the compaction.
-    flushCurrentSegment();
+      var stats = getStorageStats();
+      // Skip compaction if we do not have enough tombstones
+      if (stats.totalTombstoneCount() < 0.2 * stats.totalPendingCount()) {
+        return;
+      }
 
-    var segments = immutableSegments.getSegments();
-    var pendingMerge = new MergedSegmentReader();
-    for (Segment segment : segments) {
-      pendingMerge.addSegment(segment, Key.ZERO);
-    }
+      // Flush current segment so it is included in the compaction.
+      flushCurrentSegment();
 
-    var mergeName = new SegmentName(
-        segments.stream()
-            .mapToInt(s -> s.name().level())
-            .max()
-            .orElse(0) + 1,
-        segments.stream()
-            .mapToLong(s -> s.name().id())
-            .max()
-            .orElse(0));
+      var segments = immutableSegments.getSegments();
+      var pendingMerge = new MergedSegmentReader();
+      for (Segment segment : segments) {
+        pendingMerge.addSegment(segment, Key.ZERO);
+      }
 
-    var start = Instant.now();
-    var mergedSegment = segmentWriter.write(mergeName, pendingMerge, this::volatileReadLast);
-    var writeDuration = Duration.between(start, Instant.now());
+      var mergeName = new SegmentName(
+          segments.stream()
+              .mapToInt(s -> s.name().level())
+              .max()
+              .orElse(0) + 1,
+          segments.stream()
+              .mapToLong(s -> s.name().id())
+              .max()
+              .orElse(0));
 
-    // Synchronized to ensure "last" doesn't change while we replace the segments.
-    synchronized (this) {
-      // At this point we would like to swap the new segment for the input segments.
-      // We need to do this swapping within the merged segment view.
-      immutableSegments.replaceSegments(segments, mergedSegment, last);
-    }
+      var start = Instant.now();
+      var mergedSegment = segmentWriter.write(mergeName, pendingMerge, this::volatileReadLast);
+      var writeDuration = Duration.between(start, Instant.now());
 
-    var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
-    var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
-    logger.info("Merged {} segments; entries={}, pending={}, tombstone={}, "
-            + "size={}, writeDuration={}, switches={}, seekDuration={}",
-        segments.size(),
-        mergedSegment.size(),
-        mergedSegment.metadata().pendingCount(),
-        mergedSegment.metadata().tombstoneCount(),
-        DataSize.fromBytes(Files.size(mergedPath)),
-        Duration.between(start, Instant.now()),
-        pendingMerge.getHeadSwitchDebugCount(),
-        seekDuration);
+      // Synchronized to ensure "last" doesn't change while we replace the segments.
+      synchronized (this) {
+        // At this point we would like to swap the new segment for the input segments.
+        // We need to do this swapping within the merged segment view.
+        immutableSegments.replaceSegments(segments, mergedSegment, last);
+      }
 
-    // Delete old segments
-    for (Segment segment : segments) {
-      Files.delete(SegmentFiles.getIndexPath(directory, segment.name()));
+      var seekDuration = Duration.between(start, Instant.now()).minus(writeDuration);
+      var mergedPath = SegmentFiles.getIndexPath(directory, mergeName);
+      logger.info("Merged {} segments; entries={}, pending={}, tombstone={}, "
+              + "size={}, writeDuration={}, switches={}, seekDuration={}",
+          segments.size(),
+          mergedSegment.size(),
+          mergedSegment.metadata().pendingCount(),
+          mergedSegment.metadata().tombstoneCount(),
+          DataSize.fromBytes(Files.size(mergedPath)),
+          Duration.between(start, Instant.now()),
+          pendingMerge.getHeadSwitchDebugCount(),
+          seekDuration);
+
+      // Delete old segments
+      for (Segment segment : segments) {
+        Files.delete(SegmentFiles.getIndexPath(directory, segment.name()));
+      }
     }
   }
 

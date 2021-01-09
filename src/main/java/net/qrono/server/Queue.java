@@ -6,12 +6,14 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.protobuf.ByteString;
+import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.EventTranslatorOneArg;
 import com.lmax.disruptor.EventTranslatorThreeArg;
 import com.lmax.disruptor.EventTranslatorTwoArg;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
 import com.lmax.disruptor.util.DaemonThreadFactory;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -80,7 +82,7 @@ public class Queue extends AbstractIdleService {
         entriesSizeBytes = 0;
       }
     }
-  };
+  }
 
   private final Disruptor<OpHolder> disruptor;
   private final RingBuffer<OpHolder> opBuffer;
@@ -98,7 +100,12 @@ public class Queue extends AbstractIdleService {
     this.clock = clock;
     this.workingSet = workingSet;
 
-    disruptor = new Disruptor<>(OpHolder::new, 1024, DaemonThreadFactory.INSTANCE);
+    disruptor = new Disruptor<>(
+        OpHolder::new,
+        1024,
+        DaemonThreadFactory.INSTANCE,
+        ProducerType.SINGLE,
+        new BlockingWaitStrategy());
     disruptor.handleEventsWith(new BatchEventHandler());
     opBuffer = disruptor.getRingBuffer();
   }
@@ -113,6 +120,17 @@ public class Queue extends AbstractIdleService {
   protected void shutDown() {
     disruptor.shutdown();
     data.stopAsync().awaitTerminated();
+  }
+
+  public synchronized void delete() throws IOException {
+    Preconditions.checkState(state() == State.TERMINATED);
+
+    // Remove all entries from the working set
+    for (Long id : dequeuedIds) {
+      workingSet.get(id).release();
+    }
+
+    data.delete();
   }
 
   public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
@@ -215,7 +233,6 @@ public class Queue extends AbstractIdleService {
   }
 
   public void compact() throws IOException {
-    Preconditions.checkState(isRunning());
     data.compact();
   }
 
