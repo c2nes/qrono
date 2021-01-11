@@ -91,6 +91,9 @@ jobs:
         with:
           name: gateway-binary
           path: gateway/
+      - name: Restore gateway binary permissions
+        run: |
+            chmod 0755 gateway/gateway
       - name: Compute build parameters
         run: |
             build/set-release-params.sh >> $GITHUB_ENV
