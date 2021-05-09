@@ -10,6 +10,7 @@ COPY --from=debug-tools /go/bin/grep-stackdump /usr/local/bin/jtopthreads
 
 ADD target/qrono-server.jar /app/qrono-server.jar
 ADD gateway/gateway /app/gateway
+ADD run-server /app/run-server
 RUN mkdir /app/config
 
 # RESP (Redis protocol) interface
@@ -22,7 +23,4 @@ EXPOSE 16381
 VOLUME /var/lib/qrono
 WORKDIR /app
 
-CMD java \
-    -Dqrono.net.http.gatewayPath=/app/gateway \
-    -cp /app/qrono-server.jar:/app/config \
-    net.qrono.server.Main
+CMD /app/run-server
