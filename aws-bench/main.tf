@@ -231,8 +231,14 @@ data "cloudinit_config" "client" {
 
   part {
     content_type = "text/cloud-config"
-    content      = templatefile("${path.module}/client.init.cfg.tpl", { server_ip = aws_instance.server.private_ip })
-    filename     = "server.init.cfg"
+    content = templatefile(
+      "${path.module}/client.init.cfg.tpl",
+      {
+        root      = path.module
+        server_ip = aws_instance.server.private_ip
+      }
+    )
+    filename = "server.init.cfg"
   }
 
   part {
