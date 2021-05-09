@@ -1,4 +1,12 @@
+FROM golang:1.16 AS debug-tools
+RUN go install github.com/c2nes/jtopthreads@latest
+RUN go install github.com/c2nes/grep-stackdump@latest
+
 FROM adoptopenjdk:11-jdk-hotspot
+
+# Debug utilities
+COPY --from=debug-tools /go/bin/jtopthreads /usr/local/bin/jtopthreads
+COPY --from=debug-tools /go/bin/grep-stackdump /usr/local/bin/jtopthreads
 
 ADD target/qrono-server.jar /app/qrono-server.jar
 ADD gateway/gateway /app/gateway
