@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -euo pipefail
+
+cd "$HOME/qrono"
+
+docker build -t qrono/qrono:local .
+docker rm -f qrono || true
+exec docker run -it --rm \
+       -v /var/lib/qrono:/var/lib/qrono \
+       --name qrono \
+       --network host \
+       qrono/qrono:local

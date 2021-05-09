@@ -181,8 +181,13 @@ data "cloudinit_config" "server" {
 
   part {
     content_type = "text/cloud-config"
-    content      = file("${path.module}/server.init.cfg")
-    filename     = "server.init.cfg"
+    content = templatefile(
+      "${path.module}/server.init.cfg",
+      {
+        root = path.module
+      }
+    )
+    filename = "server.init.cfg"
   }
 
   part {

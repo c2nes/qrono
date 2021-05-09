@@ -1,0 +1,376 @@
+#!/bin/sh
+
+# See https://github.com/c2nes/gv
+
+set -eu
+
+errmsg() {
+    printf 'error (gv): %s\n' "$*" >&2
+}
+
+infomsg() {
+    if [ -z "${QUIET-}" ]; then
+        printf 'info (gv): %s\n' "$*" >&2
+    fi
+}
+
+go_stable() {
+    V=$(curl -sfL https://golang.org/dl/ | grep -o '/dl/go[^"]*\.tar\.gz' | sed -ne 1p)
+    V=${V#/dl/}
+    V=${V%.*.tar.gz}
+    echo "$V"
+}
+
+go_unstable() {
+    V=$(curl -sfL https://golang.org/dl/ | sed -ne '/Unstable/,$ p' | grep -o '/dl/go[^"]*\.tar\.gz' | sed -ne 1p)
+    V=${V#/dl/}
+    V=${V%.*.tar.gz}
+    echo "$V"
+}
+
+# See https://en.wikipedia.org/wiki/Uname#Examples
+go_platform_pair() {
+    kernel_name=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$kernel_name" in
+        linux)
+            os=linux
+            ;;
+
+        darwin)
+            os=darwin
+            ;;
+
+        freebsd)
+            os=freebsd
+            ;;
+
+        *)
+            errmsg "unsupported kernel $kernel_name"
+            exit 1
+            ;;
+    esac
+
+    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
+    case "$machine" in
+        amd64 | x86_64)
+            arch=amd64
+            ;;
+
+        i386 | i686)
+            arch=386
+            ;;
+
+        arm64 | aarch64)
+            arch=arm64
+            ;;
+
+        arm*)
+            arch=armv6l
+            ;;
+
+        *)
+            errmsg "unsupported machine $machine"
+            exit 1
+            ;;
+    esac
+
+    echo "$os-$arch"
+}
+
+go_list_versions() {
+    PLATFORM_PAIR="$(go_platform_pair)"
+    curl -sfL https://golang.org/dl/ \
+        | sed -ne '/Stable/,$ p' \
+        | grep -o '/dl/go[^"]*\.'"$PLATFORM_PAIR"'\.tar\.gz' \
+        | sed -e 's_/dl/__' -e 's/\.'"$PLATFORM_PAIR"'\.tar\.gz//' \
+        | awk '{ split($0, V, "[^0-9]+");
+                 printf "%05d%05d%05d%05d\t%s\n", V[1], V[2], V[3], V[4], $0; }' \
+        | sort | uniq \
+        | cut -f2
+}
+
+go_install() {
+    N="$1"
+
+    # Resolve symbolic "stable" and "unstable" versions
+    case "$N" in
+        stable)
+            V=$(go_stable)
+            ;;
+
+        unstable)
+            V=$(go_unstable)
+            if [ -z "$V" ]; then
+                errmsg "no unstable release available to install"
+                exit 1
+            fi
+            ;;
+
+        *)
+            V="$N"
+            ;;
+    esac
+
+    # Ensure $SDK_HOME exists
+    mkdir -p "$SDK_HOME"
+
+    # Special handling for gotip
+    if [ "$V" = "gotip" ]; then
+        (
+            # We assume ~/sdk is outside of $GOPATH and any module paths.
+            cd "$SDK_HOME"
+
+            # Set GOVERSION explicitly to ensure a stable release is used to
+            # install gotip and to prevent a potential infinite loop attempting
+            # to install gotip using gotip.
+            GOVERSION=stable go get golang.org/dl/gotip
+            GOVERSION=stable gotip download
+        )
+
+        return
+    fi
+
+    # Install release if it is not already installed
+    if ! [ -d "$SDK_HOME/$V" ]; then
+        (
+            STAGING_DIR="$(mktemp -d "$SDK_HOME/download.XXXXXX")"
+            trap 'rm -rf "$STAGING_DIR"' EXIT
+
+            ARCHIVE_NAME="${V}.$(go_platform_pair).tar.gz"
+            ARCHIVE_URL="https://golang.org/dl/$ARCHIVE_NAME"
+
+            # Check that the version exists first so we can surface a friendly error message.
+            STATUS_CODE="$(curl -o /dev/null --write-out '%{http_code}' -sIL "$ARCHIVE_URL")"
+            case "$STATUS_CODE" in
+                200)
+                    # Okay!
+                    ;;
+
+                404)
+                    case "$V" in
+                        go*)
+                            errmsg "no archive found for version $V on $(go_platform_pair)"
+                            ;;
+
+                        *)
+                            errmsg "no archive found for version $V on $(go_platform_pair)" \
+                                   "(did you mean go${V}?)"
+                            ;;
+                    esac
+                    exit 1
+                    ;;
+
+                *)
+                    # Not okay, but fall through and let the next curl call
+                    # surface an error message to the user.
+                    ;;
+            esac
+
+            if [ -z "${QUIET-}" ]; then
+                CURL_PROGRESS='--progress-bar'
+            else
+                CURL_PROGRESS='--silent'
+            fi
+
+            cd "$STAGING_DIR"
+
+            infomsg "Downloading ${ARCHIVE_NAME} ..."
+            curl "$CURL_PROGRESS" -fLo "$ARCHIVE_NAME" "$ARCHIVE_URL"
+
+            infomsg "Unpacking ${ARCHIVE_NAME} ..."
+            tar -xzf "$ARCHIVE_NAME"
+
+            # Emulate https://go.googlesource.com/dl/ by installing the version
+            # specific wrapper and creating the sentinel file expected by
+            # "go1.x.y download".
+            case "$V" in
+                go1.[234] | go1.[234].* | go1.5 | go1.5.[123] | go1.6 | go1.6.[123] | go1.7 | go1.7.[12345])
+                    # There versions have archives available, but no version-specific wrappers.
+                    ;;
+
+                *)
+                    GOROOT="$PWD/go" go/bin/go get "golang.org/dl/$V"
+                    touch "go/.unpacked-success"
+                    ;;
+            esac
+
+            # Move to correct location
+            mv "go" "../$V"
+        )
+    else
+        infomsg "version \"$V\" already installed"
+    fi
+
+    # Update symlink for stable/unstable
+    case "$N" in
+        stable|unstable)
+            L="$SDK_HOME/$N"
+            T="$SDK_HOME/$V"
+            rm -f "$L"
+            ln -s "$T" "$L"
+            ;;
+    esac
+}
+
+set_goversion() {
+    N="$1"
+
+    if ! [ -d "$SDK_HOME/$N" ]; then
+        go_install "$N"
+    fi
+
+    echo "$N" > .goversion
+}
+
+set_system_goversion() {
+    N="$1"
+
+    if ! [ -d "$SDK_HOME/$N" ]; then
+        go_install "$N"
+    fi
+
+    (
+        cd "$SDK_HOME"
+        rm -f system
+        ln -s "$N" system
+    )
+}
+
+gv_usage() {
+    cat <<'EOF'
+usage: gv [-uUisSh]
+   or: gv -c cmd [arguments]
+   or: go|gv <command> [arguments]
+   or: gofmt [flags] [path ...]
+
+gv is a Go version manager and wrapper
+
+  -u
+        Install or upgrade the stable release
+  -U
+        Install or upgrade the unstable release
+  -i version
+        Install the specified version (e.g. "go1.15.6", "gotip", etc)
+  -s version
+        Set (and install) the Go version for the current directory (i.e. update .goversion)
+  -S version
+        Set (and install) the system Go version (i.e. update ~/sdk/system symlink)
+  -l
+        List versions available to be installed
+  -c cmd
+        Run the given command instead of delegating based on $0
+  -h
+        Show this usage information
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# -- End function defintions --
+
+SDK_HOME="$HOME/sdk"
+EXEC_NAME="${0##*/}"
+
+# Handle our own flags, but only when not invoked as go/gofmt
+case "$EXEC_NAME" in
+    go|gofmt)
+        ;;
+
+    *)
+        case "${1:-}" in
+            -u)
+                go_install stable
+                exit
+                ;;
+
+            -U)
+                go_install unstable
+                exit
+                ;;
+
+            -i)
+                go_install "${2:-stable}"
+                exit
+                ;;
+
+            -s)
+                set_goversion "$2"
+                exit
+                ;;
+
+            -S)
+                set_system_goversion "$2"
+                exit
+                ;;
+
+            -l)
+                go_list_versions
+                exit
+                ;;
+
+            -c)
+                CMD="$2"
+                shift 2
+                ;;
+
+            -h)
+                gv_usage >&2
+                exit 1
+                ;;
+        esac
+        ;;
+esac
+
+GOVERSION=${GOVERSION:-$(
+    OLDPWD=
+    while [ "$PWD" != "$OLDPWD" ]; do
+        if [ -f .goversion ]; then
+            cat .goversion
+            break
+        fi
+
+        cd ..
+    done
+)}
+
+GOVERSION=${GOVERSION:-system}
+GOVERSION_ROOT="$SDK_HOME/$GOVERSION"
+GOVERSION_BIN="$GOVERSION_ROOT/bin"
+if ! [ -x "$GOVERSION_BIN/go" ]; then
+    QUIET=1
+
+    # Show installation progress if both stderr and stdout are TTYs
+    if [ -t 1 ] && [ -t 2 ]; then
+        QUIET=
+    fi
+
+    if [ "$GOVERSION" = "system" ]; then
+        go_install stable
+        set_system_goversion stable
+    else
+        go_install "$GOVERSION"
+    fi
+fi
+
+# Ensure GOVERSION_BIN is first in the PATH
+case "$PATH" in
+    "${GOVERSION_BIN}:"*)
+        ;;
+
+    *)
+        export PATH="${GOVERSION_BIN}:$PATH"
+        ;;
+esac
+
+# Execute a command matching the name we were called as (go/gofmt/etc) unless
+# that name is 'gv' in which case we delegate to 'go' instead.
+CMD="${CMD:-$EXEC_NAME}"
+if [ "$CMD" = "gv" ]; then
+    CMD="go"
+fi
+
+# Eliminate symlinks from GOROOT to match the behavior of Go itself when it
+# infers its own GOROOT in Go 1.9 and later.
+GOROOT="$(cd "$GOVERSION_ROOT" && pwd -P)"
+export GOROOT
+
+exec "$CMD" "$@"
