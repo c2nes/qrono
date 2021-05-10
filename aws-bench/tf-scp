@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SERVER_IP="$(cd "$(dirname "$0")" && terraform output -raw server_ip)"
+CLIENT_IP="$(cd "$(dirname "$0")" && terraform output -raw client_ip)"
+
+CONFIG=$(mktemp)
+trap "rm -f '$CONFIG'" EXIT
+
+cat <<EOF > "$CONFIG"
+Host server
+User ec2-user
+Hostname $SERVER_IP
+UserKnownHostsFile /dev/null
+StrictHostKeyChecking no
+
+Host client
+User ec2-user
+Hostname $CLIENT_IP
+UserKnownHostsFile /dev/null
+StrictHostKeyChecking no
+EOF
+
+scp -F "$CONFIG" "$@"
