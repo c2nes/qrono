@@ -6,7 +6,7 @@ FROM adoptopenjdk:11-jdk-hotspot
 
 # Debug utilities
 COPY --from=debug-tools /go/bin/jtopthreads /usr/local/bin/jtopthreads
-COPY --from=debug-tools /go/bin/grep-stackdump /usr/local/bin/jtopthreads
+COPY --from=debug-tools /go/bin/grep-stackdump /usr/local/bin/grep-stackdump
 
 ADD target/qrono-server.jar /app/qrono-server.jar
 ADD gateway/gateway /app/gateway
