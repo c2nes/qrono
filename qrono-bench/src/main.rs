@@ -106,7 +106,9 @@ struct Benchmark {
     size: usize,
     consumer_count: u64,
     publish_rate: f64,
+    // TODO: Replace with enum
     wait_to_consume: bool,
+    no_consume: bool,
     connection_count: u64,
 
     // Latency histograms
@@ -155,53 +157,56 @@ impl Benchmark {
             self.consumer_count as usize + if self.wait_to_consume { 1 } else { 0 },
         ));
 
-        for i in 0..m {
-            let mut my_count = n / m;
-            if i < n % m {
-                my_count += 1;
-            }
+        if !self.no_consume {
+            for i in 0..m {
+                let mut my_count = n / m;
+                if i < n % m {
+                    my_count += 1;
+                }
 
-            let mut conn = conns.next().unwrap().clone();
-            let queue_name = self.queue_name.clone();
-            let consumer_start = Arc::clone(&consumer_start);
-            let hist_dequeue = Arc::clone(&self.hist_dequeue);
-            let hist_release = Arc::clone(&self.hist_release);
-            let hist_end_to_end = Arc::clone(&self.hist_end_to_end);
-            let handle = task::spawn(async move {
-                consumer_start.wait().await;
-                while my_count > 0 {
-                    let dequeue_start = Instant::now();
-                    let resp: Option<DequeueResult> = redis::cmd("DEQUEUE")
-                        .arg(&queue_name)
-                        .query_async(&mut conn)
-                        .await
-                        .unwrap();
-
-                    if let Some(res) = resp {
-                        Self::record_latency(&hist_dequeue, dequeue_start);
-                        let release_start = Instant::now();
-                        redis::cmd("RELEASE")
+                let mut conn = conns.next().unwrap().clone();
+                let queue_name = self.queue_name.clone();
+                let consumer_start = Arc::clone(&consumer_start);
+                let hist_dequeue = Arc::clone(&self.hist_dequeue);
+                let hist_release = Arc::clone(&self.hist_release);
+                let hist_end_to_end = Arc::clone(&self.hist_end_to_end);
+                let handle = task::spawn(async move {
+                    consumer_start.wait().await;
+                    while my_count > 0 {
+                        let dequeue_start = Instant::now();
+                        let resp: Option<DequeueResult> = redis::cmd("DEQUEUE")
                             .arg(&queue_name)
-                            .arg(res.id)
-                            .query_async::<_, bool>(&mut conn)
+                            .query_async(&mut conn)
                             .await
                             .unwrap();
-                        Self::record_latency(&hist_release, release_start);
 
-                        // Extract timestamp and record end-to-end latency
-                        let enqueue_offset_bytes: [u8; 8] = res.data[0..8].try_into().unwrap();
-                        let enqueue_offset_nanos = u64::from_be_bytes(enqueue_offset_bytes);
-                        let enqueue_time = base_time + Duration::from_nanos(enqueue_offset_nanos);
-                        Self::record_latency(&hist_end_to_end, enqueue_time);
+                        if let Some(res) = resp {
+                            Self::record_latency(&hist_dequeue, dequeue_start);
+                            let release_start = Instant::now();
+                            redis::cmd("RELEASE")
+                                .arg(&queue_name)
+                                .arg(res.id)
+                                .query_async::<_, bool>(&mut conn)
+                                .await
+                                .unwrap();
+                            Self::record_latency(&hist_release, release_start);
 
-                        my_count -= 1;
-                    } else {
-                        time::sleep(Duration::from_millis(10)).await;
+                            // Extract timestamp and record end-to-end latency
+                            let enqueue_offset_bytes: [u8; 8] = res.data[0..8].try_into().unwrap();
+                            let enqueue_offset_nanos = u64::from_be_bytes(enqueue_offset_bytes);
+                            let enqueue_time =
+                                base_time + Duration::from_nanos(enqueue_offset_nanos);
+                            Self::record_latency(&hist_end_to_end, enqueue_time);
+
+                            my_count -= 1;
+                        } else {
+                            time::sleep(Duration::from_millis(10)).await;
+                        }
                     }
-                }
-            });
+                });
 
-            consumers.push(handle);
+                consumers.push(handle);
+            }
         }
 
         let start_production = Instant::now();
@@ -240,8 +245,15 @@ impl Benchmark {
 
         let end_production = Instant::now();
 
-        // Signal consumer to start if necessary
-        if self.wait_to_consume {
+        if self.no_consume {
+            let mut conn = conns.next().unwrap().clone();
+            redis::cmd("DELETE")
+                .arg(&self.queue_name)
+                .query_async::<_, bool>(&mut conn)
+                .await
+                .unwrap();
+        } else if self.wait_to_consume {
+            // Signal consumer to start if necessary
             consumer_start.wait().await;
         }
 
@@ -253,23 +265,25 @@ impl Benchmark {
             per_second
         );
 
-        for consumer in consumers {
-            consumer.await.unwrap();
+        if !self.no_consume {
+            for consumer in consumers {
+                consumer.await.unwrap();
+            }
+
+            let start_consume = if self.wait_to_consume {
+                end_production
+            } else {
+                start_production
+            };
+
+            let consume_duration = start_consume.elapsed();
+            let per_second = n as f64 / consume_duration.as_secs_f64();
+            println!(
+                "Consumer done; duration={:.3}, rate={:.3}",
+                consume_duration.as_secs_f64(),
+                per_second
+            );
         }
-
-        let start_consume = if self.wait_to_consume {
-            end_production
-        } else {
-            start_production
-        };
-
-        let consume_duration = start_consume.elapsed();
-        let per_second = n as f64 / consume_duration.as_secs_f64();
-        println!(
-            "Consumer done; duration={:.3}, rate={:.3}",
-            consume_duration.as_secs_f64(),
-            per_second
-        );
 
         Ok(())
     }
@@ -412,6 +426,11 @@ async fn main() {
                 .long("wait-to-consume")
                 .help("Wait for publishing to complete before starting consumers"),
         )
+        .arg(
+            Arg::with_name("no_consume")
+                .long("no-consume")
+                .help("Do not consume. Delete the queue after publishing completes"),
+        )
         .get_matches();
 
     let name = arg_or(&matches, "queue_name", || {
@@ -428,6 +447,7 @@ async fn main() {
         consumer_count: arg(&matches, "consumer_count"),
         publish_rate: arg(&matches, "publish_rate"),
         wait_to_consume: matches.is_present("wait_to_consume"),
+        no_consume: matches.is_present("no_consume"),
         connection_count: arg(&matches, "connection_count"),
         // Latency histograms
         hist_enqueue: Arc::new(Mutex::new(new_latency_histogram(60))),
