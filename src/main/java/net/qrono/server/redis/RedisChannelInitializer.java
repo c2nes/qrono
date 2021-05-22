@@ -3,6 +3,7 @@ package net.qrono.server.redis;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 
+import com.google.common.base.Ascii;
 import com.google.protobuf.ByteString;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -20,7 +21,6 @@ import io.netty.handler.codec.redis.IntegerRedisMessage;
 import io.netty.handler.codec.redis.RedisArrayAggregator;
 import io.netty.handler.codec.redis.RedisBulkStringAggregator;
 import io.netty.handler.codec.redis.RedisDecoder;
-import io.netty.handler.codec.redis.RedisEncoder;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import io.netty.util.ReferenceCountUtil;
@@ -54,7 +54,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   @Override
   protected void initChannel(SocketChannel ch) {
     ch.pipeline().addLast(
-        new RedisEncoder(),
+        new CustomRedisEncoder(),
         new RedisDecoder(),
         new RedisBulkStringAggregator(),
         new RedisArrayAggregator(),
@@ -328,11 +328,17 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         throw RedisRequestException.protocolError();
       }
 
-      var cmdName = arg(args, 0)
-          .toString(StandardCharsets.US_ASCII)
-          .toLowerCase();
+      var cmdNameBytes = arg(args, 0);
+      var cmdName = cmdNameBytes.getCharSequence(
+          cmdNameBytes.readerIndex(),
+          cmdNameBytes.readableBytes(),
+          StandardCharsets.US_ASCII);
 
-      switch (cmdName) {
+      if (Ascii.equalsIgnoreCase(cmdName, "enqueue")) {
+        return handleEnqueue(args);
+      }
+
+      switch (cmdName.toString().toLowerCase()) {
         case "enqueue":
           return handleEnqueue(args);
 

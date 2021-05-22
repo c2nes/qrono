@@ -20,7 +20,7 @@ import net.qrono.server.data.Entry;
 public class StandardWriteAheadLog implements WriteAheadLog {
   public static final Duration DEFAULT_SYNC_INTERVAL = Duration.ofSeconds(1);
 
-  private final PooledByteBufAllocator bufAllocator = PooledByteBufAllocator.DEFAULT;
+  private final PooledByteBufAllocator bufAllocator = new PooledByteBufAllocator();
 
   private final Path directory;
   private final SegmentName segmentName;

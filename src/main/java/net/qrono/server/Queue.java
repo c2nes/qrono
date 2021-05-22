@@ -2,6 +2,7 @@ package net.qrono.server;
 
 import static net.qrono.server.Encoding.entrySize;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
@@ -40,7 +41,9 @@ import org.slf4j.LoggerFactory;
 public class Queue extends AbstractIdleService {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
 
-  private final QueueData data;
+  @VisibleForTesting
+  final QueueData data;
+
   private final IdGenerator idGenerator;
   private final Clock clock;
 

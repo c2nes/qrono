@@ -1,15 +1,19 @@
 package net.qrono.server;
 
+import static com.google.common.collect.Iterables.mergeSorted;
+import static java.util.Comparator.naturalOrder;
+
 import com.google.common.base.Preconditions;
+import com.google.common.base.Stopwatch;
+import com.google.common.collect.Ordering;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.SortedSet;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import net.qrono.server.data.Entry;
-import net.qrono.server.data.ImmutableEntry;
 import net.qrono.server.data.Item;
 
 public class StandardWritableSegment implements WritableSegment {
@@ -21,8 +25,11 @@ public class StandardWritableSegment implements WritableSegment {
   private final SegmentName name;
   private final WriteAheadLog wal;
 
-  private final PriorityQueue<Item> pending = new PriorityQueue<>();
-  private final SortedSet<Entry.Key> tombstones = new TreeSet<>();
+  //private final PriorityQueue<Entry> pending = new PriorityQueue<>();
+  //private final TreeMap<Entry.Key, Entry> pending = new TreeMap<>();
+
+  private final TreeSet<Entry> pending = new TreeSet<>();
+  private final SortedSet<Entry> tombstones = new TreeSet<>();
 
   // Pending items are moved here after being returned by next().
   //
@@ -31,7 +38,7 @@ public class StandardWritableSegment implements WritableSegment {
   // pending item and the tombstone cancel one another out). We don't check "entries"
   // because a tombstone should only be produced for items in the "working" state which
   // requires that it was returned by a next() call.
-  private final LinkedHashMap<Long, Item> removed = new LinkedHashMap<>();
+  private final LinkedHashMap<Long, Entry> removed = new LinkedHashMap<>();
   private Item lastRemoved = null;
 
   // Estimated total size of this segment in bytes
@@ -68,18 +75,18 @@ public class StandardWritableSegment implements WritableSegment {
   private void addToInMemoryState(Entry entry) {
     var item = entry.item();
     if (item != null) {
-      pending.add(item);
+      pending.add(entry);
       //
       sizeBytes += item.value().size() + ENTRY_OVERHEAD_BYTES;
     } else {
       Entry.Key tombstone = entry.key();
-      Item removedItem = removed.remove(tombstone.id());
-      if (removedItem == null) {
-        tombstones.add(tombstone);
+      Entry removedEntry = removed.remove(tombstone.id());
+      if (removedEntry == null) {
+        tombstones.add(entry);
         sizeBytes += ENTRY_OVERHEAD_BYTES;
       } else {
         // The tombstone Entry canceled out a removed Item
-        sizeBytes -= (removedItem.value().size() + ENTRY_OVERHEAD_BYTES);
+        sizeBytes -= (removedEntry.item().value().size() + ENTRY_OVERHEAD_BYTES);
       }
     }
   }
@@ -107,19 +114,20 @@ public class StandardWritableSegment implements WritableSegment {
     wal.close();
 
     var entries = new ArrayList<Entry>(tombstones.size() + pending.size() + removed.size());
-    for (Entry.Key tombstone : tombstones) {
-      entries.add(ImmutableEntry.builder().key(tombstone).build());
+    for (var entry : mergeSorted(List.of(tombstones, pending, removed.values()), naturalOrder())) {
+      entries.add(entry);
     }
 
-    for (Item item : pending) {
-      entries.add(Entry.newPendingEntry(item));
+    if (!Ordering.natural().isOrdered(entries)) {
+      System.out.println("Not ordered!!!!");
     }
 
-    for (Item item : removed.values()) {
-      entries.add(Entry.newPendingEntry(item));
+    var sw = Stopwatch.createStarted();
+    try {
+      return new InMemorySegment(name, entries);
+    } finally {
+      System.out.println("InMemorySegment(): " + sw);
     }
-
-    return new InMemorySegment(name, entries);
   }
 
   @Override
@@ -140,21 +148,20 @@ public class StandardWritableSegment implements WritableSegment {
   @Override
   public synchronized Entry peekEntry() {
     Preconditions.checkState(!closed, "closed");
-    Item item = pending.peek();
-    return item == null ? null : Entry.newPendingEntry(item);
+    return pending.isEmpty() ? null : pending.first();
   }
 
   @Override
   public synchronized Entry next() {
     Preconditions.checkState(!closed, "closed");
-    Item item = pending.poll();
-    if (item == null) {
+    Entry entry = pending.pollFirst();
+    if (entry == null) {
       return null;
     }
 
-    lastRemoved = item;
-    removed.put(item.id(), item);
-    return Entry.newPendingEntry(item);
+    lastRemoved = entry.item();
+    removed.put(entry.key().id(), entry);
+    return entry;
   }
 
   @Override

@@ -11,5 +11,6 @@ fi
 
 exec java -server $JVM_ARGS "$@" \
      -Dqrono.net.http.gatewayPath=/app/gateway \
+     -Dio.netty.leakDetection.level=disabled \
      -cp /app/qrono-server.jar:/app/config \
      net.qrono.server.Main

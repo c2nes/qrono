@@ -4,6 +4,7 @@ import static net.qrono.server.data.Entry.Type.PENDING;
 import static net.qrono.server.data.Entry.Type.TOMBSTONE;
 
 import com.google.protobuf.ByteString;
+import com.google.protobuf.UnsafeByteOperations;
 import io.netty.buffer.ByteBuf;
 import java.nio.ByteBuffer;
 import net.qrono.server.data.Entry;
@@ -139,7 +140,14 @@ final class Encoding {
     if (item != null) {
       writeStats(bb, item.stats());
       bb.writeInt(item.value().size());
-      bb.writeBytes(item.value().asReadOnlyByteBuffer());
+
+      var val = item.value();
+      var off = bb.arrayOffset();
+      var idx = bb.writerIndex();
+      bb.ensureWritable(val.size());
+      item.value().copyTo(bb.array(), off+idx);
+      bb.writerIndex(idx + val.size());
+      //bb.writeBytes(item.value().asReadOnlyByteBuffer());
     }
   }
 

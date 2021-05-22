@@ -338,16 +338,23 @@ public class QueueData extends AbstractIdleService {
 
   @VisibleForTesting
   void flushCurrentSegment() throws IOException {
+    System.out.println("Starting flush!!");
     var start = Instant.now();
     var frozen = freezeAndReplaceCurrentSegment();
+    var freezeDone = Instant.now();
     var segment = writeAndDeleteLog(frozen);
+    var writeDone = Instant.now();
 
     synchronized (this) {
       immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
     }
+    var replaceDone = Instant.now();
 
-    logger.debug("Flushed in-memory segment; time={}, pending={}, tombstone={}",
-        Duration.between(start, Instant.now()),
+    logger.debug("Flushed in-memory segment; time={} (freeze={}, write={}, replace={}), pending={}, tombstone={}",
+        Duration.between(start, replaceDone),
+        Duration.between(start, freezeDone),
+        Duration.between(freezeDone, writeDone),
+        Duration.between(writeDone, replaceDone),
         frozen.metadata().pendingCount(),
         frozen.metadata().tombstoneCount());
   }

@@ -28,15 +28,23 @@ public class InMemorySegment implements Segment {
 
   @Override
   public SegmentMetadata metadata() {
-    var pendingCount = entries.stream().filter(Entry::isPending).count();
+    var pendingCount = 0;
+    var maxId = 0L;
+    for (var e : entries) {
+      if (e.isPending()) {
+        pendingCount++;
+      }
+      var id = e.key().id();
+      if (id > maxId) {
+        maxId = id;
+      }
+    }
+
     var tombstoneCount = entries.size() - pendingCount;
     return ImmutableSegmentMetadata.builder()
         .pendingCount(pendingCount)
         .tombstoneCount(tombstoneCount)
-        .maxId(entries.stream()
-            .mapToLong(e -> e.key().id())
-            .max()
-            .orElse(0))
+        .maxId(maxId)
         .build();
   }
 
