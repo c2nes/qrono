@@ -55,9 +55,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   protected void initChannel(SocketChannel ch) {
     ch.pipeline().addLast(
         new CustomRedisEncoder(),
-        new RedisDecoder(),
-        new RedisBulkStringAggregator(),
-        new RedisArrayAggregator(),
+        new QronoDecoder(),
         new RequestHandler(),
         new ErrorHandler());
   }
