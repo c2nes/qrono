@@ -35,6 +35,14 @@ public interface Entry extends Comparable<Entry> {
     return key().compareTo(o.key());
   }
 
+  /**
+   * Returns true if the entries have the same ID & deadline, but opposite types (one is a
+   * tombstone, the other is pending).
+   */
+  default boolean mirrors(Entry o) {
+    return key().mirrors(o.key());
+  }
+
   static Key newTombstoneKey(Item item) {
     return ImmutableEntry.Key.builder()
         .deadline(item.deadline())
@@ -103,6 +111,16 @@ public interface Entry extends Comparable<Entry> {
       }
 
       return entryType().compareTo(o.entryType());
+    }
+
+    /**
+     * Returns true if the keys have the same ID & deadline, but opposite types (one is a tombstone,
+     * the other is pending).
+     */
+    default boolean mirrors(Key o) {
+      return id() == o.id()
+          && deadline().equals(o.deadline())
+          && entryType() != o.entryType();
     }
   }
 

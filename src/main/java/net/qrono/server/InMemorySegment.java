@@ -1,6 +1,7 @@
 package net.qrono.server;
 
 import com.google.common.collect.ImmutableSortedSet;
+import java.util.NavigableSet;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
@@ -10,13 +11,13 @@ import net.qrono.server.data.SegmentMetadata;
 
 public class InMemorySegment implements Segment {
   private final SegmentName name;
-  private final ImmutableSortedSet<Entry> entries;
+  private final NavigableSet<Entry> entries;
 
   public InMemorySegment(SegmentName name, Iterable<Entry> entries) {
     this(name, ImmutableSortedSet.copyOf(entries));
   }
 
-  public InMemorySegment(SegmentName name, ImmutableSortedSet<Entry> entries) {
+  public InMemorySegment(SegmentName name, NavigableSet<Entry> entries) {
     this.name = name;
     this.entries = entries;
   }

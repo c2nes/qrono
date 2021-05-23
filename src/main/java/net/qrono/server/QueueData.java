@@ -161,7 +161,9 @@ public class QueueData extends AbstractIdleService {
       // that we are no longer running.
     }
 
-    writeAndDeleteLog(currentSegment.freeze());
+    var frozen = currentSegment.freeze();
+    currentSegment.closeWriterIO();
+    writeAndDeleteLog(frozen);
     segmentFlusher.cancel();
     flushSchedule.cancel();
     currentSegment.close();
@@ -327,12 +329,22 @@ public class QueueData extends AbstractIdleService {
   }
 
   @VisibleForTesting
-  synchronized Segment freezeAndReplaceCurrentSegment() throws IOException {
-    // Freeze segment to close WAL and prevent future writes
-    var frozen = currentSegment.freeze();
-    immutableSegments.addSegment(frozen, last);
-    currentSegment = nextWritableSegment();
-    flushSchedule.update(currentSegment.sizeBytes());
+  Segment freezeAndReplaceCurrentSegment() throws IOException {
+    WritableSegment previousSegment;
+    Segment frozen;
+
+    synchronized (this) {
+      // Freeze segment to prevent future writes
+      frozen = currentSegment.freeze();
+      immutableSegments.addSegment(frozen, last);
+      previousSegment = currentSegment;
+      currentSegment = nextWritableSegment();
+      flushSchedule.update(currentSegment.sizeBytes());
+    }
+
+    // Close WAL (does not require synchronization).
+    previousSegment.closeWriterIO();
+
     return frozen;
   }
 
@@ -350,7 +362,8 @@ public class QueueData extends AbstractIdleService {
     }
     var replaceDone = Instant.now();
 
-    logger.debug("Flushed in-memory segment; time={} (freeze={}, write={}, replace={}), pending={}, tombstone={}",
+    logger.debug(
+        "Flushed in-memory segment; time={} (freeze={}, write={}, replace={}), pending={}, tombstone={}",
         Duration.between(start, replaceDone),
         Duration.between(start, freezeDone),
         Duration.between(freezeDone, writeDone),

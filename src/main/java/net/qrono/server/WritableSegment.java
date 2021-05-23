@@ -28,4 +28,9 @@ public interface WritableSegment extends SegmentReader {
    * Freeze the segment, making it read-only.
    */
   Segment freeze() throws IOException;
+
+  /**
+   * Close files and other resources held open by the writer.
+   */
+  void closeWriterIO() throws IOException;
 }

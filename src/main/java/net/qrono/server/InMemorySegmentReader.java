@@ -6,6 +6,7 @@ import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.NavigableSet;
 import net.qrono.server.data.Entry;
 
 public class InMemorySegmentReader implements SegmentReader {
@@ -18,6 +19,10 @@ public class InMemorySegmentReader implements SegmentReader {
 
   public InMemorySegmentReader(Collection<Entry> entries) {
     it = Iterators.peekingIterator(ImmutableSortedSet.copyOf(entries).iterator());
+  }
+
+  public InMemorySegmentReader(NavigableSet<Entry> entries) {
+    it = Iterators.peekingIterator(entries.iterator());
   }
 
   @Override
