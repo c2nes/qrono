@@ -4,11 +4,13 @@ import static com.google.protobuf.util.Timestamps.fromMillis;
 import static com.google.protobuf.util.Timestamps.toMillis;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.util.concurrent.Callable;
 import net.qrono.Api.CompactQueueRequest;
@@ -52,9 +54,10 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
         ? ImmutableTimestamp.of(toMillis(request.getDeadline()))
         : null;
 
+    var value = Unpooled.wrappedBuffer(request.getValue().asReadOnlyByteBuffer());
     var item = manager.withQueue(
         queueName,
-        queue -> queue.enqueueAsync(request.getValue(), deadline));
+        queue -> queue.enqueueAsync(value, deadline));
 
     return EnqueueResponse.newBuilder()
         .setId(item.id())
@@ -105,16 +108,21 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     // Convert to API model
-    return Item.newBuilder()
-        .setDeadline(fromMillis(item.deadline().millis()))
-        .setId(item.id())
-        .setStats(Stats.newBuilder()
-            .setDequeueCount(item.stats().dequeueCount())
-            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
-            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
-            .build())
-        .setValue(item.value())
-        .build();
+    var value = item.value();
+    try {
+      return Item.newBuilder()
+          .setDeadline(fromMillis(item.deadline().millis()))
+          .setId(item.id())
+          .setStats(Stats.newBuilder()
+              .setDequeueCount(item.stats().dequeueCount())
+              .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+              .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+              .build())
+          .setValue(ByteString.copyFrom(value.nioBuffer()))
+          .build();
+    } finally {
+      value.release();
+    }
   }
 
   @Override
@@ -180,16 +188,21 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     // Convert to API model
-    return Item.newBuilder()
-        .setDeadline(fromMillis(item.deadline().millis()))
-        .setId(item.id())
-        .setStats(Stats.newBuilder()
-            .setDequeueCount(item.stats().dequeueCount())
-            .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
-            .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
-            .build())
-        .setValue(item.value())
-        .build();
+    var value = item.value();
+    try {
+      return Item.newBuilder()
+          .setDeadline(fromMillis(item.deadline().millis()))
+          .setId(item.id())
+          .setStats(Stats.newBuilder()
+              .setDequeueCount(item.stats().dequeueCount())
+              .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
+              .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
+              .build())
+          .setValue(ByteString.copyFrom(value.nioBuffer()))
+          .build();
+    } finally {
+      value.release();
+    }
   }
 
   @Override

@@ -14,7 +14,7 @@ import static net.qrono.server.TestData.withValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-import com.google.protobuf.ByteString;
+import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
@@ -35,7 +35,7 @@ public class ImmutableSegmentTest {
 
     // Item overhead (key + stats + value length)
     var itemOverhead = KEY_SIZE + STATS_SIZE + 4;
-    var itemSize = itemOverhead + VALUE.size();
+    var itemSize = itemOverhead + VALUE.readableBytes();
     var footerSize = FOOTER_SIZE;
     var expectedSize = 3 * itemSize + footerSize;
 
@@ -76,7 +76,7 @@ public class ImmutableSegmentTest {
 
   @Test
   public void testRoundTripInMem_emptyValue() throws IOException {
-    var entry = withValue(PENDING_1_T5, ByteString.EMPTY);
+    var entry = withValue(PENDING_1_T5, Unpooled.EMPTY_BUFFER);
     var memSegment = new InMemorySegmentReader(entry);
 
     var channel = new ByteArrayChannel();
@@ -92,7 +92,7 @@ public class ImmutableSegmentTest {
 
     ImmutableSegment.Reader reader = newReader(channel);
 
-    assertEquals(0, reader.next().item().value().size());
+    assertEquals(0, reader.next().item().value().readableBytes());
   }
 
   @Test
@@ -101,7 +101,7 @@ public class ImmutableSegmentTest {
 
     // Item overhead (key + stats + value length)
     var itemOverhead = KEY_SIZE + STATS_SIZE + 4;
-    var itemSize = itemOverhead + VALUE.size();
+    var itemSize = itemOverhead + VALUE.readableBytes();
     var footerSize = FOOTER_SIZE;
     var expectedSize = 3 * itemSize + footerSize;
 
@@ -128,7 +128,7 @@ public class ImmutableSegmentTest {
 
     // Item overhead (key + stats + value length)
     var itemOverhead = KEY_SIZE + STATS_SIZE + 4;
-    var itemSize = itemOverhead + VALUE.size();
+    var itemSize = itemOverhead + VALUE.readableBytes();
     var footerSize = FOOTER_SIZE;
     var expectedSize = 2 * itemSize + KEY_SIZE + footerSize;
 
@@ -155,7 +155,7 @@ public class ImmutableSegmentTest {
 
     // Item overhead (key + stats + value length)
     var itemOverhead = KEY_SIZE + STATS_SIZE + 4;
-    var itemSize = itemOverhead + VALUE.size();
+    var itemSize = itemOverhead + VALUE.readableBytes();
     var footerSize = FOOTER_SIZE;
     var expectedSize = 3 * itemSize + footerSize;
 
@@ -201,7 +201,7 @@ public class ImmutableSegmentTest {
 
   @Test
   public void testRoundTrip_emptyValue() throws IOException {
-    var entry = withValue(PENDING_1_T5, ByteString.EMPTY);
+    var entry = withValue(PENDING_1_T5, Unpooled.EMPTY_BUFFER);
     var memSegment = new InMemorySegmentReader(entry);
 
     var segmentName = new SegmentName(123, 456);
@@ -219,13 +219,13 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
 
-    assertEquals(0, reader.next().item().value().size());
+    assertEquals(0, reader.next().item().value().readableBytes());
   }
 
   @Test
   public void testRoundTrip_valueLargerThanDefaultBuffer() throws IOException {
     var valueSize = DEFAULT_BUFFER_SIZE + 1;
-    var value = ByteString.copyFrom(new byte[valueSize]);
+    var value = Unpooled.copiedBuffer(new byte[valueSize]);
     var entry = withValue(PENDING_1_T5, value);
     var memSegment = new InMemorySegmentReader(entry);
 
@@ -253,7 +253,7 @@ public class ImmutableSegmentTest {
     var entries = new ArrayList<Entry>();
     for (int id = 0; id < 256; id++) {
       var valueSize = 1024 * 10 * (id / 10) + id;
-      var value = ByteString.copyFrom(new byte[valueSize]);
+      var value = Unpooled.copiedBuffer(new byte[valueSize]);
       var entry = withValue(withId(PENDING_1_T5, id), value);
       entries.add(entry);
     }

@@ -1,7 +1,8 @@
 package net.qrono.server;
 
 import com.google.common.base.Strings;
-import com.google.protobuf.ByteString;
+import io.netty.buffer.Unpooled;
+import io.netty.util.CharsetUtil;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -27,7 +28,7 @@ public class StandardWriteAheadLogTest {
     IdGenerator generator = new AtomicLong()::incrementAndGet;
     var id = generator.generateId();
     var deadline = ImmutableTimestamp.of(baseTime);
-    var value = ByteString.copyFromUtf8(Strings.repeat("0", valueSize));
+    var value = Unpooled.copiedBuffer(Strings.repeat("0", valueSize), CharsetUtil.UTF_8);
     Supplier<Entry> entrySupplier = () -> Entry.newPendingEntry(
         ImmutableItem.builder()
             .deadline(deadline)

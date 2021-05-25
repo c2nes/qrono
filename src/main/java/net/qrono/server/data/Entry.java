@@ -1,16 +1,27 @@
 package net.qrono.server.data;
 
 import com.google.common.base.Preconditions;
+import io.netty.util.ReferenceCounted;
 import javax.annotation.Nullable;
 import org.immutables.value.Value;
 
 @Value.Immutable
 @Value.Enclosing
-public interface Entry extends Comparable<Entry> {
+public interface Entry extends Comparable<Entry>, ForwardingReferenceCounted<Entry> {
   Key key();
 
   @Nullable
   Item item();
+
+  @Override
+  default ReferenceCounted ref() {
+    return item();
+  }
+
+  @Override
+  default Entry self() {
+    return this;
+  }
 
   default boolean isPending() {
     return key().entryType() == Type.PENDING;

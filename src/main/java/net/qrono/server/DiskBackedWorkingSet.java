@@ -10,7 +10,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.AbstractIdleService;
-import com.google.protobuf.ByteString;
+import io.netty.buffer.ByteBufAllocator;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.ref.SoftReference;
@@ -31,6 +31,7 @@ import net.qrono.server.data.ImmutableEntry;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Item;
+import net.qrono.server.util.ByteBufs;
 import net.qrono.server.util.LinkedNode;
 import net.qrono.server.util.LinkedNodeList;
 import org.slf4j.Logger;
@@ -48,6 +49,8 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
 
   private static final byte[] ZERO_BYTE = {0};
   private static final double OCCUPANCY_DRAIN_THRESHOLD = 0.5;
+
+  private final ByteBufAllocator bufAllocator = ByteBufAllocator.DEFAULT;
 
   private final Path directory;
   private final int mappedFileSize;
@@ -323,8 +326,9 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     WorkingItem(Item item, long location) {
       deadline = item.deadline().millis();
       id = item.id();
-      size = Encoding.STATS_SIZE + item.value().size();
-      this.item = new SoftReference<>(item);
+      size = Encoding.STATS_SIZE + item.value().readableBytes();
+      //this.item = new SoftReference<>(item);
+      this.item = new SoftReference<>(null);
       this.location = location;
     }
 
@@ -339,12 +343,12 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
 
   static int writeItem(ByteBuffer buffer, Item item) {
     Encoding.writeStats(buffer, item.stats());
-    item.value().copyTo(buffer);
+    ByteBufs.getBytes(item.value(), buffer, item.value().readableBytes());
     return itemSize(item);
   }
 
   private static int itemSize(Item item) {
-    return Encoding.STATS_SIZE + item.value().size();
+    return Encoding.STATS_SIZE + item.value().readableBytes();
   }
 
   class MappedFile implements Closeable {
@@ -397,7 +401,9 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
       bb.position(entryOffset(entry));
 
       var stats = Encoding.readStats(bb);
-      var value = ByteString.copyFrom(bb, entry.size - Encoding.STATS_SIZE);
+      var valueLen = entry.size - Encoding.STATS_SIZE;
+      var value = bufAllocator.buffer(valueLen);
+      ByteBufs.writeBytes(value, bb, valueLen);
 
       return ImmutableItem.builder()
           .deadline(ImmutableTimestamp.of(entry.deadline))

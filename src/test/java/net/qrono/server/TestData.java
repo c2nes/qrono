@@ -1,6 +1,8 @@
 package net.qrono.server;
 
-import com.google.protobuf.ByteString;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.util.CharsetUtil;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableItem.Stats;
@@ -16,7 +18,7 @@ public class TestData {
       .dequeueCount(0)
       .build();
 
-  static final ByteString VALUE = ByteString.copyFromUtf8("Hello, world!");
+  static final ByteBuf VALUE = Unpooled.copiedBuffer("Hello, world!", CharsetUtil.UTF_8);
 
   static final Item ITEM_1_T5 = ImmutableItem.builder()
       .deadline(ImmutableTimestamp.of(BASE_TIME + 5))
@@ -68,14 +70,14 @@ public class TestData {
   static final Entry PENDING_5_T20 = Entry.newPendingEntry(ITEM_5_T20);
   static final Entry TOMBSTONE_5_T20 = Entry.newTombstoneEntry(ITEM_5_T20);
 
-  static Item withValue(Item item, ByteString value) {
+  static Item withValue(Item item, ByteBuf value) {
     return ImmutableItem.builder()
         .from(item)
         .value(value)
         .build();
   }
 
-  static Entry withValue(Entry entry, ByteString value) {
+  static Entry withValue(Entry entry, ByteBuf value) {
     var item = entry.item();
     if (item == null) {
       throw new IllegalArgumentException("entry must be pending");

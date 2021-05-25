@@ -6,7 +6,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
-import com.google.protobuf.ByteString;
 import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.EventTranslatorOneArg;
@@ -16,6 +15,9 @@ import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 import com.lmax.disruptor.util.DaemonThreadFactory;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.util.ReferenceCountUtil;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
@@ -136,14 +138,14 @@ public class Queue extends AbstractIdleService {
     data.delete();
   }
 
-  public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
+  public CompletableFuture<Item> enqueueAsync(ByteBuf value, @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
     return result.thenApply(Entry::item);
   }
 
-  public Item enqueue(ByteString value, @Nullable Timestamp deadline) throws IOException {
+  public Item enqueue(ByteBuf value, @Nullable Timestamp deadline) throws IOException {
     try {
       return enqueueAsync(value, deadline).join();
     } catch (CompletionException e) {
@@ -356,7 +358,7 @@ public class Queue extends AbstractIdleService {
       @Override
       public void reset() {
         super.reset();
-        pendingBuilder.value(ByteString.EMPTY);
+        pendingBuilder.value(Unpooled.EMPTY_BUFFER);
       }
     }
 
@@ -613,13 +615,13 @@ public class Queue extends AbstractIdleService {
   }
 
   class EnqueueTranslator implements
-      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, ByteString, Timestamp> {
+      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, ByteBuf, Timestamp> {
     @Override
     public void translateTo(
         OpHolder event,
         long sequence,
         CompletableFuture<Entry> result,
-        ByteString value,
+        ByteBuf value,
         Timestamp deadline
     ) {
       var enqueueTime = ImmutableTimestamp.of(clock.millis());

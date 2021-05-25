@@ -7,6 +7,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import io.netty.util.ReferenceCountUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -164,6 +165,7 @@ public class QueueData extends AbstractIdleService {
     var frozen = currentSegment.freeze();
     currentSegment.closeWriterIO();
     writeAndDeleteLog(frozen);
+    ReferenceCountUtil.release(frozen);
     segmentFlusher.cancel();
     flushSchedule.cancel();
     currentSegment.close();
@@ -344,6 +346,7 @@ public class QueueData extends AbstractIdleService {
 
     // Close WAL (does not require synchronization).
     previousSegment.closeWriterIO();
+    ReferenceCountUtil.release(previousSegment);
 
     return frozen;
   }
@@ -359,6 +362,7 @@ public class QueueData extends AbstractIdleService {
 
     synchronized (this) {
       immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
+      ReferenceCountUtil.release(frozen);
     }
     var replaceDone = Instant.now();
 
@@ -405,7 +409,7 @@ public class QueueData extends AbstractIdleService {
 
     var immutableSegmentsKey = immutableSegments.peek();
     if (immutableSegmentsKey == null || currentSegmentKey.compareTo(immutableSegmentsKey) < 0) {
-      return currentSegment;
+      return ReferenceCountUtil.retain(currentSegment);
     }
 
     return immutableSegments;

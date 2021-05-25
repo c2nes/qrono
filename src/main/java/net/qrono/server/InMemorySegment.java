@@ -1,6 +1,8 @@
 package net.qrono.server;
 
 import com.google.common.collect.ImmutableSortedSet;
+import io.netty.util.AbstractReferenceCounted;
+import io.netty.util.ReferenceCountUtil;
 import java.util.NavigableSet;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
@@ -9,7 +11,7 @@ import net.qrono.server.data.ImmutableSegmentMetadata;
 import net.qrono.server.data.Item;
 import net.qrono.server.data.SegmentMetadata;
 
-public class InMemorySegment implements Segment {
+public class InMemorySegment extends AbstractReferenceCounted implements Segment {
   private final SegmentName name;
   private final NavigableSet<Entry> entries;
 
@@ -51,7 +53,21 @@ public class InMemorySegment implements Segment {
 
   @Override
   public SegmentReader newReader(Key position) {
-    return new InMemorySegmentReader(entries.tailSet(new KeyOnlyEntry(position), false));
+    return new InMemorySegmentReader(
+        entries.tailSet(new KeyOnlyEntry(position), false),
+        ReferenceCountUtil.retain(this));
+  }
+
+  @Override
+  protected void deallocate() {
+    for (var entry : entries) {
+      entry.release();
+    }
+  }
+
+  @Override
+  public InMemorySegment touch(Object hint) {
+    return this;
   }
 
   /**

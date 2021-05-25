@@ -6,7 +6,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
-import com.google.protobuf.ByteString;
+import io.netty.buffer.ByteBufAllocator;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -24,6 +24,7 @@ import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableSegmentMetadata;
 import net.qrono.server.data.Item;
 import net.qrono.server.data.SegmentMetadata;
+import net.qrono.server.util.ByteBufs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -84,7 +85,7 @@ public class ImmutableSegment implements Segment {
     // Seek to the requested position
     var peek = reader.peek();
     while (peek != null && peek.compareTo(position) <= 0) {
-      reader.next();
+      reader.next().release();
       peek = reader.peek();
     }
 
@@ -131,6 +132,8 @@ public class ImmutableSegment implements Segment {
 
   @VisibleForTesting
   static class Reader implements SegmentReader {
+    private final ByteBufAllocator bufAllocator = ByteBufAllocator.DEFAULT;
+
     private final BufferedReadableChannel channel;
     private final long footerPosition;
     private Entry.Key nextKey = null;
@@ -171,7 +174,9 @@ public class ImmutableSegment implements Segment {
         var stats = Encoding.readStats(channel.buffer);
         var valueLength = channel.buffer.getInt();
         channel.ensureReadableBytes(valueLength);
-        var value = ByteString.copyFrom(channel.buffer, valueLength);
+
+        var value = bufAllocator.buffer(valueLength);
+        ByteBufs.writeBytes(value, channel.buffer, valueLength);
 
         var item = ImmutableItem.builder()
             .deadline(nextKey.deadline())
@@ -349,18 +354,19 @@ public class ImmutableSegment implements Segment {
 
     private void writePendingItem(Item item) throws IOException {
       var value = item.value();
-      ensureBufferCapacity(Encoding.STATS_SIZE + 4 + value.size());
+      var valueLen = value.readableBytes();
+      ensureBufferCapacity(Encoding.STATS_SIZE + 4 + valueLen);
 
       // stats (Encoding.STATS_SIZE bytes)
       position += Encoding.writeStats(buffer, item.stats());
 
       // value_length (4 bytes)
-      buffer.putInt(value.size());
+      buffer.putInt(valueLen);
       position += 4;
 
       // value (value_length bytes)
-      value.copyTo(buffer);
-      position += value.size();
+      ByteBufs.getBytes(value, buffer, valueLen);
+      position += valueLen;
     }
 
     KnownOffset write() throws IOException {

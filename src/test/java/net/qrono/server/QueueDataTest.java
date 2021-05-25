@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.google.protobuf.ByteString;
+import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -38,7 +39,7 @@ public class QueueDataTest {
             .requeueTime(Timestamp.ZERO)
             .dequeueCount(0)
             .build())
-        .value(ByteString.EMPTY);
+        .value(Unpooled.EMPTY_BUFFER);
     for (int i = 0; i < 10 * 128 * 1024; i++) {
       data.write(Entry.newPendingEntry(item.id(i).build()));
     }
@@ -67,7 +68,7 @@ public class QueueDataTest {
             .requeueTime(Timestamp.ZERO)
             .dequeueCount(0)
             .build())
-        .value(ByteString.EMPTY);
+        .value(Unpooled.EMPTY_BUFFER);
 
     for (int i = 0; i < 10; i++) {
       data.write(Entry.newPendingEntry(item.id(i).build()));

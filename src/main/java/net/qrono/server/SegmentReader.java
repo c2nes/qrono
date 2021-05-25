@@ -1,5 +1,6 @@
 package net.qrono.server;
 
+import io.netty.util.ReferenceCountUtil;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -10,8 +11,8 @@ import net.qrono.server.data.Entry;
  */
 public interface SegmentReader extends Closeable {
   /**
-   * Returns the next entry in the segment without advancing the reader position.
-   * Returns {@code null} when the end of the segment has been reached.
+   * Returns the next entry in the segment without advancing the reader position. Returns {@code
+   * null} when the end of the segment has been reached.
    */
   Entry peekEntry() throws IOException;
 
@@ -20,11 +21,14 @@ public interface SegmentReader extends Closeable {
    * Returns {@code null} when the end of the segment has been reached.
    */
   default Entry.Key peek() {
+    Entry entry = null;
     try {
-      var entry = peekEntry();
+      entry = peekEntry();
       return entry == null ? null : entry.key();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    } finally {
+      ReferenceCountUtil.release(entry);
     }
   }
 

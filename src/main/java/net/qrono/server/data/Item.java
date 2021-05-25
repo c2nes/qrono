@@ -1,18 +1,29 @@
 package net.qrono.server.data;
 
-import com.google.protobuf.ByteString;
+import io.netty.buffer.ByteBuf;
+import io.netty.util.ReferenceCounted;
 import org.immutables.value.Value;
 
 @Value.Immutable
 @Value.Enclosing
-public interface Item extends Comparable<Item> {
+public interface Item extends Comparable<Item>, ForwardingReferenceCounted<Item> {
   Timestamp deadline();
 
   long id();
 
   Stats stats();
 
-  ByteString value();
+  ByteBuf value();
+
+  @Override
+  default ByteBuf ref() {
+    return value();
+  }
+
+  @Override
+  default Item self() {
+    return this;
+  }
 
   @Override
   default int compareTo(Item o) {

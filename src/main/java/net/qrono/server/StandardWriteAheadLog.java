@@ -5,7 +5,7 @@ import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
 import com.google.common.collect.ImmutableList;
-import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -20,7 +20,7 @@ import net.qrono.server.data.Entry;
 public class StandardWriteAheadLog implements WriteAheadLog {
   public static final Duration DEFAULT_SYNC_INTERVAL = Duration.ofSeconds(1);
 
-  private final PooledByteBufAllocator bufAllocator = new PooledByteBufAllocator();
+  private final ByteBufAllocator bufAllocator = ByteBufAllocator.DEFAULT;
 
   private final Path directory;
   private final SegmentName segmentName;

@@ -8,7 +8,8 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.util.concurrent.RateLimiter;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.protobuf.ByteString;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -31,7 +32,7 @@ import org.junit.Test;
 public class QronoBenchmark {
   private Duration benchDataEnqueue(QueueFactory queueFactory, int n, double rate)
       throws Exception {
-    var value = ByteString.copyFrom(Strings.repeat("a", 16), UTF_8);
+    var value = Unpooled.copiedBuffer(Strings.repeat("a", 16), UTF_8);
     var q = queueFactory.createQueue("q0");
     var entries = new ArrayList<Entry>();
     var m = 100;
@@ -91,14 +92,14 @@ public class QronoBenchmark {
   }
 
   private Duration benchEnqueue(QueueFactory queueFactory, int n, double rate) throws Exception {
-    var value = Strings.repeat("a", 16).getBytes(UTF_8);
+    var value = Unpooled.copiedBuffer(Strings.repeat("a", 16), UTF_8);
     var q = queueFactory.createQueue("q0");
     try {
       var latch = new CountDownLatch(n);
       var limit = RateLimiter.create(rate);
       var sw = Stopwatch.createStarted();
       for (int i = 0; i < n; i++) {
-        q.enqueueAsync(ByteString.copyFrom(value), null).thenRun(latch::countDown);
+        q.enqueueAsync(value, null).thenRun(latch::countDown);
         limit.acquire();
       }
       System.out.println("Submit rate: " + n / (1e-9 * sw.elapsed().toNanos())
@@ -162,7 +163,7 @@ public class QronoBenchmark {
 
   @Test
   public void benchSort() {
-    var value = ByteString.copyFrom(Strings.repeat("a", 16), UTF_8);
+    var value = Unpooled.copiedBuffer(Strings.repeat("a", 16), UTF_8);
     var entries = new ArrayList<Entry>();
     var n = 30_000_000;
 
@@ -190,7 +191,7 @@ public class QronoBenchmark {
     long deadlineMillis;
     long id;
     Type type;
-    ByteString value;
+    ByteBuf value;
     Item.Stats stats;
 
     private final Timestamp deadline = new Timestamp() {
@@ -234,7 +235,7 @@ public class QronoBenchmark {
       }
 
       @Override
-      public ByteString value() {
+      public ByteBuf value() {
         return value;
       }
     };

@@ -160,6 +160,8 @@ public class MergedSegmentReader implements SegmentReader {
         var nextEntry = rawNext();
         assert nextEntry != null && nextKey.equals(nextEntry.key());
         next = null;
+        // TODO: Make Entry releasable
+        nextEntry.item().value().release();
       }
     }
   }

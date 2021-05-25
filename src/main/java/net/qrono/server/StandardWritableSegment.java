@@ -57,9 +57,10 @@ public class StandardWritableSegment implements WritableSegment {
     var item = entry.item();
 
     if (item != null) {
+      item.value().retain();
       entries.add(entry);
       pendingCount += 1;
-      sizeBytes += item.value().size() + ENTRY_OVERHEAD_BYTES;
+      sizeBytes += item.value().readableBytes() + ENTRY_OVERHEAD_BYTES;
     } else {
       // Tombstone sorts before pending so we need to look at the ceiling for a potential match.
       var maybeMirror = entries.ceiling(entry);
@@ -67,7 +68,8 @@ public class StandardWritableSegment implements WritableSegment {
         // Match found. Remove the pending entry which this tombstone cancels out.
         entries.remove(maybeMirror);
         pendingCount -= 1;
-        sizeBytes -= (maybeMirror.item().value().size() + ENTRY_OVERHEAD_BYTES);
+        sizeBytes -= (maybeMirror.item().value().readableBytes() + ENTRY_OVERHEAD_BYTES);
+        maybeMirror.item().value().release();
       } else {
         // No match found. Simply add the tombstone to the entry set.
         entries.add(entry);
@@ -137,9 +139,9 @@ public class StandardWritableSegment implements WritableSegment {
     Preconditions.checkState(!closed, "closed");
 
     if (lastRemoved == null) {
-      return entries.isEmpty() ? null : entries.first();
+      return entries.isEmpty() ? null : entries.first().retain();
     } else {
-      return entries.higher(lastRemoved);
+      return entries.higher(lastRemoved).retain();
     }
   }
 

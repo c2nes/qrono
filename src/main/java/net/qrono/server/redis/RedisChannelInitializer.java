@@ -4,9 +4,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 
 import com.google.common.base.Ascii;
-import com.google.protobuf.ByteString;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -18,9 +16,6 @@ import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.ErrorRedisMessage;
 import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.handler.codec.redis.IntegerRedisMessage;
-import io.netty.handler.codec.redis.RedisArrayAggregator;
-import io.netty.handler.codec.redis.RedisBulkStringAggregator;
-import io.netty.handler.codec.redis.RedisDecoder;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import io.netty.util.ReferenceCountUtil;
@@ -118,7 +113,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
       }
 
       var itemFuture = manager.withQueueAsync(queueName,
-          queue -> queue.enqueueAsync(ByteString.copyFrom(value.nioBuffer()), deadline));
+          queue -> queue.enqueueAsync(value, deadline));
 
       return itemFuture.thenApply(item -> new ArrayRedisMessage(List.of(
           new IntegerRedisMessage(item.id()),
@@ -151,8 +146,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
             new IntegerRedisMessage(item.stats().enqueueTime().millis()),
             new IntegerRedisMessage(item.stats().requeueTime().millis()),
             new IntegerRedisMessage(item.stats().dequeueCount()),
-            new FullBulkStringRedisMessage(
-                Unpooled.wrappedBuffer(item.value().asReadOnlyByteBuffer()))
+            new FullBulkStringRedisMessage(item.value())
         ));
       });
     }
@@ -182,8 +176,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
             new IntegerRedisMessage(item.stats().enqueueTime().millis()),
             new IntegerRedisMessage(item.stats().requeueTime().millis()),
             new IntegerRedisMessage(item.stats().dequeueCount()),
-            new FullBulkStringRedisMessage(
-                Unpooled.wrappedBuffer(item.value().asReadOnlyByteBuffer()))
+            new FullBulkStringRedisMessage(item.value())
         ));
       });
     }

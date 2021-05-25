@@ -119,7 +119,7 @@ public class EncodingTest {
   @Test
   public void testPendingEntrySize() {
     assertEquals(
-        TestData.VALUE.size() + Encoding.KEY_SIZE + Encoding.STATS_SIZE + 4,
+        TestData.VALUE.readableBytes() + Encoding.KEY_SIZE + Encoding.STATS_SIZE + 4,
         Encoding.entrySize(TestData.PENDING_1_T5));
   }
 

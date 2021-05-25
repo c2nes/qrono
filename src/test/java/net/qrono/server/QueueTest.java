@@ -2,7 +2,8 @@ package net.qrono.server;
 
 import static java.util.concurrent.Executors.newSingleThreadExecutor;
 
-import com.google.protobuf.ByteString;
+import io.netty.buffer.Unpooled;
+import io.netty.util.CharsetUtil;
 import java.io.IOException;
 import java.time.Clock;
 import java.time.Duration;
@@ -37,7 +38,7 @@ public class QueueTest {
     var queue = new Queue(data, idGenerator, clock, workingSet);
     queue.startAsync().awaitRunning();
 
-    var value = ByteString.copyFromUtf8("Hello, world!");
+    var value = Unpooled.copiedBuffer("Hello, world!", CharsetUtil.UTF_8);
 
     for (var n : List.of(5_000_000, 10_000_000, 10_000_000)) {
       var start = Instant.now();
