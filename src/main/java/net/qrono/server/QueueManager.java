@@ -16,6 +16,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
 import net.qrono.server.exceptions.QueueNotFoundException;
 import org.slf4j.Logger;
@@ -143,6 +145,7 @@ public class QueueManager extends AbstractScheduledService {
     private final String queueName;
     private final Queue queue;
     private boolean deleted = false;
+    private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     private QueueWrapper(String queueName, Queue queue) {
       this.queueName = queueName;
@@ -153,11 +156,16 @@ public class QueueManager extends AbstractScheduledService {
       return queue;
     }
 
-    public synchronized <T> Optional<T> apply(Function<Queue, T> f) {
-      if (deleted) {
-        return Optional.empty();
+    public <T> Optional<T> apply(Function<Queue, T> f) {
+      lock.readLock().lock();
+      try {
+        if (deleted) {
+          return Optional.empty();
+        }
+        return Optional.of(f.apply(queue));
+      } finally {
+        lock.readLock().unlock();
       }
-      return Optional.of(f.apply(queue));
     }
 
     public long compactionScore() {
@@ -167,12 +175,17 @@ public class QueueManager extends AbstractScheduledService {
           .orElse(0L);
     }
 
-    public synchronized void delete() throws IOException {
-      deleted = true;
-      queue.stopAsync().awaitTerminated();
-      queue.delete();
-      synchronized (QueueManager.this) {
-        queues.remove(queueName, this);
+    public void delete() throws IOException {
+      lock.writeLock().lock();
+      try {
+        deleted = true;
+        queue.stopAsync().awaitTerminated();
+        queue.delete();
+        synchronized (QueueManager.this) {
+          queues.remove(queueName, this);
+        }
+      } finally {
+        lock.writeLock().unlock();
       }
     }
   }

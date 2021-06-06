@@ -6,6 +6,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.EventTranslatorOneArg;
@@ -14,10 +15,7 @@ import com.lmax.disruptor.EventTranslatorTwoArg;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
-import com.lmax.disruptor.util.DaemonThreadFactory;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.util.ReferenceCountUtil;
 import io.prometheus.client.Histogram;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -27,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ThreadFactory;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -44,6 +43,11 @@ import org.slf4j.LoggerFactory;
 //   a queue (i.e. make it the user's responsibility).
 public class Queue extends AbstractIdleService {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
+  private static final ThreadFactory THREAD_FACTORY = new ThreadFactoryBuilder()
+      .setDaemon(true)
+      .setNameFormat("QronoQueue-%d")
+      .build();
+
   private static final Histogram opBatchSize = Histogram.build()
       .name("queue_op_batch_size")
       .help("size of flushed operation batches")
@@ -131,8 +135,8 @@ public class Queue extends AbstractIdleService {
     disruptor = new Disruptor<>(
         OpHolder::new,
         1024,
-        DaemonThreadFactory.INSTANCE,
-        ProducerType.SINGLE,
+        THREAD_FACTORY,
+        ProducerType.MULTI,
         new BlockingWaitStrategy());
     disruptor.handleEventsWith(new BatchEventHandler());
     opBuffer = disruptor.getRingBuffer();
