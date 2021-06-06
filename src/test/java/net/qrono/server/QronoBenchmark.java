@@ -18,12 +18,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
-import net.qrono.server.data.Entry.Type;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableTimestamp;
-import net.qrono.server.data.Item;
+import net.qrono.server.data.MutableEntry;
 import net.qrono.server.data.Timestamp;
 import net.qrono.server.util.DataSize;
 import org.junit.Test;
@@ -36,22 +34,14 @@ public class QronoBenchmark {
     var q = queueFactory.createQueue("q0");
     var entries = new ArrayList<Entry>();
     var m = 100;
-    var stats = ImmutableItem.Stats.builder()
-        .enqueueTime(Timestamp.ZERO)
-        .requeueTime(Timestamp.ZERO)
-        .dequeueCount(0)
-        .build();
-
-    var entryBase = ImmutableItem.builder()
-        .stats(stats)
-        .value(value);
 
     var pool = new ArrayList<MutableEntry>();
     for (int i = 0; i < m; i++) {
       var entry = new MutableEntry();
-      entry.stats = stats;
+      entry.enqueueTimeMillis = 0;
+      entry.requeueTimeMillis = 0;
+      entry.dequeueCount = 0;
       entry.value = value;
-      entry.type = Type.PENDING;
       entry.id = 0;
       entry.deadlineMillis = 0;
       pool.add(entry);
@@ -61,17 +51,6 @@ public class QronoBenchmark {
       var limit = RateLimiter.create(rate);
       var sw = Stopwatch.createStarted();
       for (int i = 0; i < n; i++) {
-//        var item = ImmutableItem.builder()
-//            .id(i)
-//            .deadline(ImmutableTimestamp.of(i))
-//            .stats(ImmutableItem.Stats.builder()
-//                .enqueueTime(Timestamp.ZERO)
-//                .requeueTime(Timestamp.ZERO)
-//                .dequeueCount(0)
-//                .build())
-//            .value(ByteString.copyFrom(value))
-//            .build();
-
         var entry = pool.get(i % m);
         entry.id = i;
         entry.deadlineMillis = i;
@@ -84,6 +63,28 @@ public class QronoBenchmark {
         }
       }
 
+      return sw.stop().elapsed();
+    } finally {
+      q.stopAsync().awaitTerminated();
+      q.delete();
+    }
+  }
+
+  private Duration benchQueueEnqueue(QueueFactory queueFactory, int n, double rate)
+      throws Exception {
+
+    var value = Unpooled.copiedBuffer(Strings.repeat("a", 16), UTF_8);
+    var q = queueFactory.createQueue("q0");
+    var latch = new CountDownLatch(n);
+
+    try {
+      var limit = RateLimiter.create(rate);
+      var sw = Stopwatch.createStarted();
+      for (int i = 0; i < n; i++) {
+        limit.acquire();
+        q.enqueueAsync(value, null).thenRun(latch::countDown);
+      }
+      latch.await();
       return sw.stop().elapsed();
     } finally {
       q.stopAsync().awaitTerminated();
@@ -115,7 +116,61 @@ public class QronoBenchmark {
   }
 
   @Test
-  public void test() throws Exception {
+  public void queueEnqueue() throws Exception {
+    var root = Paths.get("/tmp/qrono-benchmark");
+    var ioScheduler = new ExecutorIOScheduler(
+        Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
+            .setDaemon(true)
+            .setNameFormat("Qrono-IOWorker-%d")
+            .build()));
+
+    var queuesDirectory = root.resolve("queues");
+    Files.createDirectories(queuesDirectory);
+
+    var idGenerator = new PersistentIdGenerator(root.resolve("last-id"));
+    idGenerator.startAsync().awaitRunning();
+
+    var workingSetDirectory = root.resolve("working");
+    var workingSet = new DiskBackedWorkingSet(
+        workingSetDirectory,
+        toIntExact(DataSize.fromString("1GB").bytes()),
+        ioScheduler);
+
+    workingSet.startAsync().awaitRunning();
+
+    var segmentFlushScheduler = new SegmentFlushScheduler(DataSize.fromString("256MB").bytes());
+
+    var queueFactory = new QueueFactory(
+        queuesDirectory,
+        idGenerator,
+        ioScheduler,
+        workingSet,
+        segmentFlushScheduler);
+
+    System.out.println("Warming up...");
+    var warmupRate = 50_000;
+    var warmupDuration = Duration.ofSeconds(15);
+    benchQueueEnqueue(queueFactory, (int) (warmupDuration.toSeconds() * warmupRate), warmupRate);
+
+    System.out.println("Starting!");
+    CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS)
+        .execute(() -> System.out.println("Go!"));
+
+    var n = 25_000_000;
+    var delta = benchQueueEnqueue(queueFactory, n, 1_000_000);
+    var deltaSecs = 1e-9 * delta.toNanos();
+    System.out.printf("%,d\n", (int) (n / deltaSecs));
+
+    var osw = new OutputStreamWriter(System.out);
+    TextFormat.writeFormat(
+        TextFormat.CONTENT_TYPE_OPENMETRICS_100,
+        osw,
+        CollectorRegistry.defaultRegistry.metricFamilySamples());
+    osw.flush();
+  }
+
+  @Test
+  public void dataEnqueue() throws Exception {
     var root = Paths.get("/tmp/qrono-benchmark");
     var ioScheduler = new ExecutorIOScheduler(
         Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
@@ -185,70 +240,5 @@ public class QronoBenchmark {
     var sw = Stopwatch.createStarted();
     System.out.println(ImmutableSortedSet.copyOf(entries).size());
     System.out.println(sw);
-  }
-
-  private static class MutableEntry implements Entry {
-    long deadlineMillis;
-    long id;
-    Type type;
-    ByteBuf value;
-    Item.Stats stats;
-
-    private final Timestamp deadline = new Timestamp() {
-      @Override
-      public long millis() {
-        return deadlineMillis;
-      }
-    };
-
-    private final Key key = new Key() {
-      @Override
-      public Timestamp deadline() {
-        return deadline;
-      }
-
-      @Override
-      public long id() {
-        return id;
-      }
-
-      @Override
-      public Type entryType() {
-        return type;
-      }
-    };
-
-    private final Item item = new Item() {
-      @Override
-      public Timestamp deadline() {
-        return deadline;
-      }
-
-      @Override
-      public long id() {
-        return id;
-      }
-
-      @Override
-      public Stats stats() {
-        return stats;
-      }
-
-      @Override
-      public ByteBuf value() {
-        return value;
-      }
-    };
-
-    @Override
-    public Key key() {
-      return key;
-    }
-
-    @Nullable
-    @Override
-    public Item item() {
-      return item;
-    }
   }
 }

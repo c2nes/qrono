@@ -1,7 +1,6 @@
 package net.qrono.server.data;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.util.ReferenceCounted;
 import org.immutables.value.Value;
 
 @Value.Immutable

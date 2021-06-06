@@ -32,6 +32,7 @@ import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableQueueInfo;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Item;
+import net.qrono.server.data.MutableEntry;
 import net.qrono.server.data.QueueInfo;
 import net.qrono.server.data.Timestamp;
 import org.slf4j.Logger;
@@ -343,22 +344,20 @@ public class Queue extends AbstractIdleService {
     }
 
     class Enqueue extends AbstractEntryOp {
-      private final ImmutableItem.Builder pendingBuilder = ImmutableItem.builder();
+      private final MutableEntry entry = new MutableEntry();
 
       @Override
       public void prepareRequest(List<? super Entry> batch) {
-        var pending = Entry.newPendingEntry(pendingBuilder
-            .id(idGenerator.generateId())
-            .build());
-        batch.add(pending);
+        entry.id = idGenerator.generateId();
+        batch.add(new MutableEntry(entry));
         _resultIdx = batch.size() - 1;
-        _size = entrySize(pending);
+        _size = entrySize(entry);
       }
 
       @Override
       public void reset() {
         super.reset();
-        pendingBuilder.value(Unpooled.EMPTY_BUFFER);
+        entry.reset();
       }
     }
 
@@ -624,17 +623,16 @@ public class Queue extends AbstractIdleService {
         ByteBuf value,
         Timestamp deadline
     ) {
-      var enqueueTime = ImmutableTimestamp.of(clock.millis());
+      var enqueueTime = clock.millis();
       event.op = event.enqueue;
       event.enqueue.result = result;
-      event.enqueue.pendingBuilder
-          .deadline(deadline == null ? enqueueTime : deadline)
-          .stats(ImmutableItem.Stats.builder()
-              .dequeueCount(0)
-              .enqueueTime(enqueueTime)
-              .requeueTime(Timestamp.ZERO)
-              .build())
-          .value(value);
+
+      var entry = event.enqueue.entry;
+      entry.deadlineMillis = enqueueTime;
+      entry.dequeueCount = 0;
+      entry.enqueueTimeMillis = enqueueTime;
+      entry.requeueTimeMillis = 0;
+      entry.value = value;
     }
   }
 

@@ -4,6 +4,7 @@ import com.google.common.base.Preconditions;
 import org.immutables.value.Value;
 
 @Value.Immutable
+@FunctionalInterface
 public interface Timestamp extends Comparable<Timestamp> {
   Timestamp ZERO = ImmutableTimestamp.of(0);
 
