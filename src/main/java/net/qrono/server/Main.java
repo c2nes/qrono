@@ -10,9 +10,11 @@ import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.exporter.HTTPServer;
+import io.prometheus.client.hotspot.DefaultExports;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -30,6 +32,8 @@ public class Main {
       log.error("Caught unhandled exception. Terminating; thread={}", thread, ex);
       System.exit(1);
     });
+
+    DefaultExports.initialize();
 
     var config = Config.load();
     log.info("Config {}", config);
@@ -109,10 +113,19 @@ public class Main {
     }
 
     // -----------------------------------------------------------------------
+    // Prometheus exporter
+    // -----------------------------------------------------------------------
+
+    var metricsServer = new HTTPServer(
+        toSocketAddress(config.netMetricsListen()),
+        CollectorRegistry.defaultRegistry);
+
+    // -----------------------------------------------------------------------
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       try {
         server.shutdown().awaitTermination();
+        metricsServer.stop();
       } catch (InterruptedException e) {
         // TODO: Log and bail
       }
@@ -121,7 +134,7 @@ public class Main {
     server.start().awaitTermination();
   }
 
-  private static SocketAddress toSocketAddress(HostAndPort hostAndPort) {
+  private static InetSocketAddress toSocketAddress(HostAndPort hostAndPort) {
     return new InetSocketAddress(hostAndPort.getHost(), hostAndPort.getPort());
   }
 }

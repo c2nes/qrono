@@ -32,6 +32,9 @@ public interface Config {
   @Option("qrono.net.grpc.listen")
   HostAndPort netGrpcListen();
 
+  @Option("qrono.net.metrics.listen")
+  HostAndPort netMetricsListen();
+
   @Option("qrono.data.root")
   Path dataRoot();
 

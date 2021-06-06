@@ -18,6 +18,7 @@ import com.lmax.disruptor.util.DaemonThreadFactory;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.ReferenceCountUtil;
+import io.prometheus.client.Histogram;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
@@ -43,6 +44,25 @@ import org.slf4j.LoggerFactory;
 //   a queue (i.e. make it the user's responsibility).
 public class Queue extends AbstractIdleService {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
+  private static final Histogram opBatchSize = Histogram.build()
+      .name("queue_op_batch_size")
+      .help("size of flushed operation batches")
+      .exponentialBuckets(1, 2, 20)
+      .register();
+
+  private static final Histogram enqueueTime = Histogram.build()
+      .name("queue_enqueue_time")
+      .help("time to enqueue a value")
+      .buckets(
+          10e-6, 25e-6, 50e-6, 75e-6,
+          100e-6, 250e-6, 500e-6, 750e-6,
+          1e-3, 2.5e-3, 5e-3, 7.5e-3,
+          10e-3, 25e-3, 50e-3, 75e-3,
+          100e-3, 250e-3, 500e-3, 750e-3,
+          1, 2.5, 5.0, 7.5,
+          10
+      )
+      .register();
 
   @VisibleForTesting
   final QueueData data;
@@ -75,6 +95,8 @@ public class Queue extends AbstractIdleService {
         log.trace("Flushing batch; opsSize={}, entriesSize={}, entriesSizeBytes={}",
             ops.size(), entries.size(), entriesSizeBytes);
       }
+
+      opBatchSize.observe(entries.size());
 
       try {
         var results = data.write(entries);
@@ -141,7 +163,9 @@ public class Queue extends AbstractIdleService {
 
   public CompletableFuture<Item> enqueueAsync(ByteBuf value, @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
+    var timer = enqueueTime.startTimer();
     var result = new CompletableFuture<Entry>();
+    result.thenRun(timer::observeDuration);
     opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
     return result.thenApply(Entry::item);
   }
