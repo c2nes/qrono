@@ -28,7 +28,7 @@ git clone https://github.com/c2nes/qrono.git
 (cd qrono/gateway && go build .)
 
 # Start server in tmux
-tmux new-window -d -n server
+tmux new-window -d -c "$HOME/qrono" -n server
 tmux send-keys -l -t server $'docker-run\n'
 
 # Start top and enable some colors

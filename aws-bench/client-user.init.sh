@@ -10,6 +10,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 # Clone qrono
 git clone https://github.com/c2nes/qrono.git
 
+# Build and install redis tools
+curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'
+tar -xzf redis-6.2.3.tar.gz
+tmux new-window -d -c "$HOME/redis-6.2.3" -n redis
+sleep 0.5; tmux send-keys -l -t redis $'make && sudo make install\n'
+
 # Build qrono-bench
 cd qrono/qrono-bench
 cargo build --release
