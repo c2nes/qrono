@@ -142,7 +142,8 @@ public class ImmutableSegment implements Segment {
     private Entry nextEntry = null;
     private boolean closed = false;
 
-    @VisibleForTesting Reader(SeekableByteChannel channel) throws IOException {
+    @VisibleForTesting
+    Reader(SeekableByteChannel channel) throws IOException {
       this(new BufferedReadableChannel(channel));
     }
 

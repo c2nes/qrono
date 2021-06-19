@@ -7,7 +7,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
-import io.netty.util.ReferenceCountUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -91,7 +90,7 @@ public class QueueData extends AbstractIdleService {
         List<Entry> entries = StandardWriteAheadLog.read(path);
         segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
-        entries.forEach(ReferenceCountUtil::release);
+        entries.forEach(Entry::release);
       }
 
       if (SegmentFiles.isLogPath(path)) {
@@ -101,7 +100,7 @@ public class QueueData extends AbstractIdleService {
         List<Entry> entries = StandardWriteAheadLog.read(path);
         segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
-        entries.forEach(ReferenceCountUtil::release);
+        entries.forEach(Entry::release);
       }
 
       if (SegmentFiles.isTemporaryPath(path)) {
@@ -338,12 +337,15 @@ public class QueueData extends AbstractIdleService {
   }
 
   @VisibleForTesting
-  Segment freezeAndReplaceCurrentSegment() throws IOException {
+  void flushCurrentSegment() throws IOException {
     WritableSegment previousSegment;
     Segment frozen;
 
+    var start = Instant.now();
+    logger.debug("Starting flush of in-memory segment");
+
+    // Freeze segment to prevent future writes and open new writable segment to replace it.
     synchronized (this) {
-      // Freeze segment to prevent future writes
       frozen = currentSegment.freeze();
       immutableSegments.addSegment(frozen, last);
       previousSegment = currentSegment;
@@ -351,19 +353,8 @@ public class QueueData extends AbstractIdleService {
       flushSchedule.update(currentSegment.sizeBytes());
     }
 
-    // Close WAL (does not require synchronization).
-    previousSegment.closeWriterIO();
-    previousSegment.close();
-
-    return frozen;
-  }
-
-  @VisibleForTesting
-  void flushCurrentSegment() throws IOException {
-    System.out.println("Starting flush!!");
-    var start = Instant.now();
-    var frozen = freezeAndReplaceCurrentSegment();
     var freezeDone = Instant.now();
+    previousSegment.closeWriterIO();
     var segment = writeAndDeleteLog(frozen);
     var writeDone = Instant.now();
 
@@ -372,12 +363,16 @@ public class QueueData extends AbstractIdleService {
     }
     var replaceDone = Instant.now();
 
+    previousSegment.close();
+    var done = Instant.now();
+
     logger.debug(
-        "Flushed in-memory segment; time={} (freeze={}, write={}, replace={}), pending={}, tombstone={}",
-        Duration.between(start, replaceDone),
+        "Flushed in-memory segment; time={} (freeze={}!, write={}, replace={}!, close={}), pending={}, tombstone={}",
+        Duration.between(start, done),
         Duration.between(start, freezeDone),
         Duration.between(freezeDone, writeDone),
         Duration.between(writeDone, replaceDone),
+        Duration.between(replaceDone, done),
         frozen.metadata().pendingCount(),
         frozen.metadata().tombstoneCount());
   }
@@ -409,7 +404,8 @@ public class QueueData extends AbstractIdleService {
     return entry;
   }
 
-  private synchronized SegmentReader headReader() {
+  @GuardedBy("this")
+  private SegmentReader headReader() {
     var currentSegmentKey = currentSegment.peek();
     if (currentSegmentKey == null) {
       return immutableSegments;
@@ -417,7 +413,7 @@ public class QueueData extends AbstractIdleService {
 
     var immutableSegmentsKey = immutableSegments.peek();
     if (immutableSegmentsKey == null || currentSegmentKey.compareTo(immutableSegmentsKey) < 0) {
-      return ReferenceCountUtil.retain(currentSegment);
+      return currentSegment;
     }
 
     return immutableSegments;

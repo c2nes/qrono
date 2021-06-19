@@ -7,7 +7,6 @@ import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.Item;
 
-// TODO: Implement proper reference counting for entries
 public class InMemoryWorkingSet implements WorkingSet {
   private final ConcurrentMap<Long, Item> items = new ConcurrentHashMap<>();
 
@@ -16,6 +15,8 @@ public class InMemoryWorkingSet implements WorkingSet {
     if (items.putIfAbsent(item.id(), item) != null) {
       throw new IllegalStateException("already added");
     }
+
+    item.retain();
   }
 
   @Override
@@ -40,14 +41,16 @@ public class InMemoryWorkingSet implements WorkingSet {
       @Override
       public Item item() {
         Preconditions.checkState(items.containsKey(item.id()), "released");
-        return item;
+        return item.retain();
       }
 
       @Override
       public void release() {
-        if (items.remove(id) == null) {
+        Item item = items.remove(id);
+        if (item == null) {
           throw new IllegalStateException("already released");
         }
+        item.release();
       }
     };
   }

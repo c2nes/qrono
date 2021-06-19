@@ -1,8 +1,10 @@
 package net.qrono.server;
 
+import static io.netty.buffer.Unpooled.copiedBuffer;
+import static io.netty.buffer.Unpooled.unreleasableBuffer;
+import static io.netty.util.CharsetUtil.UTF_8;
+
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.util.CharsetUtil;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
 import net.qrono.server.data.ImmutableItem.Stats;
@@ -18,7 +20,7 @@ public class TestData {
       .dequeueCount(0)
       .build();
 
-  static final ByteBuf VALUE = Unpooled.copiedBuffer("Hello, world!", CharsetUtil.UTF_8);
+  static final ByteBuf VALUE = unreleasableBuffer(copiedBuffer("Hello, world!", UTF_8));
 
   static final Item ITEM_1_T5 = ImmutableItem.builder()
       .deadline(ImmutableTimestamp.of(BASE_TIME + 5))

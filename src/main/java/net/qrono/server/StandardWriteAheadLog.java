@@ -7,7 +7,6 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import com.google.common.collect.ImmutableList;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
-import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -161,7 +160,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
 
       return entries.build();
     } finally {
-      ReferenceCountUtil.release(buf);
+      buf.release();
     }
   }
 

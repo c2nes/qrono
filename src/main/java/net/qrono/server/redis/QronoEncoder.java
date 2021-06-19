@@ -46,14 +46,14 @@ import java.util.List;
  */
 @SuppressWarnings("UnstableApiUsage")
 @UnstableApi
-public class CustomRedisEncoder extends MessageToMessageEncoder<RedisMessage> {
+public class QronoEncoder extends MessageToMessageEncoder<RedisMessage> {
 
   private final RedisMessagePool messagePool;
 
   /**
    * Creates a new instance with default {@code messagePool}.
    */
-  public CustomRedisEncoder() {
+  public QronoEncoder() {
     this(FixedRedisMessagePool.INSTANCE);
   }
 
@@ -62,7 +62,7 @@ public class CustomRedisEncoder extends MessageToMessageEncoder<RedisMessage> {
    *
    * @param messagePool the predefined message pool.
    */
-  public CustomRedisEncoder(RedisMessagePool messagePool) {
+  public QronoEncoder(RedisMessagePool messagePool) {
     this.messagePool = ObjectUtil.checkNotNull(messagePool, "messagePool");
   }
 

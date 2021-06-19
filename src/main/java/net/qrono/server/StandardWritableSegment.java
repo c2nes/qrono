@@ -3,6 +3,8 @@ package net.qrono.server;
 import static io.netty.util.ReferenceCountUtil.retain;
 
 import com.google.common.base.Preconditions;
+import io.netty.util.AbstractReferenceCounted;
+import io.netty.util.ReferenceCounted;
 import java.io.IOException;
 import java.util.List;
 import java.util.TreeSet;
@@ -18,6 +20,25 @@ public class StandardWritableSegment implements WritableSegment {
   private final SegmentName name;
   private final WriteAheadLog wal;
 
+  // This reference count acts as an indirect reference to the entries in this segment. When
+  // readers for a frozen segment are created we increment this reference rather than incrementing
+  // the reference count of each entry individually. When this writable segment and all readers of
+  // its frozen segment are closed this reference count will reach zero and we will then release
+  // each individual entry.
+  private final ReferenceCounted refCnt = new AbstractReferenceCounted() {
+    @Override
+    protected void deallocate() {
+      for (var entry : entries) {
+        entry.release();
+      }
+    }
+
+    @Override
+    public ReferenceCounted touch(Object hint) {
+      return this;
+    }
+  };
+
   //private final TreeMap<Entry.Key, Entry> entries = new TreeMap<>();
   private final TreeSet<Entry> entries = new TreeSet<>();
   private int pendingCount = 0;
@@ -28,7 +49,7 @@ public class StandardWritableSegment implements WritableSegment {
   // Estimated total size of this segment in bytes
   private long sizeBytes = 0;
 
-  private InMemorySegment frozen = null;
+  private boolean frozen = false;
   private boolean writerClosed = false;
   private boolean closed = false;
 
@@ -84,21 +105,12 @@ public class StandardWritableSegment implements WritableSegment {
           lastRemoved = entry;
         }
       }
-
-      // <--headSet |
-      //   [p0] [t1] [p1] [p2] [p3]
-      //            | tailSet-->
-      //
-      // [p0]  [p1] [p2] [p3]
-      //  ^ [t1] ^
-      //  |      |
-      // floor  ceiling
     }
   }
 
   @Override
   public void add(Entry entry) throws IOException {
-    Preconditions.checkState(frozen == null, "frozen");
+    Preconditions.checkState(!frozen, "frozen");
     checkEntryDeadline(entry);
     wal.append(entry);
     addToInMemoryState(entry);
@@ -106,7 +118,7 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public void addAll(List<Entry> entries) throws IOException {
-    Preconditions.checkState(frozen == null, "frozen");
+    Preconditions.checkState(!frozen, "frozen");
     entries.forEach(this::checkEntryDeadline);
     wal.append(entries);
     entries.forEach(this::addToInMemoryState);
@@ -114,9 +126,9 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public synchronized Segment freeze() throws IOException {
-    Preconditions.checkState(frozen == null, "already frozen");
-    frozen = new InMemorySegment(name, entries);
-    return frozen;
+    Preconditions.checkState(!frozen, "already frozen");
+    frozen = true;
+    return new InMemorySegment(name, entries, refCnt);
   }
 
   @Override
@@ -175,7 +187,7 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public synchronized void close() throws IOException {
-    if (frozen == null) {
+    if (!frozen) {
       freeze();
     }
     if (!writerClosed) {
@@ -183,9 +195,8 @@ public class StandardWritableSegment implements WritableSegment {
     }
     closed = true;
 
-    // InMemorySegment release its entries once all of its Readers are closed and we count as
-    // one of those Readers. Another Reader should have already been created before closing
-    // this WritableSegment.
-    frozen.release();
+    // Release our reference to the entries. One or more InMemorySegmentReaders may
+    // still hold a reference.
+    refCnt.release();
   }
 }

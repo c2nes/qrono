@@ -13,7 +13,6 @@ import com.google.common.util.concurrent.AbstractIdleService;
 import io.netty.buffer.ByteBufAllocator;
 import java.io.Closeable;
 import java.io.IOException;
-import java.lang.ref.SoftReference;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -38,8 +37,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Disk backed working set with in-memory caching. While disk backed, this working set
- * implementation is not persistent and the contents will be lost when the process exits.
+ * Disk backed working set. While disk backed, this working set implementation is not persistent and
+ * the contents will be lost when the process exits.
  */
 public class DiskBackedWorkingSet extends AbstractIdleService implements WorkingSet {
   private static final Logger log = LoggerFactory.getLogger(DiskBackedWorkingSet.class);
@@ -246,15 +245,6 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     return (int) (entry.location & offsetMask);
   }
 
-  private Item entryItem(WorkingItem entry, MappedFile entryFile) {
-    Item item = entry.item.get();
-    if (item != null) {
-      return item;
-    }
-
-    return entryFile.get(entry);
-  }
-
   @VisibleForTesting
   class ItemRefImpl implements ItemRef {
     private WorkingItem entry;
@@ -281,16 +271,6 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
       }
     }
 
-    /**
-     * Force clear the item SoftReference in WorkingItem so {@link #item()} reads from disk.
-     */
-    @VisibleForTesting
-    void clearItemReferenceForTest() {
-      synchronized (DiskBackedWorkingSet.this) {
-        entry.item.clear();
-      }
-    }
-
     @Override
     public Key key() {
       synchronized (DiskBackedWorkingSet.this) {
@@ -303,7 +283,7 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     public Item item() {
       synchronized (DiskBackedWorkingSet.this) {
         revalidate();
-        return entryItem(entry, entryFile);
+        return entryFile.get(entry);
       }
     }
 
@@ -322,15 +302,12 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     private final long deadline;
     private final long id;
     private final int size;
-    private final SoftReference<Item> item;
     private final long location;
 
     WorkingItem(Item item, long location) {
       deadline = item.deadline().millis();
       id = item.id();
       size = Encoding.STATS_SIZE + item.value().readableBytes();
-      //this.item = new SoftReference<>(item);
-      this.item = new SoftReference<>(null);
       this.location = location;
     }
 
@@ -419,7 +396,7 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
       WorkingItem entry = entries.remove(0);
       usedBytes -= entry.size;
       totalUsed -= entry.size;
-      return entryItem(entry, this);
+      return get(entry);
     }
 
     void reset() {

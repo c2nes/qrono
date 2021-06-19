@@ -1,7 +1,6 @@
 package net.qrono.server;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.netty.util.ReferenceCountUtil.releaseLater;
 import static net.qrono.server.TestData.ITEM_1_T5;
 import static net.qrono.server.TestData.withId;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,18 +54,6 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
   }
 
   @Test
-  public void testGetItem_fromDisk() throws IOException {
-    workingSet.add(ITEM_1_T5);
-    var itemRef = workingSet.getInternal(1001);
-    assertNotNull(itemRef);
-    // Force item to be re-read from disk
-    itemRef.clearItemReferenceForTest();
-    var item = itemRef.item();
-    assertEquals(ITEM_1_T5, item);
-    ReferenceCountUtil.release(item);
-  }
-
-  @Test
   public void testMappedFilePoolGrowsAndShrinks() throws IOException, InterruptedException {
     // Should have exactly one file initially
     assertThat(currentFileCount()).isEqualTo(1);
@@ -84,8 +71,6 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
     for (int i = 0; i < MAPPED_FILE_SIZE; i++) {
       var itemRef = workingSet.getInternal(i);
       assertNotNull(itemRef);
-      // Force item to be re-read from disk
-      itemRef.clearItemReferenceForTest();
       var item = itemRef.item();
       assertEquals(withId(ITEM_1_T5, i), item);
       // Release item

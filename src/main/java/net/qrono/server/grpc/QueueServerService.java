@@ -110,7 +110,6 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     // Convert to API model
-    var value = item.value();
     try {
       return Item.newBuilder()
           .setDeadline(fromMillis(item.deadline().millis()))
@@ -120,10 +119,10 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
               .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
               .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
               .build())
-          .setValue(ByteString.copyFrom(value.nioBuffer()))
+          .setValue(ByteString.copyFrom(item.value().nioBuffer()))
           .build();
     } finally {
-      value.release();
+      item.release();
     }
   }
 
@@ -190,7 +189,6 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
     }
 
     // Convert to API model
-    var value = item.value();
     try {
       return Item.newBuilder()
           .setDeadline(fromMillis(item.deadline().millis()))
@@ -200,10 +198,10 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
               .setEnqueueTime(fromMillis(item.stats().enqueueTime().millis()))
               .setRequeueTime(fromMillis(item.stats().requeueTime().millis()))
               .build())
-          .setValue(ByteString.copyFrom(value.nioBuffer()))
+          .setValue(ByteString.copyFrom(item.value().nioBuffer()))
           .build();
     } finally {
-      value.release();
+      item.release();
     }
   }
 

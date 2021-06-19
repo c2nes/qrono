@@ -16,8 +16,8 @@ import net.qrono.server.data.Entry.Key;
 
 public class InMemorySegmentReader implements SegmentReader {
   private final PeekingIterator<Entry> it;
-  private boolean closed = false;
   private final ReferenceCounted owner;
+  private boolean closed = false;
 
   public InMemorySegmentReader(Entry... entries) {
     this(Arrays.asList(entries));

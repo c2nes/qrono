@@ -131,13 +131,14 @@ public class Main {
         server.shutdown().awaitTermination();
         metricsServer.stop();
       } catch (InterruptedException e) {
-        // TODO: Log and bail
+        log.error("BUG: Unexpected InterruptedException while shutting down");
       }
     }));
 
     server.start().awaitTermination();
   }
 
+  @SuppressWarnings("UnstableApiUsage")
   private static InetSocketAddress toSocketAddress(HostAndPort hostAndPort) {
     return new InetSocketAddress(hostAndPort.getHost(), hostAndPort.getPort());
   }

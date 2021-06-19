@@ -1,8 +1,5 @@
 package net.qrono.server;
 
-import com.google.common.base.Preconditions;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -35,7 +32,15 @@ public class ExecutorTaskScheduler implements TaskScheduler {
 
     @Override
     public synchronized void schedule() {
-      Preconditions.checkState(!isCanceled(), "canceled");
+      // Check state
+      if (isCanceled()) {
+        try {
+          terminated.getNow(null);
+          throw new IllegalStateException("canceled");
+        } catch (Exception e) {
+          throw new IllegalStateException("canceled", e);
+        }
+      }
 
       switch (state) {
         case UNSCHEDULED:
@@ -92,9 +97,13 @@ public class ExecutorTaskScheduler implements TaskScheduler {
             state = TaskState.UNSCHEDULED;
           }
         }
-      } catch (IOException e) {
-        // TODO: Log? Cancel task? Report error via Handle?
-        throw new UncheckedIOException(e);
+      } catch (Throwable e) {
+        state = TaskState.CANCELED;
+        terminated.completeExceptionally(e);
+
+        if (e instanceof Error) {
+          throw (Error) e;
+        }
       }
     }
   }

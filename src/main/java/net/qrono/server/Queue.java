@@ -6,7 +6,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.netty.buffer.ByteBuf;
 import io.netty.util.ReferenceCountUtil;
@@ -21,7 +20,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ThreadFactory;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -39,10 +37,6 @@ import org.slf4j.LoggerFactory;
 //   a queue (i.e. make it the user's responsibility).
 public class Queue extends AbstractIdleService {
   private static final Logger log = LoggerFactory.getLogger(Queue.class);
-  private static final ThreadFactory THREAD_FACTORY = new ThreadFactoryBuilder()
-      .setDaemon(true)
-      .setNameFormat("QronoQueue-%d")
-      .build();
 
   private static final Histogram opBatchSize = Histogram.build()
       .name("queue_op_batch_size")
@@ -89,7 +83,7 @@ public class Queue extends AbstractIdleService {
     this.idGenerator = idGenerator;
     this.clock = clock;
     this.workingSet = workingSet;
-    opBufferConsumer = scheduler.register(this::consume);
+    opBufferConsumer = scheduler.register(this::processOpBuffer);
   }
 
   @Override
@@ -255,7 +249,7 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  private boolean consume() {
+  private boolean processOpBuffer() {
     var ops = opBuffer.swap();
 
     if (ops == null) {
@@ -270,7 +264,7 @@ public class Queue extends AbstractIdleService {
       log.trace("Flushing batch; opsSize={}, entriesSize={}", ops.size(), entries.size());
     }
 
-    opBatchSize.observe(entries.size());
+    opBatchSize.observe(ops.size());
 
     try {
       var results = data.write(entries);
@@ -470,8 +464,6 @@ public class Queue extends AbstractIdleService {
       @Override
       public void prepareRequest(List<? super Entry> batch) {
         try {
-          // TODO: Reconsider if "release any" is a good feature beyond benchmarking.
-
           // -1 means "release any"
           if (id == -1 && !dequeuedIds.isEmpty()) {
             id = dequeuedIds.iterator().next();
@@ -533,9 +525,7 @@ public class Queue extends AbstractIdleService {
       @Override
       public void prepareRequest(List<? super Entry> batch) {
         try {
-          // TODO: Reconsider if "requeue any" is a good feature beyond benchmarking.
-
-          // -1 means "release any"
+          // -1 means "requeue any"
           if (id == -1 && !dequeuedIds.isEmpty()) {
             id = dequeuedIds.iterator().next();
           }

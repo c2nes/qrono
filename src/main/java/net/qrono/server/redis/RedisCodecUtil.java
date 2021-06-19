@@ -60,19 +60,4 @@ final class RedisCodecUtil {
     return PlatformDependent.BIG_ENDIAN_NATIVE_ORDER ?
         (short) ((second << 8) | first) : (short) ((first << 8) | second);
   }
-
-  /**
-   * Returns a {@code byte[]} of {@code short} value. This is opposite of {@code makeShort()}.
-   */
-  static byte[] shortToBytes(short value) {
-    byte[] bytes = new byte[2];
-    if (PlatformDependent.BIG_ENDIAN_NATIVE_ORDER) {
-      bytes[1] = (byte) ((value >> 8) & 0xff);
-      bytes[0] = (byte) (value & 0xff);
-    } else {
-      bytes[0] = (byte) ((value >> 8) & 0xff);
-      bytes[1] = (byte) (value & 0xff);
-    }
-    return bytes;
-  }
 }

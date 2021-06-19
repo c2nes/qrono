@@ -51,7 +51,7 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
   @Override
   protected void initChannel(SocketChannel ch) {
     ch.pipeline().addLast(
-        new CustomRedisEncoder(),
+        new QronoEncoder(),
         new QronoDecoder(),
         new RequestHandler(),
         new ErrorHandler());
