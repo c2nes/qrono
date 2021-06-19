@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -144,6 +145,8 @@ public class QronoBenchmark {
             .setNameFormat("Qrono-IOWorker-%d")
             .build()));
 
+    var cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
+
     var queuesDirectory = root.resolve("queues");
     Files.createDirectories(queuesDirectory);
 
@@ -164,6 +167,7 @@ public class QronoBenchmark {
         queuesDirectory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
 
@@ -203,6 +207,8 @@ public class QronoBenchmark {
             .setNameFormat("Qrono-IOWorker-%d")
             .build()));
 
+    var cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
+
     var queuesDirectory = root.resolve("queues");
     Files.createDirectories(queuesDirectory);
 
@@ -223,6 +229,7 @@ public class QronoBenchmark {
         queuesDirectory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
 

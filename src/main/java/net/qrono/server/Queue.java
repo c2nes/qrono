@@ -21,10 +21,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -76,19 +73,23 @@ public class Queue extends AbstractIdleService {
   private final WorkingSet workingSet;
   private final Set<Long> dequeuedIds = new LinkedHashSet<>();
 
-  private final OpBuf opBuffer = new OpBuf(8 * 1024);
-  private final TaskScheduler.Handle consumeOpBuffer;
+  private static final int OP_BUF_SIZE = 8 * 1024;
+  private final OpBuf opBuffer = new OpBuf(OP_BUF_SIZE);
+  private final List<Entry> entries = new ArrayList<>(OP_BUF_SIZE);
+  private final TaskScheduler.Handle opBufferConsumer;
 
-  // Set to 1 for profiling only!
-  // TODO: I mean for this to be shared across queues and injected, right? Should this use
-  //  another IOExecutor?
-  private final ExecutorService executor = Executors.newFixedThreadPool(1, THREAD_FACTORY);
-
-  public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet workingSet) {
+  public Queue(
+      QueueData queueData,
+      IdGenerator idGenerator,
+      Clock clock,
+      WorkingSet workingSet,
+      TaskScheduler scheduler
+  ) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
     this.workingSet = workingSet;
+    opBufferConsumer = scheduler.register(this::consume);
   }
 
   @Override
@@ -98,10 +99,7 @@ public class Queue extends AbstractIdleService {
 
   @Override
   protected void shutDown() throws InterruptedException {
-    executor.shutdown();
-    while (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-      log.warn("Slow queue executor shutdown");
-    }
+    opBufferConsumer.cancel().join();
     data.stopAsync().awaitTerminated();
   }
 
@@ -135,10 +133,9 @@ public class Queue extends AbstractIdleService {
       entry.requeueTimeMillis = 0;
       // Ownership transfer in Enqueue#prepareRequest, and then released after the batch write.
       entry.value = ReferenceCountUtil.retain(value);
-
-      opBuffer.scheduleConsumer();
     }
 
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -157,8 +154,8 @@ public class Queue extends AbstractIdleService {
     synchronized (opBuffer) {
       var event = opBuffer.acquire();
       event.set(event.dequeue, result);
-      opBuffer.scheduleConsumer();
     }
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -178,8 +175,8 @@ public class Queue extends AbstractIdleService {
       var event = opBuffer.acquire();
       var op = event.set(event.release, result);
       op.id = id;
-      opBuffer.scheduleConsumer();
     }
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -204,9 +201,8 @@ public class Queue extends AbstractIdleService {
       op.id = id;
       op.requeueTime = requeueTime;
       op.deadline = deadline == null ? requeueTime : deadline;
-      opBuffer.scheduleConsumer();
     }
-
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -225,8 +221,8 @@ public class Queue extends AbstractIdleService {
     synchronized (opBuffer) {
       var event = opBuffer.acquire();
       event.set(event.peek, result);
-      opBuffer.scheduleConsumer();
     }
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -245,8 +241,8 @@ public class Queue extends AbstractIdleService {
     synchronized (opBuffer) {
       var event = opBuffer.acquire();
       event.set(event.getQueueInfo, result);
-      opBuffer.scheduleConsumer();
     }
+    opBufferConsumer.schedule();
     return result;
   }
 
@@ -257,6 +253,45 @@ public class Queue extends AbstractIdleService {
       Throwables.throwIfUnchecked(e.getCause());
       throw new RuntimeException(e);
     }
+  }
+
+  private boolean consume() {
+    var ops = opBuffer.swap();
+
+    if (ops == null) {
+      return false;
+    }
+
+    for (OpHolder op : ops) {
+      op.prepareRequest(entries);
+    }
+
+    if (log.isTraceEnabled()) {
+      log.trace("Flushing batch; opsSize={}, entriesSize={}", ops.size(), entries.size());
+    }
+
+    opBatchSize.observe(entries.size());
+
+    try {
+      var results = data.write(entries);
+      for (OpHolder op : ops) {
+        op.takeResult(results);
+      }
+    } catch (Exception e) {
+      for (OpHolder op : ops) {
+        op.takeResult(e);
+      }
+    } finally {
+      for (OpHolder op : ops) {
+        op.reset();
+      }
+      for (Entry entry : entries) {
+        entry.release();
+      }
+      entries.clear();
+    }
+
+    return !opBuffer.isEmpty();
   }
 
   public void compact() throws IOException {
@@ -688,7 +723,6 @@ public class Queue extends AbstractIdleService {
     private OpHolder[] read;
     private int writePos = 0, readPos = 0;
     private final int size;
-    private final List<Entry> entries;
 
     private final List<OpHolder> view = new AbstractList<>() {
       @Override
@@ -721,12 +755,8 @@ public class Queue extends AbstractIdleService {
       }
     };
 
-    @GuardedBy("this")
-    private boolean consumerActive = false;
-
     public OpBuf(int size) {
       this.size = size;
-      this.entries = new ArrayList<>(size);
       write = new OpHolder[size];
       read = new OpHolder[size];
       for (int i = 0; i < size; i++) {
@@ -771,52 +801,8 @@ public class Queue extends AbstractIdleService {
       }
     }
 
-    @GuardedBy("this")
-    private void scheduleConsumer() {
-      if (!consumerActive && writePos > 0) {
-        executor.execute(this::consume);
-        consumerActive = true;
-      }
-    }
-
-    private void consume() {
-      try {
-        var ops = swap();
-
-        for (OpHolder op : ops) {
-          op.prepareRequest(entries);
-        }
-
-        if (log.isTraceEnabled()) {
-          log.trace("Flushing batch; opsSize={}, entriesSize={}", ops.size(), entries.size());
-        }
-
-        opBatchSize.observe(entries.size());
-
-        try {
-          var results = data.write(entries);
-          for (OpHolder op : ops) {
-            op.takeResult(results);
-          }
-        } catch (Exception e) {
-          for (OpHolder op : ops) {
-            op.takeResult(e);
-          }
-        } finally {
-          for (OpHolder op : ops) {
-            op.reset();
-          }
-          for (Entry entry : entries) {
-            entry.release();
-          }
-          entries.clear();
-        }
-      } finally {
-        synchronized (this) {
-          consumerActive = false;
-          scheduleConsumer();
-        }
-      }
+    public synchronized boolean isEmpty() {
+      return writePos == 0;
     }
   }
 }

@@ -35,7 +35,7 @@ public class QueueTest {
     var workingSet = new DiskBackedWorkingSet(path, 1 << 30, workerPool);
     workingSet.startAsync().awaitRunning();
 
-    var queue = new Queue(data, idGenerator, clock, workingSet);
+    var queue = new Queue(data, idGenerator, clock, workingSet, workerPool);
     queue.startAsync().awaitRunning();
 
     var value = Unpooled.copiedBuffer("Hello, world!", CharsetUtil.UTF_8);

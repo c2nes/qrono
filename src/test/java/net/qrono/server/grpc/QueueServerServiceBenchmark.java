@@ -27,6 +27,7 @@ import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -183,12 +184,14 @@ public class QueueServerServiceBenchmark {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
+    var cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
     var queueManager = new QueueManager(directory, queueFactory);
@@ -218,12 +221,14 @@ public class QueueServerServiceBenchmark {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
+    var cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
     var queueManager = new QueueManager(directory, queueFactory);
@@ -278,12 +283,14 @@ public class QueueServerServiceBenchmark {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
     var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
+    var cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(
         directory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
     var queueManager = new QueueManager(directory, queueFactory);

@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import net.qrono.server.grpc.QueueServerService;
 import net.qrono.server.redis.RedisChannelInitializer;
 import org.slf4j.Logger;
@@ -47,6 +48,8 @@ public class Main {
             .setNameFormat("Qrono-IOWorker-%d")
             .build()));
 
+    TaskScheduler cpuScheduler = new ExecutorTaskScheduler(ForkJoinPool.commonPool());
+
     Path queuesDirectory = root.resolve(config.dataQueuesDir());
     Files.createDirectories(queuesDirectory);
 
@@ -67,6 +70,7 @@ public class Main {
         queuesDirectory,
         idGenerator,
         ioScheduler,
+        cpuScheduler,
         workingSet,
         segmentFlushScheduler);
     var queueManager = new QueueManager(queuesDirectory, queueFactory);
