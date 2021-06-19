@@ -65,9 +65,9 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
   private long totalSize = 0;
   private long totalUsed = 0;
 
-  private final IOScheduler.Handle drainer;
+  private final TaskScheduler.Handle drainer;
 
-  public DiskBackedWorkingSet(Path directory, int mappedFileSize, IOScheduler ioScheduler) {
+  public DiskBackedWorkingSet(Path directory, int mappedFileSize, TaskScheduler ioScheduler) {
     // STATS_SIZE sets a strict lower bound on file size, but actual size must be large
     // enough to hold the largest allowed item value (which is set elsewhere). Generally
     // mappedFileSize should be set to a value at least a few orders of magnitude larger
@@ -140,7 +140,9 @@ public class DiskBackedWorkingSet extends AbstractIdleService implements Working
     while (isRunning()) {
       synchronized (this) {
         if (!file.isEmpty()) {
-          addUnchecked(file.pop());
+          var item = file.pop();
+          addUnchecked(item);
+          item.release();
         } else {
           if (files.containsKey(file.fileID)) {
             file.close();

@@ -1,9 +1,11 @@
 package net.qrono.server.redis;
 
+import static io.netty.buffer.Unpooled.copiedBuffer;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 
 import com.google.common.base.Ascii;
+import com.google.common.base.Preconditions;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -59,10 +61,6 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
     // Response pipeline. Used to ensure responses are returned in the same order as requests are
     // made. As a result, slow requests at the head of the pipeline may block complete responses.
     private final ArrayDeque<CompletableFuture<RedisMessage>> responses = new ArrayDeque<>();
-
-    public RequestHandler() {
-      super(/* autoRelease= */ false);
-    }
 
     //
     // https://redis.io/topics/protocol#sending-commands-to-a-redis-server
@@ -305,11 +303,38 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           return completedFuture(new SimpleStringRedisMessage("PONG"));
 
         case 2:
-          return completedFuture(args.get(1));
+          return completedFuture(ReferenceCountUtil.retain(args.get(1))); // released by Netty
 
         default:
           throw RedisRequestException.wrongNumberOfArguments();
       }
+    }
+
+    private CompletableFuture<RedisMessage> handleConfig(List<RedisMessage> args) {
+      if (args.size() < 2) {
+        throw RedisRequestException.wrongNumberOfArguments();
+      }
+
+      if (!Keywords.GET.matches(arg(args, 1))) {
+        throw RedisRequestException.unknownSubcommand();
+      }
+
+      if (args.size() < 3) {
+        throw RedisRequestException.wrongNumberOfArguments();
+      }
+
+      var optionName = arg(args, 2).toString(StandardCharsets.US_ASCII).toLowerCase();
+      return switch (optionName) {
+        case "save" -> completedFuture(new ArrayRedisMessage(List.of(
+            new FullBulkStringRedisMessage(copiedBuffer("save", StandardCharsets.US_ASCII)),
+            new FullBulkStringRedisMessage(copiedBuffer("", StandardCharsets.US_ASCII))
+        )));
+        case "appendonly" -> completedFuture(new ArrayRedisMessage(List.of(
+            new FullBulkStringRedisMessage(copiedBuffer("appendonly", StandardCharsets.US_ASCII)),
+            new FullBulkStringRedisMessage(copiedBuffer("no", StandardCharsets.US_ASCII))
+        )));
+        default -> completedFuture(ArrayRedisMessage.EMPTY_INSTANCE);
+      };
     }
 
     private CompletableFuture<RedisMessage> handleMessage(ArrayRedisMessage msg) throws Exception {
@@ -355,6 +380,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         // For compatibility with Redis
         case "ping":
           return handlePing(args);
+
+        // For compatibility with redis-benchmark
+        case "config":
+          return handleConfig(args);
       }
 
       throw RedisRequestException.unknownCommand();
@@ -415,16 +444,8 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         responses.add(future);
       }
 
-      // When complete release message and flush unblocked responses in the pipeline
-      future.whenCompleteAsync((result, ex) -> {
-        try {
-          flushCompletedResponses(ctx);
-        } finally {
-          // Note, we can not release until we've flushed the response because responses
-          // may reuse parts of the request (e.g. PING).
-          ReferenceCountUtil.release(msg);
-        }
-      }, ctx.executor());
+      // When complete, flush unblocked responses in the pipeline
+      future.whenCompleteAsync((result, ex) -> flushCompletedResponses(ctx), ctx.executor());
     }
   }
 
@@ -443,6 +464,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
 
     public static RedisRequestException wrongNumberOfArguments() {
       return new RedisRequestException("ERR wrong number of arguments");
+    }
+
+    public static RedisRequestException unknownSubcommand() {
+      return new RedisRequestException("ERR unknown subcommand");
     }
 
     public static RedisRequestException syntaxError() {
@@ -490,5 +515,36 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
     }
 
     throw new CompletionException(ex);
+  }
+
+  enum Keywords {
+    ENQUEUE("ENQUEUE"),
+    GET("GET");
+
+    private final byte[] name;
+
+    Keywords(String name) {
+      Preconditions.checkArgument(name.matches("[A-Za-z]+"));
+      this.name = name.toLowerCase().getBytes(StandardCharsets.US_ASCII);
+    }
+
+    boolean matches(ByteBuf arg) {
+      if (arg.readableBytes() != name.length) {
+        return false;
+      }
+      final int base = arg.readerIndex();
+      for (int i = 0; i < name.length; i++) {
+        var b0 = name[i];
+        var b1 = arg.getByte(base + i);
+
+        // https://en.wikipedia.org/wiki/ASCII#Printable_characters
+        // 'A' = 100 0001
+        // 'a' = 110 0001
+        if (b0 != (b1 | 0b010_0000)) {
+          return false;
+        }
+      }
+      return true;
+    }
   }
 }

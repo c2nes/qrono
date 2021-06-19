@@ -1,5 +1,7 @@
 package net.qrono.server;
 
+import static io.netty.util.ReferenceCountUtil.release;
+import static io.netty.util.ReferenceCountUtil.releaseLater;
 import static net.qrono.server.Encoding.FOOTER_SIZE;
 import static net.qrono.server.Encoding.KEY_SIZE;
 import static net.qrono.server.Encoding.STATS_SIZE;
@@ -15,6 +17,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
 import io.netty.buffer.Unpooled;
+import io.netty.util.ReferenceCountUtil;
+import io.netty.util.ResourceLeakDetector;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
@@ -49,9 +53,9 @@ public class ImmutableSegmentTest {
 
     ImmutableSegment.Reader reader = newReader(channel);
 
-    assertEquals(PENDING_2_T0, reader.next());
-    assertEquals(PENDING_1_T5, reader.next());
-    assertEquals(PENDING_3_T10, reader.next());
+    assertEquals(PENDING_2_T0, releaseLater(reader.next()));
+    assertEquals(PENDING_1_T5, releaseLater(reader.next()));
+    assertEquals(PENDING_3_T10, releaseLater(reader.next()));
     assertNull(reader.next());
   }
 
@@ -92,7 +96,7 @@ public class ImmutableSegmentTest {
 
     ImmutableSegment.Reader reader = newReader(channel);
 
-    assertEquals(0, reader.next().item().value().readableBytes());
+    assertEquals(0, releaseLater(reader.next()).item().value().readableBytes());
   }
 
   @Test
@@ -116,10 +120,10 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
 
-    assertEquals(PENDING_2_T0, reader.next());
-    assertEquals(PENDING_1_T5, reader.next());
-    assertEquals(PENDING_3_T10, reader.next());
-    assertNull(reader.next());
+    assertEquals(PENDING_2_T0, releaseLater(reader.next()));
+    assertEquals(PENDING_1_T5, releaseLater(reader.next()));
+    assertEquals(PENDING_3_T10, releaseLater(reader.next()));
+    assertNull(releaseLater(reader.next()));
   }
 
   @Test
@@ -143,9 +147,9 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
 
-    assertEquals(TOMBSTONE_2_T0, reader.next());
-    assertEquals(PENDING_1_T5, reader.next());
-    assertEquals(PENDING_3_T10, reader.next());
+    assertEquals(TOMBSTONE_2_T0, releaseLater(reader.next()));
+    assertEquals(PENDING_1_T5, releaseLater(reader.next()));
+    assertEquals(PENDING_3_T10, releaseLater(reader.next()));
     assertNull(reader.next());
   }
 
@@ -173,9 +177,9 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
 
-    assertEquals(PENDING_2_T0, reader.next());
-    assertEquals(PENDING_1_T5, reader.next());
-    assertEquals(PENDING_3_T10, reader.next());
+    assertEquals(PENDING_2_T0, releaseLater(reader.next()));
+    assertEquals(PENDING_1_T5, releaseLater(reader.next()));
+    assertEquals(PENDING_3_T10, releaseLater(reader.next()));
     assertNull(reader.next());
   }
 
@@ -219,7 +223,7 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
 
-    assertEquals(0, reader.next().item().value().readableBytes());
+    assertEquals(0, releaseLater(reader.next()).item().value().readableBytes());
   }
 
   @Test
@@ -243,8 +247,9 @@ public class ImmutableSegmentTest {
     assertEquals(1001, segment.metadata().maxId());
 
     var reader = segment.newReader();
-
-    assertEquals(entry, reader.next());
+    var actual = reader.next();
+    assertEquals(entry, actual);
+    actual.release();
   }
 
   @Test
@@ -270,9 +275,12 @@ public class ImmutableSegmentTest {
 
     var reader = segment.newReader();
     for (Entry entry : entries) {
-      assertEquals(entry, reader.next());
+      var fromReader = reader.next();
+      assertEquals(entry, fromReader);
+      fromReader.release();
     }
     assertNull(reader.next());
+    entries.forEach(Entry::release);
   }
 
   // TODO: Add tests covering offset tracking and opening to a specific position.
@@ -292,14 +300,14 @@ public class ImmutableSegmentTest {
     var segmentName = new SegmentName(123, 456);
     var path = SegmentFiles.getIndexPath(dir.getRoot().toPath(), segmentName);
     var segment = ImmutableSegment.write(path, memSegment, () -> Key.ZERO);
-     var reader = segment.newReader();
+    var reader = segment.newReader();
 
-    assertEquals(PENDING_2_T0, reader.next());
-    assertEquals(PENDING_1_T5, reader.peekEntry());
+    assertEquals(PENDING_2_T0, releaseLater(reader.next()));
+    assertEquals(PENDING_1_T5, releaseLater(reader.peekEntry()));
     assertEquals(PENDING_1_T5.key(), reader.peek());
-    assertEquals(PENDING_1_T5, reader.next());
+    assertEquals(PENDING_1_T5, releaseLater(reader.next()));
     assertEquals(PENDING_3_T10.key(), reader.peek());
-    assertEquals(PENDING_3_T10, reader.next());
+    assertEquals(PENDING_3_T10, releaseLater(reader.next()));
     assertNull(reader.next());
   }
 }

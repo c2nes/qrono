@@ -10,10 +10,10 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.release>11</maven.compiler.release>
+    <maven.compiler.release>16</maven.compiler.release>
     <protobuf.version>3.11.4</protobuf.version>
     <grpc.version>1.28.1</grpc.version>
-    <errorprone.version>2.4.0</errorprone.version>
+    <errorprone.version>2.7.1</errorprone.version>
   </properties>
 
   <build>
@@ -102,10 +102,33 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <configuration>
+          <fork>true</fork>
           <compilerArgs>
-            <arg>-XDcompilePolicy=simple</arg>
-            <arg>-Xplugin:ErrorProne</arg>
+            <!-- <arg>-XDcompilePolicy=simple</arg> -->
+            <!-- <arg>-Xplugin:ErrorProne</arg> -->
+            <!-- Required by Error Prone on JDK 16.
+                 See https://errorprone.info/docs/installation#jdk-16 -->
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED</arg>
+            <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED</arg>
+            <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED</arg>
+            <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED</arg>
           </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.0.0-M5</version>
+        <configuration>
+          <systemPropertyVariables>
+            <io.netty.leakDetection.level>paranoid</io.netty.leakDetection.level>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
     </plugins>
@@ -213,13 +236,6 @@
       <version>1.7.30</version>
     </dependency>
 
-    <!-- Consider trimming this down if repackaging -->
-    <dependency>
-      <groupId>it.unimi.dsi</groupId>
-      <artifactId>fastutil</artifactId>
-      <version>8.3.1</version>
-    </dependency>
-
     <!-- TODO: What other netty dependencies should we have a direct dependency on? -->
     <dependency>
       <groupId>io.netty</groupId>
@@ -229,12 +245,6 @@
       <groupId>io.netty</groupId>
       <artifactId>netty-transport-native-epoll</artifactId>
       <classifier>linux-x86_64</classifier>
-    </dependency>
-
-    <dependency>
-      <groupId>com.lmax</groupId>
-      <artifactId>disruptor</artifactId>
-      <version>3.4.2</version>
     </dependency>
 
     <dependency>
@@ -267,7 +277,6 @@
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
       <version>1.7.30</version>
-      <!--      <scope>test</scope>-->
     </dependency>
     <dependency>
       <groupId>io.grpc</groupId>

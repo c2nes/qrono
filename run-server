@@ -3,7 +3,7 @@
 set -eu
 
 QRONO_RAM_PERCENTAGE=${QRONO_RAM_PERCENTAGE:-70}
-JVM_ARGS=${JVM_ARGS:-"-server -XX:+ExitOnOutOfMemoryError -XX:InitialRAMPercentage=${QRONO_RAM_PERCENTAGE} -XX:MaxRAMPercentage=${QRONO_RAM_PERCENTAGE}"}
+JVM_ARGS=${JVM_ARGS:-"-server -XX:+UseZGC -XX:+ExitOnOutOfMemoryError -XX:InitialRAMPercentage=${QRONO_RAM_PERCENTAGE} -XX:MaxRAMPercentage=${QRONO_RAM_PERCENTAGE} -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints"}
 
 if [ -n "${QRONO_HEAP_SIZE-}" ]; then
     JVM_ARGS="${JVM_ARGS} -Xms${QRONO_HEAP_SIZE} -Xmx${QRONO_HEAP_SIZE}"

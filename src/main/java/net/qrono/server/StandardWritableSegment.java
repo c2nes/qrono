@@ -1,10 +1,13 @@
 package net.qrono.server;
 
+import static io.netty.util.ReferenceCountUtil.retain;
+
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.util.List;
 import java.util.TreeSet;
 import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
 
 public class StandardWritableSegment implements WritableSegment {
   // This is a crude approximation of the amount of overhead required to store an entry in memory.
@@ -19,12 +22,13 @@ public class StandardWritableSegment implements WritableSegment {
   private final TreeSet<Entry> entries = new TreeSet<>();
   private int pendingCount = 0;
   private int tombstoneCount = 0;
+  //
   private Entry lastRemoved = null;
 
   // Estimated total size of this segment in bytes
   private long sizeBytes = 0;
 
-  private boolean frozen = false;
+  private InMemorySegment frozen = null;
   private boolean writerClosed = false;
   private boolean closed = false;
 
@@ -36,9 +40,8 @@ public class StandardWritableSegment implements WritableSegment {
   // QueueData is responsible for upholding this invariant for the queue overall.
   // This check verifies that it is upheld within the current segment.
   private void checkEntryDeadline(Entry entry) {
-    var item = entry.item();
-    if (item != null) {
-      Preconditions.checkArgument(lastRemoved == null || item.compareTo(lastRemoved.item()) > 0,
+    if (entry.isPending()) {
+      Preconditions.checkArgument(lastRemoved == null || entry.compareTo(lastRemoved) > 0,
           "pending item must not precede previously dequeued entries");
     } else {
       var tombstone = entry.key();
@@ -57,8 +60,7 @@ public class StandardWritableSegment implements WritableSegment {
     var item = entry.item();
 
     if (item != null) {
-      item.value().retain();
-      entries.add(entry);
+      entries.add(entry.retain());
       pendingCount += 1;
       sizeBytes += item.value().readableBytes() + ENTRY_OVERHEAD_BYTES;
     } else {
@@ -69,12 +71,18 @@ public class StandardWritableSegment implements WritableSegment {
         entries.remove(maybeMirror);
         pendingCount -= 1;
         sizeBytes -= (maybeMirror.item().value().readableBytes() + ENTRY_OVERHEAD_BYTES);
-        maybeMirror.item().value().release();
+        maybeMirror.release();
       } else {
         // No match found. Simply add the tombstone to the entry set.
-        entries.add(entry);
+        entries.add(entry.retain());
         tombstoneCount += 1;
         sizeBytes += ENTRY_OVERHEAD_BYTES;
+        // Tombstone entries will always precede pending (not dequeued) entries. We need to
+        // therefore ensure these tombstones entries will be skipped by `next()` by updating
+        // `lastRemoved` appropriately.
+        if (lastRemoved == null || entry.compareTo(lastRemoved) > 0) {
+          lastRemoved = entry;
+        }
       }
 
       // <--headSet |
@@ -90,7 +98,7 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public void add(Entry entry) throws IOException {
-    Preconditions.checkState(!frozen, "frozen");
+    Preconditions.checkState(frozen == null, "frozen");
     checkEntryDeadline(entry);
     wal.append(entry);
     addToInMemoryState(entry);
@@ -98,7 +106,7 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public void addAll(List<Entry> entries) throws IOException {
-    Preconditions.checkState(!frozen, "frozen");
+    Preconditions.checkState(frozen == null, "frozen");
     entries.forEach(this::checkEntryDeadline);
     wal.append(entries);
     entries.forEach(this::addToInMemoryState);
@@ -106,10 +114,9 @@ public class StandardWritableSegment implements WritableSegment {
 
   @Override
   public synchronized Segment freeze() throws IOException {
-    Preconditions.checkState(!frozen, "already frozen");
-    frozen = true;
-
-    return new InMemorySegment(name, entries);
+    Preconditions.checkState(frozen == null, "already frozen");
+    frozen = new InMemorySegment(name, entries);
+    return frozen;
   }
 
   @Override
@@ -134,15 +141,25 @@ public class StandardWritableSegment implements WritableSegment {
     return sizeBytes;
   }
 
-  @Override
-  public synchronized Entry peekEntry() {
+  private synchronized Entry peekEntryUnretained() {
     Preconditions.checkState(!closed, "closed");
 
     if (lastRemoved == null) {
-      return entries.isEmpty() ? null : entries.first().retain();
+      return entries.isEmpty() ? null : entries.first();
     } else {
-      return entries.higher(lastRemoved).retain();
+      return entries.higher(lastRemoved);
     }
+  }
+
+  @Override
+  public Entry peekEntry() {
+    return retain(peekEntryUnretained());
+  }
+
+  @Override
+  public Key peek() {
+    var entry = peekEntryUnretained();
+    return entry == null ? null : entry.key();
   }
 
   @Override
@@ -152,17 +169,23 @@ public class StandardWritableSegment implements WritableSegment {
     if (entry != null) {
       lastRemoved = entry;
     }
+    // Already retained by peekEntry
     return entry;
   }
 
   @Override
   public synchronized void close() throws IOException {
-    if (!frozen) {
+    if (frozen == null) {
       freeze();
     }
     if (!writerClosed) {
       closeWriterIO();
     }
     closed = true;
+
+    // InMemorySegment release its entries once all of its Readers are closed and we count as
+    // one of those Readers. Another Reader should have already been created before closing
+    // this WritableSegment.
+    frozen.release();
   }
 }

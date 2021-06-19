@@ -1,6 +1,7 @@
 package net.qrono.server;
 
 import com.google.common.base.Strings;
+import com.google.common.util.concurrent.MoreExecutors;
 import io.netty.buffer.Unpooled;
 import io.netty.util.CharsetUtil;
 import java.io.IOException;
@@ -46,7 +47,9 @@ public class StandardWriteAheadLogTest {
     }
 
     var name = new SegmentName(0, 0);
-    var log = StandardWriteAheadLog.create(temporaryFolder.getRoot().toPath(), name, syncDuration);
+    var log = StandardWriteAheadLog.create(temporaryFolder.getRoot().toPath(), name,
+        new ExecutorTaskScheduler(MoreExecutors.directExecutor()),
+        syncDuration);
     var start = Instant.now();
     for (var i = 0; i < n; i++) {
       log.append(entrySupplier.get());

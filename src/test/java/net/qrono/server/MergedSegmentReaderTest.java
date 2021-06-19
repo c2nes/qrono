@@ -10,6 +10,7 @@ import static net.qrono.server.TestData.TOMBSTONE_3_T10;
 import static net.qrono.server.TestData.TOMBSTONE_5_T20;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.List;
@@ -51,6 +52,9 @@ public class MergedSegmentReaderTest {
 
     reader.addSegment(segment0, Key.ZERO);
     reader.addSegment(segment1, Key.ZERO);
+
+    assertTrue(PENDING_1_T5.mirrors(TOMBSTONE_1_T5));
+    assertTrue(TOMBSTONE_1_T5.mirrors(PENDING_1_T5));
 
     // Pending and tombstone for 1_T5 cancel out and should be skipped.
     assertEquals(PENDING_2_T0, reader.next());

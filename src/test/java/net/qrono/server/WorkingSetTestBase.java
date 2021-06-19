@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
+import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import net.qrono.server.data.Entry;
 import org.junit.Assert;
@@ -12,7 +13,7 @@ import org.junit.Test;
 
 public abstract class WorkingSetTestBase {
   protected abstract WorkingSet workingSet();
-  
+
   @Test
   public void testAdd() throws IOException {
     workingSet().add(ITEM_1_T5);
@@ -70,7 +71,9 @@ public abstract class WorkingSetTestBase {
     workingSet().add(ITEM_1_T5);
     var itemRef = workingSet().get(1001);
     assertNotNull(itemRef);
-    Assert.assertEquals(ITEM_1_T5, itemRef.item());
+    var item = itemRef.item();
+    Assert.assertEquals(ITEM_1_T5, item);
+    ReferenceCountUtil.release(item);
   }
 
   @Test

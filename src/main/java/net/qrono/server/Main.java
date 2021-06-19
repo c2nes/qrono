@@ -41,7 +41,7 @@ public class Main {
     Path root = config.dataRoot();
     Files.createDirectories(root);
 
-    ExecutorIOScheduler ioScheduler = new ExecutorIOScheduler(
+    ExecutorTaskScheduler ioScheduler = new ExecutorTaskScheduler(
         Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
             .setDaemon(true)
             .setNameFormat("Qrono-IOWorker-%d")

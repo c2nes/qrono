@@ -26,7 +26,6 @@ import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.MutableEntry;
 import net.qrono.server.data.Timestamp;
 import net.qrono.server.util.DataSize;
-import org.junit.Test;
 
 @SuppressWarnings("UnstableApiUsage")
 public class QronoBenchmark {
@@ -117,10 +116,29 @@ public class QronoBenchmark {
     }
   }
 
-  @Test
+  private static boolean continueRunning() {
+    var con = System.console();
+    if (con == null) {
+      return false;
+    }
+
+    do {
+      var resp = con.readLine("Continue? [y/n] ");
+      if (resp == null) {
+        return false;
+      }
+      switch (resp) {
+        case "y":
+          return true;
+        case "n":
+          return false;
+      }
+    } while (true);
+  }
+
   public void queueEnqueue() throws Exception {
     var root = Paths.get("/tmp/qrono-benchmark");
-    var ioScheduler = new ExecutorIOScheduler(
+    var ioScheduler = new ExecutorTaskScheduler(
         Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
             .setDaemon(true)
             .setNameFormat("Qrono-IOWorker-%d")
@@ -149,32 +167,37 @@ public class QronoBenchmark {
         workingSet,
         segmentFlushScheduler);
 
-    System.out.println("Warming up...");
-    var warmupRate = 50_000;
-    var warmupDuration = Duration.ofSeconds(15);
-    benchQueueEnqueue(queueFactory, (int) (warmupDuration.toSeconds() * warmupRate), warmupRate);
+    try {
+      System.out.println("Warming up...");
+      var warmupRate = 50_000;
+      var warmupDuration = Duration.ofSeconds(15);
+      benchQueueEnqueue(queueFactory, (int) (warmupDuration.toSeconds() * warmupRate), warmupRate);
 
-    System.out.println("Starting!");
-    CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS)
-        .execute(() -> System.out.println("Go!"));
+      do {
+        System.out.println("Starting!");
+        CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS)
+            .execute(() -> System.out.println("Go!"));
 
-    var n = 25_000_000;
-    var delta = benchQueueEnqueue(queueFactory, n, 1_000_000);
-    var deltaSecs = 1e-9 * delta.toNanos();
-    System.out.printf("%,d\n", (int) (n / deltaSecs));
+        var n = 25_000_000;
+        var delta = benchQueueEnqueue(queueFactory, n, 1_000_000);
+        var deltaSecs = 1e-9 * delta.toNanos();
+        System.out.printf("%,d\n", (int) (n / deltaSecs));
 
-    var osw = new OutputStreamWriter(System.out);
-    TextFormat.writeFormat(
-        TextFormat.CONTENT_TYPE_OPENMETRICS_100,
-        osw,
-        CollectorRegistry.defaultRegistry.metricFamilySamples());
-    osw.flush();
+        var osw = new OutputStreamWriter(System.out);
+        TextFormat.writeFormat(
+            TextFormat.CONTENT_TYPE_OPENMETRICS_100,
+            osw,
+            CollectorRegistry.defaultRegistry.metricFamilySamples());
+        osw.flush();
+      } while (continueRunning());
+    } finally {
+      idGenerator.stopAsync().awaitTerminated();
+    }
   }
 
-  @Test
   public void dataEnqueue() throws Exception {
     var root = Paths.get("/tmp/qrono-benchmark");
-    var ioScheduler = new ExecutorIOScheduler(
+    var ioScheduler = new ExecutorTaskScheduler(
         Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
             .setDaemon(true)
             .setNameFormat("Qrono-IOWorker-%d")
@@ -218,7 +241,6 @@ public class QronoBenchmark {
     System.out.printf("%,d\n", (int) (n / deltaSecs));
   }
 
-  @Test
   public void benchSort() {
     var value = Unpooled.copiedBuffer(Strings.repeat("a", 16), UTF_8);
     var entries = new ArrayList<Entry>();
@@ -242,5 +264,14 @@ public class QronoBenchmark {
     var sw = Stopwatch.createStarted();
     System.out.println(ImmutableSortedSet.copyOf(entries).size());
     System.out.println(sw);
+  }
+
+  public static void main(String[] args) throws Exception {
+    var bench = new QronoBenchmark();
+    switch (args[0]) {
+      case "queueEnqueue" -> bench.queueEnqueue();
+      case "dataEnqueue" -> bench.dataEnqueue();
+      case "benchSort" -> bench.benchSort();
+    }
   }
 }

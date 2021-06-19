@@ -48,17 +48,19 @@ public class QueueData extends AbstractIdleService {
   private volatile Key last = Key.ZERO;
 
   private final SegmentFlushScheduler.Handle flushSchedule;
-  private final IOScheduler.Handle segmentFlusher;
+  private final TaskScheduler ioScheduler;
+  private final TaskScheduler.Handle segmentFlusher;
 
   private final Object compactionLock = new Object();
 
   public QueueData(
       Path directory,
-      IOScheduler ioScheduler,
+      TaskScheduler ioScheduler,
       SegmentWriter segmentWriter,
       SegmentFlushScheduler segmentFlushScheduler
   ) {
     this.directory = directory;
+    this.ioScheduler = ioScheduler;
     this.segmentWriter = segmentWriter;
 
     flushSchedule = segmentFlushScheduler.register();
@@ -89,6 +91,7 @@ public class QueueData extends AbstractIdleService {
         List<Entry> entries = StandardWriteAheadLog.read(path);
         segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
+        entries.forEach(ReferenceCountUtil::release);
       }
 
       if (SegmentFiles.isLogPath(path)) {
@@ -98,6 +101,7 @@ public class QueueData extends AbstractIdleService {
         List<Entry> entries = StandardWriteAheadLog.read(path);
         segmentWriter.write(segmentName, new InMemorySegmentReader(entries));
         Files.delete(path);
+        entries.forEach(ReferenceCountUtil::release);
       }
 
       if (SegmentFiles.isTemporaryPath(path)) {
@@ -165,7 +169,6 @@ public class QueueData extends AbstractIdleService {
     var frozen = currentSegment.freeze();
     currentSegment.closeWriterIO();
     writeAndDeleteLog(frozen);
-    ReferenceCountUtil.release(frozen);
     segmentFlusher.cancel();
     flushSchedule.cancel();
     currentSegment.close();
@@ -195,6 +198,10 @@ public class QueueData extends AbstractIdleService {
   }
 
   public void compact() throws IOException {
+    compact(false);
+  }
+
+  public void compact(boolean force) throws IOException {
     synchronized (compactionLock) {
       // Skip compaction if we are no longer running
       if (!isRunning()) {
@@ -203,7 +210,7 @@ public class QueueData extends AbstractIdleService {
 
       var stats = getStorageStats();
       // Skip compaction if we do not have enough tombstones
-      if (stats.totalTombstoneCount() < 0.2 * stats.totalPendingCount()) {
+      if (!force && stats.totalTombstoneCount() < 0.2 * stats.totalPendingCount()) {
         return;
       }
 
@@ -259,7 +266,7 @@ public class QueueData extends AbstractIdleService {
 
   private WritableSegment nextWritableSegment() throws IOException {
     var name = new SegmentName(0, segmentCounter.getAndIncrement());
-    var wal = StandardWriteAheadLog.create(directory, name);
+    var wal = StandardWriteAheadLog.create(directory, name, ioScheduler);
     return new StandardWritableSegment(name, wal);
   }
 
@@ -346,7 +353,7 @@ public class QueueData extends AbstractIdleService {
 
     // Close WAL (does not require synchronization).
     previousSegment.closeWriterIO();
-    ReferenceCountUtil.release(previousSegment);
+    previousSegment.close();
 
     return frozen;
   }
@@ -362,7 +369,6 @@ public class QueueData extends AbstractIdleService {
 
     synchronized (this) {
       immutableSegments.replaceSegments(Collections.singleton(frozen), segment, last);
-      ReferenceCountUtil.release(frozen);
     }
     var replaceDone = Instant.now();
 
@@ -377,12 +383,14 @@ public class QueueData extends AbstractIdleService {
   }
 
   private Segment writeAndDeleteLog(Segment source) throws IOException {
-    var frozenSegment = segmentWriter.write(
-        source.name(),
-        source.newReader(),
-        this::volatileReadLast);
-    StandardWriteAheadLog.delete(directory, source.name());
-    return frozenSegment;
+    try (var sourceReader = source.newReader()) {
+      var frozenSegment = segmentWriter.write(
+          source.name(),
+          sourceReader,
+          this::volatileReadLast);
+      StandardWriteAheadLog.delete(directory, source.name());
+      return frozenSegment;
+    }
   }
 
   public synchronized Key peek() {

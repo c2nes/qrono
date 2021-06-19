@@ -7,6 +7,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import com.google.common.collect.ImmutableList;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -26,6 +27,7 @@ public class StandardWriteAheadLog implements WriteAheadLog {
   private final SegmentName segmentName;
   private final Duration syncInterval;
   private final FileChannel out;
+  private final TaskScheduler.Handle syncHandle;
   private Instant nextSyncDeadline;
 
   // TODO: Dependency inject Clock
@@ -37,12 +39,13 @@ public class StandardWriteAheadLog implements WriteAheadLog {
       Path directory,
       SegmentName segmentName,
       Duration syncInterval,
-      FileChannel out
-  ) {
+      FileChannel out,
+      TaskScheduler ioScheduler) {
     this.directory = directory;
     this.segmentName = segmentName;
     this.syncInterval = syncInterval;
     this.out = out;
+    syncHandle = ioScheduler.register(this::sync);
     nextSyncDeadline = Instant.now().plus(syncInterval);
   }
 
@@ -86,13 +89,19 @@ public class StandardWriteAheadLog implements WriteAheadLog {
 
     Instant now = Instant.now();
     if (now.isAfter(nextSyncDeadline)) {
-      out.force(false);
+      syncHandle.schedule();
       nextSyncDeadline = now.plus(syncInterval);
     }
   }
 
+  private boolean sync() throws IOException {
+    out.force(false);
+    return false;
+  }
+
   @Override
   public void close() throws IOException {
+    syncHandle.cancel().join();
     out.force(false);
     out.close();
 
@@ -102,15 +111,17 @@ public class StandardWriteAheadLog implements WriteAheadLog {
         ATOMIC_MOVE);
   }
 
-  public static WriteAheadLog create(Path directory, SegmentName segmentName) throws IOException {
-    return create(directory, segmentName, DEFAULT_SYNC_INTERVAL);
+  public static WriteAheadLog create(Path directory, SegmentName segmentName,
+      TaskScheduler ioScheduler) throws IOException {
+    return create(directory, segmentName, ioScheduler, DEFAULT_SYNC_INTERVAL);
   }
 
-  public static WriteAheadLog create(Path directory, SegmentName segmentName, Duration syncInterval)
+  public static WriteAheadLog create(Path directory, SegmentName segmentName,
+      TaskScheduler ioScheduler, Duration syncInterval)
       throws IOException {
     var outputPath = SegmentFiles.getLogPath(directory, segmentName);
     var output = FileChannel.open(outputPath, WRITE, CREATE);
-    return new StandardWriteAheadLog(directory, segmentName, syncInterval, output);
+    return new StandardWriteAheadLog(directory, segmentName, syncInterval, output, ioScheduler);
   }
 
   public static List<Entry> read(Path path) throws IOException {
@@ -118,36 +129,40 @@ public class StandardWriteAheadLog implements WriteAheadLog {
     var entries = new ImmutableList.Builder<Entry>();
     var buf = Unpooled.wrappedBuffer(Files.readAllBytes(path));
 
-    while (buf.readableBytes() > 8) {
-      int size = buf.readInt();
-      int xsum = buf.readInt();
-      if (buf.readableBytes() < size) {
-        // TODO: Throw exception which wraps successfully read entries
+    try {
+      while (buf.readableBytes() > 8) {
+        int size = buf.readInt();
+        int xsum = buf.readInt();
+        if (buf.readableBytes() < size) {
+          // TODO: Throw exception which wraps successfully read entries
+          throw new IOException("truncated");
+        }
+
+        var computedXsum = new Adler32();
+        computedXsum.update(buf.nioBuffer(buf.readerIndex(), size));
+        int computed = ((int) computedXsum.getValue());
+        if (xsum != computed) {
+          // TODO: Throw exception wrapping succesfully read entries
+          // TODO: If there's still readable bytes then something has gone extra wrong
+          throw new IOException(String.format("checksum failure; %x != %x", xsum, computed));
+        }
+
+        // Read entries in this chunk
+        var endOfChunk = buf.readerIndex() + size;
+        while (buf.readerIndex() < endOfChunk) {
+          entries.add(Encoding.readEntry(buf));
+        }
+      }
+
+      // Shouldn't be any readable bytes left
+      if (buf.isReadable()) {
         throw new IOException("truncated");
       }
 
-      var computedXsum = new Adler32();
-      computedXsum.update(buf.nioBuffer(buf.readerIndex(), size));
-      int computed = ((int) computedXsum.getValue());
-      if (xsum != computed) {
-        // TODO: Throw exception wrapping succesfully read entries
-        // TODO: If there's still readable bytes then something has gone extra wrong
-        throw new IOException(String.format("checksum failure; %x != %x", xsum, computed));
-      }
-
-      // Read entries in this chunk
-      var endOfChunk = buf.readerIndex() + size;
-      while (buf.readerIndex() < endOfChunk) {
-        entries.add(Encoding.readEntry(buf));
-      }
+      return entries.build();
+    } finally {
+      ReferenceCountUtil.release(buf);
     }
-
-    // Shouldn't be any readable bytes left
-    if (buf.isReadable()) {
-      throw new IOException("truncated");
-    }
-
-    return entries.build();
   }
 
   public static void delete(Path directory, SegmentName segmentName) throws IOException {

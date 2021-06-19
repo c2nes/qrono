@@ -1,7 +1,9 @@
 package net.qrono.server.data;
 
+import com.google.common.base.MoreObjects;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
+import java.util.function.LongSupplier;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Item.Stats;
 
@@ -17,7 +19,8 @@ public class MutableEntry implements Entry {
   // Item value
   public ByteBuf value = null;
 
-  public MutableEntry() {}
+  public MutableEntry() {
+  }
 
   public MutableEntry(Entry entry) {
     if (entry instanceof MutableEntry) {
@@ -53,9 +56,46 @@ public class MutableEntry implements Entry {
     value = entry.value;
   }
 
-  private final Timestamp deadline = () -> deadlineMillis;
-  private final Timestamp enqueueTime = () -> enqueueTimeMillis;
-  private final Timestamp requeueTime = () -> requeueTimeMillis;
+  private final Timestamp deadline = new T(() -> deadlineMillis);
+  private final Timestamp enqueueTime = new T(() -> enqueueTimeMillis);
+  private final Timestamp requeueTime = new T(() -> requeueTimeMillis);
+
+  private static class T implements Timestamp {
+    private final LongSupplier millis;
+
+    private T(LongSupplier millis) {
+      this.millis = millis;
+    }
+
+    @Override
+    public long millis() {
+      return millis.getAsLong();
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hashCode(millis());
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (obj == this) {
+        return true;
+      }
+      if (!(obj instanceof Timestamp)) {
+        return false;
+      }
+      Timestamp o = (Timestamp) obj;
+      return millis() == o.millis();
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper("Timestamp")
+          .add("millis", millis())
+          .toString();
+    }
+  }
 
   private final Key key = new Key() {
     @Override
@@ -87,6 +127,15 @@ public class MutableEntry implements Entry {
     @Override
     public int hashCode() {
       return Objects.hash(deadline, id, entryType());
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper("Entry.Key")
+          .add("deadline", deadlineMillis)
+          .add("id", id)
+          .add("entryType", entryType())
+          .toString();
     }
   };
 
@@ -179,6 +228,16 @@ public class MutableEntry implements Entry {
     return value == null ? null : item;
   }
 
+  @Override
+  public boolean isPending() {
+    return value != null;
+  }
+
+  @Override
+  public boolean isTombstone() {
+    return value == null;
+  }
+
   public void reset() {
     deadlineMillis = 0;
     id = 0;
@@ -193,19 +252,89 @@ public class MutableEntry implements Entry {
     if (this == o) {
       return true;
     }
-    if (o == null || getClass() != o.getClass()) {
-      return false;
+
+    if (o instanceof MutableEntry) {
+      MutableEntry that = (MutableEntry) o;
+      return deadlineMillis == that.deadlineMillis && id == that.id
+          && enqueueTimeMillis == that.enqueueTimeMillis
+          && requeueTimeMillis == that.requeueTimeMillis
+          && dequeueCount == that.dequeueCount && Objects.equals(value, that.value);
     }
-    MutableEntry that = (MutableEntry) o;
-    return deadlineMillis == that.deadlineMillis && id == that.id
-        && enqueueTimeMillis == that.enqueueTimeMillis
-        && requeueTimeMillis == that.requeueTimeMillis
-        && dequeueCount == that.dequeueCount && Objects.equals(value, that.value);
+
+    if (o instanceof Entry) {
+      return compareTo((Entry) o) == 0;
+    }
+
+    return false;
   }
 
   @Override
   public int hashCode() {
     return Objects
         .hash(deadlineMillis, id, enqueueTimeMillis, requeueTimeMillis, dequeueCount, value);
+  }
+
+  @Override
+  public int compareTo(Entry o) {
+    if (o instanceof MutableEntry) {
+      return compareTo((MutableEntry) o);
+    }
+    return Entry.super.compareTo(o);
+  }
+
+  private int compareTo(MutableEntry o) {
+     /*
+    int cmp = deadline().compareTo(o.deadline());
+      if (cmp != 0) {
+        return cmp;
+      }
+
+      cmp = Long.compare(id(), o.id());
+      if (cmp != 0) {
+        return cmp;
+      }
+
+      return entryType().compareTo(o.entryType());
+     */
+    if (deadlineMillis != o.deadlineMillis) {
+      if (deadlineMillis < o.deadlineMillis) {
+        return -1;
+      } else {
+        return 1;
+      }
+    }
+
+    if (id != o.id) {
+      if (id < o.id) {
+        return -1;
+      } else {
+        return 1;
+      }
+    }
+
+    // Tombstone < Pending
+    if (value == null) {
+      if (o.value != null) {
+        return -1;
+      }
+    } else {
+      if (o.value == null) {
+        return 1;
+      }
+    }
+
+    return 0;
+  }
+
+  @Override
+  public String toString() {
+    return "MutableEntry{" +
+        "deadlineMillis=" + deadlineMillis +
+        ", id=" + id +
+        ", enqueueTimeMillis=" + enqueueTimeMillis +
+        ", requeueTimeMillis=" + requeueTimeMillis +
+        ", dequeueCount=" + dequeueCount +
+        ", entryType=" + key().entryType() +
+        '}';
   }
 }

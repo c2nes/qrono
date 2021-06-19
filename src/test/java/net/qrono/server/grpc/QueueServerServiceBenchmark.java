@@ -39,7 +39,7 @@ import net.qrono.Api.ReleaseRequest;
 import net.qrono.Api.RequeueRequest;
 import net.qrono.Api.RequeueResponse;
 import net.qrono.QueueServerGrpc;
-import net.qrono.server.ExecutorIOScheduler;
+import net.qrono.server.ExecutorTaskScheduler;
 import net.qrono.server.IdGenerator;
 import net.qrono.server.InMemoryWorkingSet;
 import net.qrono.server.QueueFactory;
@@ -182,7 +182,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueThroughput() throws InterruptedException, IOException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
+    var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(
@@ -217,7 +217,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueDequeueRelease() throws IOException, InterruptedException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
+    var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(
@@ -277,7 +277,7 @@ public class QueueServerServiceBenchmark {
   public void testEnqueueDequeueReleaseMany() throws IOException {
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     Path directory = temporaryFolder.getRoot().toPath();
-    var ioScheduler = new ExecutorIOScheduler(newSingleThreadExecutor());
+    var ioScheduler = new ExecutorTaskScheduler(newSingleThreadExecutor());
     var workingSet = new InMemoryWorkingSet();
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
     var queueFactory = new QueueFactory(

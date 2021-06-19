@@ -69,15 +69,15 @@ public interface Entry extends Comparable<Entry>, ForwardingReferenceCounted<Ent
           .entryType(Type.TOMBSTONE)
           .build();
     }
-    return ImmutableEntry.builder()
+    return new MutableEntry(ImmutableEntry.builder()
         .key(key)
-        .build();
+        .build());
   }
 
   static Entry newTombstoneEntry(Item item) {
-    return ImmutableEntry.builder()
+    return new MutableEntry(ImmutableEntry.builder()
         .key(newTombstoneKey(item))
-        .build();
+        .build());
   }
 
   static Key newPendingKey(Item item) {
@@ -89,10 +89,10 @@ public interface Entry extends Comparable<Entry>, ForwardingReferenceCounted<Ent
   }
 
   static Entry newPendingEntry(Item item) {
-    return ImmutableEntry.builder()
+    return new MutableEntry(ImmutableEntry.builder()
         .key(newPendingKey(item))
         .item(item)
-        .build();
+        .build());
   }
 
   @Value.Immutable

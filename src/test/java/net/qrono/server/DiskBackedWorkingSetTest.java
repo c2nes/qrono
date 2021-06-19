@@ -1,6 +1,7 @@
 package net.qrono.server;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static io.netty.util.ReferenceCountUtil.releaseLater;
 import static net.qrono.server.TestData.ITEM_1_T5;
 import static net.qrono.server.TestData.withId;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -9,6 +10,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
 import com.google.common.collect.Iterables;
+import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -24,20 +26,25 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
   @Rule
   public TemporaryFolder dir = new TemporaryFolder();
 
-  private IOScheduler ioScheduler;
+  private TaskScheduler ioScheduler;
   private DiskBackedWorkingSet workingSet;
 
   @Before
   public void setUp() throws IOException {
-    ioScheduler = new ExecutorIOScheduler(directExecutor());
+    ioScheduler = new ExecutorTaskScheduler(directExecutor());
     workingSet = new DiskBackedWorkingSet(dir.getRoot().toPath(), MAPPED_FILE_SIZE, ioScheduler);
     workingSet.startAsync().awaitRunning();
   }
 
   @After
-  public void tearDown() throws IOException {
+  public void tearDown() throws IOException, InterruptedException {
     if (workingSet != null) {
       workingSet.stopAsync().awaitTerminated();
+    }
+
+    for (int i = 0; i < 2; i++) {
+      System.gc();
+      Thread.sleep(250);
     }
   }
 
@@ -54,7 +61,9 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
     assertNotNull(itemRef);
     // Force item to be re-read from disk
     itemRef.clearItemReferenceForTest();
-    assertEquals(ITEM_1_T5, itemRef.item());
+    var item = itemRef.item();
+    assertEquals(ITEM_1_T5, item);
+    ReferenceCountUtil.release(item);
   }
 
   @Test
@@ -77,9 +86,11 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
       assertNotNull(itemRef);
       // Force item to be re-read from disk
       itemRef.clearItemReferenceForTest();
-      assertEquals(withId(ITEM_1_T5, i), itemRef.item());
+      var item = itemRef.item();
+      assertEquals(withId(ITEM_1_T5, i), item);
       // Release item
       itemRef.release();
+      ReferenceCountUtil.release(item);
     }
 
     // Empty files should be removed and we should exactly one file again
@@ -194,8 +205,11 @@ public class DiskBackedWorkingSetTest extends WorkingSetTestBase {
     }
 
     assertThat(ref.key()).isEqualTo(key);
-    assertThat(ref.item()).isEqualTo(item);
+    var newItem = ref.item();
+    assertThat(newItem).isEqualTo(item);
     ref.release();
+    ReferenceCountUtil.release(item);
+    ReferenceCountUtil.release(newItem);
   }
 
   private int currentFileCount() {

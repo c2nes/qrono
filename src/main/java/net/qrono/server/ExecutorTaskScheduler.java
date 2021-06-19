@@ -3,12 +3,13 @@ package net.qrono.server;
 import com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
-public class ExecutorIOScheduler implements IOScheduler {
+public class ExecutorTaskScheduler implements TaskScheduler {
   private final Executor executor;
 
-  public ExecutorIOScheduler(Executor executor) {
+  public ExecutorTaskScheduler(Executor executor) {
     this.executor = executor;
   }
 
@@ -22,6 +23,7 @@ public class ExecutorIOScheduler implements IOScheduler {
 
     private TaskState state = TaskState.UNSCHEDULED;
     private boolean reschedule = false;
+    private final CompletableFuture<Void> terminated = new CompletableFuture<>();
 
     private TaskHandle(Task task) {
       this.task = task;
@@ -55,8 +57,15 @@ public class ExecutorIOScheduler implements IOScheduler {
     }
 
     @Override
-    public synchronized void cancel() {
+    public synchronized CompletableFuture<Void> cancel() {
+      // If the task is not actively running then we can jump straight to terminated.
+      // Otherwise, we mark the task as canceled and leave it to run() to signal termination.
+      if (state != TaskState.RUNNING) {
+        terminated.complete(null);
+      }
+
       state = TaskState.CANCELED;
+      return terminated.copy();
     }
 
     @Override
@@ -74,7 +83,10 @@ public class ExecutorIOScheduler implements IOScheduler {
         boolean selfReschedule = task.executeSingleInterval();
 
         synchronized (this) {
-          if (selfReschedule || reschedule) {
+          if (state == TaskState.CANCELED) {
+            terminated.complete(null);
+          } else if (selfReschedule || reschedule) {
+            state = TaskState.SCHEDULED;
             executor.execute(this);
           } else {
             state = TaskState.UNSCHEDULED;

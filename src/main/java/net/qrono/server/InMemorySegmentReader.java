@@ -1,5 +1,7 @@
 package net.qrono.server;
 
+import static io.netty.util.ReferenceCountUtil.retain;
+
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterators;
@@ -10,6 +12,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.NavigableSet;
 import net.qrono.server.data.Entry;
+import net.qrono.server.data.Entry.Key;
 
 public class InMemorySegmentReader implements SegmentReader {
   private final PeekingIterator<Entry> it;
@@ -30,10 +33,20 @@ public class InMemorySegmentReader implements SegmentReader {
     this.owner = owner;
   }
 
+  private Entry peekEntryUnretained() {
+    Preconditions.checkState(!closed, "closed");
+    return it.hasNext() ? it.peek() : null;
+  }
+
   @Override
   public Entry peekEntry() {
-    Preconditions.checkState(!closed, "closed");
-    return it.hasNext() ? it.peek().retain() : null;
+    return retain(peekEntryUnretained());
+  }
+
+  @Override
+  public Key peek() {
+    var entry = peekEntryUnretained();
+    return entry == null ? null : entry.key();
   }
 
   @Override

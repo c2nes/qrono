@@ -7,25 +7,24 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.lmax.disruptor.BlockingWaitStrategy;
-import com.lmax.disruptor.EventHandler;
-import com.lmax.disruptor.EventTranslatorOneArg;
-import com.lmax.disruptor.EventTranslatorThreeArg;
-import com.lmax.disruptor.EventTranslatorTwoArg;
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.dsl.Disruptor;
-import com.lmax.disruptor.dsl.ProducerType;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.netty.buffer.ByteBuf;
+import io.netty.util.ReferenceCountUtil;
 import io.prometheus.client.Histogram;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
 import java.time.Clock;
+import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.ImmutableItem;
@@ -75,82 +74,34 @@ public class Queue extends AbstractIdleService {
   private final Clock clock;
 
   private final WorkingSet workingSet;
-  private final LongSet dequeuedIds = new LongOpenHashSet();
+  private final Set<Long> dequeuedIds = new LinkedHashSet<>();
 
-  private class BatchEventHandler implements EventHandler<Op> {
-    private final List<Op> ops = new ArrayList<>();
-    private final List<Entry> entries = new ArrayList<>();
-    private int entriesSizeBytes = 0;
+  private final OpBuf opBuffer = new OpBuf(8 * 1024);
+  private final TaskScheduler.Handle consumeOpBuffer;
 
-    @Override
-    public void onEvent(Op op, long sequence, boolean endOfBatch) {
-      ops.add(op);
-      op.prepareRequest(entries);
-      entriesSizeBytes += op.sizeBytes();
-
-      // TODO: Make this configurable
-      if (entriesSizeBytes > 1024 * 1024 || endOfBatch) {
-        flushBatch();
-      }
-    }
-
-    private void flushBatch() {
-      if (log.isTraceEnabled()) {
-        log.trace("Flushing batch; opsSize={}, entriesSize={}, entriesSizeBytes={}",
-            ops.size(), entries.size(), entriesSizeBytes);
-      }
-
-      opBatchSize.observe(entries.size());
-
-      try {
-        var results = data.write(entries);
-        ops.forEach(op -> op.takeResult(results));
-      } catch (Exception e) {
-        ops.forEach(op -> op.takeResult(e));
-      } finally {
-        ops.forEach(Op::reset);
-        ops.clear();
-        entries.clear();
-        entriesSizeBytes = 0;
-      }
-    }
-  }
-
-  private final Disruptor<OpHolder> disruptor;
-  private final RingBuffer<OpHolder> opBuffer;
-
-  private final EnqueueTranslator enqueueTranslator = new EnqueueTranslator();
-  private final ReleaseTranslator releaseTranslator = new ReleaseTranslator();
-  private final RequeueTranslator requeueTranslator = new RequeueTranslator();
-  private final DequeueTranslator dequeueTranslator = new DequeueTranslator();
-  private final PeekTranslator peekTranslator = new PeekTranslator();
-  private final GetQueueInfoTranslator getQueueInfoTranslator = new GetQueueInfoTranslator();
+  // Set to 1 for profiling only!
+  // TODO: I mean for this to be shared across queues and injected, right? Should this use
+  //  another IOExecutor?
+  private final ExecutorService executor = Executors.newFixedThreadPool(1, THREAD_FACTORY);
 
   public Queue(QueueData queueData, IdGenerator idGenerator, Clock clock, WorkingSet workingSet) {
     this.data = queueData;
     this.idGenerator = idGenerator;
     this.clock = clock;
     this.workingSet = workingSet;
-
-    disruptor = new Disruptor<>(
-        OpHolder::new,
-        1024,
-        THREAD_FACTORY,
-        ProducerType.MULTI,
-        new BlockingWaitStrategy());
-    disruptor.handleEventsWith(new BatchEventHandler());
-    opBuffer = disruptor.getRingBuffer();
   }
 
   @Override
   protected void startUp() {
     data.startAsync().awaitRunning();
-    disruptor.start();
   }
 
   @Override
-  protected void shutDown() {
-    disruptor.shutdown();
+  protected void shutDown() throws InterruptedException {
+    executor.shutdown();
+    while (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+      log.warn("Slow queue executor shutdown");
+    }
     data.stopAsync().awaitTerminated();
   }
 
@@ -167,11 +118,28 @@ public class Queue extends AbstractIdleService {
 
   public CompletableFuture<Item> enqueueAsync(ByteBuf value, @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
-    var timer = enqueueTime.startTimer();
-    var result = new CompletableFuture<Entry>();
-    result.thenRun(timer::observeDuration);
-    opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
-    return result.thenApply(Entry::item);
+    var start = System.nanoTime();
+    var enqueueTime = clock.millis();
+    var result = new CompletableFuture<Item>();
+
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      event.op = event.enqueue;
+      event.enqueue.result = result;
+      event.enqueue.start = start;
+
+      var entry = event.enqueue.entry;
+      entry.deadlineMillis = enqueueTime;
+      entry.dequeueCount = 0;
+      entry.enqueueTimeMillis = enqueueTime;
+      entry.requeueTimeMillis = 0;
+      // Ownership transfer in Enqueue#prepareRequest, and then released after the batch write.
+      entry.value = ReferenceCountUtil.retain(value);
+
+      opBuffer.scheduleConsumer();
+    }
+
+    return result;
   }
 
   public Item enqueue(ByteBuf value, @Nullable Timestamp deadline) throws IOException {
@@ -186,7 +154,11 @@ public class Queue extends AbstractIdleService {
   public CompletableFuture<Item> dequeueAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Item>();
-    opBuffer.publishEvent(dequeueTranslator, result);
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      event.set(event.dequeue, result);
+      opBuffer.scheduleConsumer();
+    }
     return result;
   }
 
@@ -201,12 +173,14 @@ public class Queue extends AbstractIdleService {
 
   public CompletableFuture<Void> releaseAsync(long id) {
     Preconditions.checkState(isRunning());
-    var result = new CompletableFuture<Entry>();
-    opBuffer.publishEvent(releaseTranslator, result, id);
-
-    return result.thenRun(() -> {
-      // Convert from CompletableFuture<Entry> to CF<Void>
-    });
+    var result = new CompletableFuture<Void>();
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      var op = event.set(event.release, result);
+      op.id = id;
+      opBuffer.scheduleConsumer();
+    }
+    return result;
   }
 
   public void release(long id) throws IOException {
@@ -220,9 +194,20 @@ public class Queue extends AbstractIdleService {
 
   public CompletableFuture<Timestamp> requeueAsync(long id, @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
-    var result = new CompletableFuture<Entry>();
-    opBuffer.publishEvent(requeueTranslator, result, id, deadline);
-    return result.thenApply(entry -> entry.key().deadline());
+    var result = new CompletableFuture<Timestamp>();
+    var requeueTime = ImmutableTimestamp.of(clock.millis());
+
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      var op = event.set(event.requeue, result);
+      op.result = result;
+      op.id = id;
+      op.requeueTime = requeueTime;
+      op.deadline = deadline == null ? requeueTime : deadline;
+      opBuffer.scheduleConsumer();
+    }
+
+    return result;
   }
 
   public Timestamp requeue(long id, @Nullable Timestamp deadline) throws IOException {
@@ -237,7 +222,11 @@ public class Queue extends AbstractIdleService {
   public CompletableFuture<Item> peekAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Item>();
-    opBuffer.publishEvent(peekTranslator, result);
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      event.set(event.peek, result);
+      opBuffer.scheduleConsumer();
+    }
     return result;
   }
 
@@ -253,7 +242,11 @@ public class Queue extends AbstractIdleService {
   public CompletableFuture<QueueInfo> getQueueInfoAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<QueueInfo>();
-    opBuffer.publishEvent(getQueueInfoTranslator, result);
+    synchronized (opBuffer) {
+      var event = opBuffer.acquire();
+      event.set(event.getQueueInfo, result);
+      opBuffer.scheduleConsumer();
+    }
     return result;
   }
 
@@ -268,6 +261,10 @@ public class Queue extends AbstractIdleService {
 
   public void compact() throws IOException {
     data.compact();
+  }
+
+  public void compact(boolean force) throws IOException {
+    data.compact(force);
   }
 
   class OpHolder implements Op {
@@ -321,7 +318,7 @@ public class Queue extends AbstractIdleService {
       }
     }
 
-    abstract class AbstractEntryOp extends AbstractOp<Entry> {
+    abstract class AbstractEntryOp<V> extends AbstractOp<V> {
       // For internal use
       int _resultIdx = -1;
       int _size = 0;
@@ -333,13 +330,15 @@ public class Queue extends AbstractIdleService {
       // be misleading.
       Throwable _deferredError = null;
 
+      protected abstract V convertResultEntry(Entry entry);
+
       @Override
       public final void takeResult(List<? extends Entry> results) {
         if (_deferredError != null) {
           takeResult(_deferredError);
         } else {
           if (_resultIdx >= 0) {
-            result.complete(results.get(_resultIdx));
+            result.complete(convertResultEntry(results.get(_resultIdx)));
           }
           onSuccess();
         }
@@ -371,8 +370,9 @@ public class Queue extends AbstractIdleService {
       }
     }
 
-    class Enqueue extends AbstractEntryOp {
+    class Enqueue extends AbstractEntryOp<Item> {
       private final MutableEntry entry = new MutableEntry();
+      private long start;
 
       @Override
       public void prepareRequest(List<? super Entry> batch) {
@@ -383,17 +383,40 @@ public class Queue extends AbstractIdleService {
       }
 
       @Override
+      protected Item convertResultEntry(Entry entry) {
+        return entry.item();
+      }
+
+      @Override
+      void onSuccess() {
+        enqueueTime.observe(1e-9 * (System.nanoTime() - start));
+        super.onSuccess();
+      }
+
+      @Override
+      void onFailure() {
+        enqueueTime.observe(1e-9 * (System.nanoTime() - start));
+        super.onFailure();
+      }
+
+      @Override
       public void reset() {
         super.reset();
         entry.reset();
+        start = 0;
       }
     }
 
-    class Release extends AbstractEntryOp {
+    class Release extends AbstractEntryOp<Void> {
       private long id;
 
       // For internal use
       private WorkingSet.ItemRef _item = null;
+
+      @Override
+      protected Void convertResultEntry(Entry entry) {
+        return null;
+      }
 
       @Override
       void onSuccess() {
@@ -412,6 +435,13 @@ public class Queue extends AbstractIdleService {
       @Override
       public void prepareRequest(List<? super Entry> batch) {
         try {
+          // TODO: Reconsider if "release any" is a good feature beyond benchmarking.
+
+          // -1 means "release any"
+          if (id == -1 && !dequeuedIds.isEmpty()) {
+            id = dequeuedIds.iterator().next();
+          }
+
           var item = workingSet.get(id);
           if (item == null || !dequeuedIds.remove(id)) {
             // TODO: Consider using a more specific exception here
@@ -438,13 +468,18 @@ public class Queue extends AbstractIdleService {
       }
     }
 
-    class Requeue extends AbstractEntryOp {
+    class Requeue extends AbstractEntryOp<Timestamp> {
       private long id;
       private Timestamp requeueTime;
       private Timestamp deadline;
 
       // For internal use
       private WorkingSet.ItemRef _item = null;
+
+      @Override
+      protected Timestamp convertResultEntry(Entry entry) {
+        return entry.key().deadline();
+      }
 
       @Override
       void onSuccess() {
@@ -463,6 +498,13 @@ public class Queue extends AbstractIdleService {
       @Override
       public void prepareRequest(List<? super Entry> batch) {
         try {
+          // TODO: Reconsider if "requeue any" is a good feature beyond benchmarking.
+
+          // -1 means "release any"
+          if (id == -1 && !dequeuedIds.isEmpty()) {
+            id = dequeuedIds.iterator().next();
+          }
+
           var itemRef = workingSet.get(id);
           if (itemRef == null || !dequeuedIds.remove(id)) {
             // TODO: Consider using a more specific exception here
@@ -641,81 +683,140 @@ public class Queue extends AbstractIdleService {
     void reset();
   }
 
-  class EnqueueTranslator implements
-      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, ByteBuf, Timestamp> {
-    @Override
-    public void translateTo(
-        OpHolder event,
-        long sequence,
-        CompletableFuture<Entry> result,
-        ByteBuf value,
-        Timestamp deadline
-    ) {
-      var enqueueTime = clock.millis();
-      event.op = event.enqueue;
-      event.enqueue.result = result;
+  class OpBuf {
+    private OpHolder[] write;
+    private OpHolder[] read;
+    private int writePos = 0, readPos = 0;
+    private final int size;
+    private final List<Entry> entries;
 
-      var entry = event.enqueue.entry;
-      entry.deadlineMillis = enqueueTime;
-      entry.dequeueCount = 0;
-      entry.enqueueTimeMillis = enqueueTime;
-      entry.requeueTimeMillis = 0;
-      entry.value = value;
+    private final List<OpHolder> view = new AbstractList<>() {
+      @Override
+      public OpHolder get(int index) {
+        return read[index];
+      }
+
+      @Override
+      public int size() {
+        return readPos;
+      }
+
+      @Override
+      public Iterator<OpHolder> iterator() {
+        return new Itr();
+      }
+
+      class Itr implements Iterator<OpHolder> {
+        private int pos = 0;
+
+        @Override
+        public boolean hasNext() {
+          return pos < readPos;
+        }
+
+        @Override
+        public OpHolder next() {
+          return read[pos++];
+        }
+      }
+    };
+
+    @GuardedBy("this")
+    private boolean consumerActive = false;
+
+    public OpBuf(int size) {
+      this.size = size;
+      this.entries = new ArrayList<>(size);
+      write = new OpHolder[size];
+      read = new OpHolder[size];
+      for (int i = 0; i < size; i++) {
+        write[i] = new OpHolder();
+        read[i] = new OpHolder();
+      }
     }
-  }
 
-  class ReleaseTranslator implements
-      EventTranslatorTwoArg<OpHolder, CompletableFuture<Entry>, Long> {
-    @Override
-    public void translateTo(
-        OpHolder event,
-        long sequence,
-        CompletableFuture<Entry> result,
-        Long id
-    ) {
-      var op = event.set(event.release, result);
-      op.id = id;
+    public synchronized List<OpHolder> swap() {
+      if (writePos == 0) {
+        return null;
+      }
+
+      var saved = read;
+      read = write;
+      write = saved;
+      readPos = writePos;
+      writePos = 0;
+
+      notifyAll();
+
+      return view;
     }
-  }
 
-  class RequeueTranslator implements
-      EventTranslatorThreeArg<OpHolder, CompletableFuture<Entry>, Long, Timestamp> {
-    @Override
-    public void translateTo(
-        OpHolder event,
-        long sequence,
-        CompletableFuture<Entry> result,
-        Long id,
-        Timestamp deadline
-    ) {
-      var requeueTime = ImmutableTimestamp.of(clock.millis());
-      var op = event.set(event.requeue, result);
-      op.result = result;
-      op.id = id;
-      op.requeueTime = requeueTime;
-      op.deadline = deadline == null ? requeueTime : deadline;
+    @GuardedBy("this")
+    public OpHolder acquire() {
+      boolean interrupted = false;
+      try {
+        while (writePos == size) {
+          try {
+            wait();
+          } catch (InterruptedException e) {
+            interrupted = true;
+          }
+        }
+
+        return write[writePos++];
+      } finally {
+        if (interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
-  }
 
-  class DequeueTranslator implements EventTranslatorOneArg<OpHolder, CompletableFuture<Item>> {
-    @Override
-    public void translateTo(OpHolder event, long sequence, CompletableFuture<Item> result) {
-      event.set(event.dequeue, result);
+    @GuardedBy("this")
+    private void scheduleConsumer() {
+      if (!consumerActive && writePos > 0) {
+        executor.execute(this::consume);
+        consumerActive = true;
+      }
     }
-  }
 
-  class PeekTranslator implements EventTranslatorOneArg<OpHolder, CompletableFuture<Item>> {
-    @Override
-    public void translateTo(OpHolder event, long sequence, CompletableFuture<Item> result) {
-      event.set(event.peek, result);
-    }
-  }
+    private void consume() {
+      try {
+        var ops = swap();
 
-  class GetQueueInfoTranslator implements
-      EventTranslatorOneArg<OpHolder, CompletableFuture<QueueInfo>> {
-    @Override
-    public void translateTo(OpHolder event, long sequence, CompletableFuture<QueueInfo> result) {
-      event.set(event.getQueueInfo, result);
+        for (OpHolder op : ops) {
+          op.prepareRequest(entries);
+        }
+
+        if (log.isTraceEnabled()) {
+          log.trace("Flushing batch; opsSize={}, entriesSize={}", ops.size(), entries.size());
+        }
+
+        opBatchSize.observe(entries.size());
+
+        try {
+          var results = data.write(entries);
+          for (OpHolder op : ops) {
+            op.takeResult(results);
+          }
+        } catch (Exception e) {
+          for (OpHolder op : ops) {
+            op.takeResult(e);
+          }
+        } finally {
+          for (OpHolder op : ops) {
+            op.reset();
+          }
+          for (Entry entry : entries) {
+            entry.release();
+          }
+          entries.clear();
+        }
+      } finally {
+        synchronized (this) {
+          consumerActive = false;
+          scheduleConsumer();
+        }
+      }
     }
   }
 }

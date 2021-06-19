@@ -178,9 +178,9 @@ public class QueueManager extends AbstractScheduledService {
     public void delete() throws IOException {
       lock.writeLock().lock();
       try {
-        deleted = true;
         queue.stopAsync().awaitTerminated();
         queue.delete();
+        deleted = true;
         synchronized (QueueManager.this) {
           queues.remove(queueName, this);
         }

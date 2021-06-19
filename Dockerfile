@@ -2,7 +2,7 @@ FROM golang:1.16 AS debug-tools
 RUN go install github.com/c2nes/jtopthreads@latest
 RUN go install github.com/c2nes/grep-stackdump@latest
 
-FROM adoptopenjdk:11-jdk-hotspot
+FROM adoptopenjdk:16-jdk-hotspot
 
 # Debug utilities
 COPY --from=debug-tools /go/bin/jtopthreads /usr/local/bin/jtopthreads

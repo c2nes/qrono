@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.util.ReferenceCountUtil;
 import java.nio.ByteBuffer;
 import org.junit.Test;
 
@@ -103,6 +104,7 @@ public class EncodingTest {
 
     var actual = Encoding.readEntry(bb);
     assertEquals(expected, actual);
+    ReferenceCountUtil.release(actual);
   }
 
   @Test
@@ -114,6 +116,7 @@ public class EncodingTest {
 
     var actual = Encoding.readEntry(bb);
     assertEquals(expected, actual);
+    ReferenceCountUtil.release(actual);
   }
 
   @Test

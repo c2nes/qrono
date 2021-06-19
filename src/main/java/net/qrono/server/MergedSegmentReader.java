@@ -1,6 +1,7 @@
 package net.qrono.server;
 
 import com.google.common.base.Preconditions;
+import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Collection;
@@ -14,12 +15,15 @@ import java.util.stream.Collectors;
 import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.Entry.Type;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@code MergedSegmentReader} combines multiple segments into a single segment reader. Segments
  * can be added and removed on the fly.
  */
 public class MergedSegmentReader implements SegmentReader {
+  private static final Logger log = LoggerFactory.getLogger(MergedSegmentReader.class);
   private static final Comparator<SegmentReader> COMPARATOR =
       Comparator.comparing(SegmentReader::peek);
 
@@ -63,6 +67,9 @@ public class MergedSegmentReader implements SegmentReader {
     // Always add to `segments' so that it will be returned by `getSegments'.
     segments.put(segment.name(), segment);
 
+    // FIXME: Haaaaaack
+    ReferenceCountUtil.retain(segment);
+
     var reader = segment.newReader(position);
 
     // If peek is non-null then insert into the heap
@@ -100,7 +107,7 @@ public class MergedSegmentReader implements SegmentReader {
         .collect(Collectors.toSet());
 
     for (SegmentName name : names) {
-      segments.remove(name);
+      ReferenceCountUtil.release(segments.remove(name));
       var reader = readersByName.remove(name);
       if (reader != null) {
         if (readers.remove(reader)) {
@@ -162,6 +169,8 @@ public class MergedSegmentReader implements SegmentReader {
         next = null;
         // TODO: Make Entry releasable
         nextEntry.item().value().release();
+      } else {
+        log.debug("Dequeued tombstone? k0={}, k1={}", next, nextKey);
       }
     }
   }
@@ -208,6 +217,9 @@ public class MergedSegmentReader implements SegmentReader {
 
   @Override
   public synchronized void close() throws IOException {
+    for (Segment segment : segments.values()) {
+      ReferenceCountUtil.release(segment);
+    }
     for (SegmentReader segment : readers) {
       segment.close();
     }
@@ -238,6 +250,7 @@ public class MergedSegmentReader implements SegmentReader {
 
     @Override
     public synchronized void close() {
+      ReferenceCountUtil.release(entry);
       entry = null;
     }
   }

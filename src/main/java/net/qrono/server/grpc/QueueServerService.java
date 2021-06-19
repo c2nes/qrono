@@ -13,6 +13,8 @@ import io.grpc.stub.StreamObserver;
 import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import net.qrono.Api.CompactQueueRequest;
 import net.qrono.Api.DequeueRequest;
 import net.qrono.Api.EnqueueRequest;
@@ -230,7 +232,16 @@ public class QueueServerService extends QueueServerGrpc.QueueServerImplBase {
   }
 
   Empty compactQueue(CompactQueueRequest request) throws IOException {
-    throw Status.UNIMPLEMENTED.asRuntimeException();
+    var queueName = request.getQueue();
+    // This probably isn't thread safe
+    manager.withExistingQueue(queueName, q -> CompletableFuture.runAsync(() -> {
+      try {
+        q.compact(true);
+      } catch (IOException e) {
+        throw new CompletionException(e);
+      }
+    }));
+    return Empty.getDefaultInstance();
   }
 
   private static <R> void process(StreamObserver<R> observer, Callable<R> operation) {

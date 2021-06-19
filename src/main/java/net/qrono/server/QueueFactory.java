@@ -6,12 +6,12 @@ import java.time.Clock;
 public class QueueFactory {
   private final Path directory;
   private final IdGenerator idGenerator;
-  private final IOScheduler ioScheduler;
+  private final TaskScheduler ioScheduler;
   private final WorkingSet workingSet;
   private final SegmentFlushScheduler segmentFlushScheduler;
 
   public QueueFactory(Path directory, IdGenerator idGenerator,
-      IOScheduler ioScheduler, WorkingSet workingSet,
+      TaskScheduler ioScheduler, WorkingSet workingSet,
       SegmentFlushScheduler segmentFlushScheduler) {
     this.directory = directory;
     this.idGenerator = idGenerator;

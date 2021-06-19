@@ -7,6 +7,7 @@ import net.qrono.server.data.Entry;
 import net.qrono.server.data.Entry.Key;
 import net.qrono.server.data.Item;
 
+// TODO: Implement proper reference counting for entries
 public class InMemoryWorkingSet implements WorkingSet {
   private final ConcurrentMap<Long, Item> items = new ConcurrentHashMap<>();
 

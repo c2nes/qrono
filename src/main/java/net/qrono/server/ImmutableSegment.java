@@ -7,6 +7,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.util.ReferenceCountUtil;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -141,8 +142,7 @@ public class ImmutableSegment implements Segment {
     private Entry nextEntry = null;
     private boolean closed = false;
 
-    @VisibleForTesting
-    Reader(SeekableByteChannel channel) throws IOException {
+    @VisibleForTesting Reader(SeekableByteChannel channel) throws IOException {
       this(new BufferedReadableChannel(channel));
     }
 
@@ -201,7 +201,7 @@ public class ImmutableSegment implements Segment {
     }
 
     Entry.Key readNextKey() throws IOException {
-      if (position() < footerPosition) {
+      if (channel.position() < footerPosition) {
         channel.ensureReadableBytes(Encoding.KEY_SIZE);
         return Encoding.readKey(channel.buffer);
       }
@@ -234,18 +234,16 @@ public class ImmutableSegment implements Segment {
         nextEntry = readNextEntry();
         nextKey = readNextKey();
       }
-      return nextEntry;
+      return ReferenceCountUtil.retain(nextEntry);
     }
 
     @Override
     public void close() throws IOException {
       closed = true;
       nextKey = null;
+      ReferenceCountUtil.release(nextEntry);
+      nextEntry = null;
       channel.channel.close();
-    }
-
-    public long position() throws IOException {
-      return channel.channel.position() - channel.buffer.remaining();
     }
 
     public void position(long newPosition) throws IOException {
@@ -263,6 +261,7 @@ public class ImmutableSegment implements Segment {
 
   static class BufferedReadableChannel {
     private final SeekableByteChannel channel;
+    private long channelPosition = 0;
     private ByteBuffer buffer = newByteBuffer(DEFAULT_BUFFER_SIZE);
 
     BufferedReadableChannel(SeekableByteChannel channel) {
@@ -273,6 +272,7 @@ public class ImmutableSegment implements Segment {
       channel.position(newPosition);
       // Discard all data in buffer
       buffer.position(0).limit(0);
+      channelPosition = newPosition;
     }
 
     void ensureReadableBytes(int required) throws IOException {
@@ -286,7 +286,7 @@ public class ImmutableSegment implements Segment {
         }
 
         // Do the read
-        channel.read(buffer);
+        channelPosition += channel.read(buffer);
 
         // Ensure we read as many bytes as were requested
         if (buffer.position() < required) {
@@ -296,6 +296,10 @@ public class ImmutableSegment implements Segment {
         // Prepare for reading
         buffer.flip();
       }
+    }
+
+    public long position() throws IOException {
+      return channelPosition - buffer.remaining();
     }
   }
 
@@ -385,35 +389,39 @@ public class ImmutableSegment implements Segment {
       var maxId = 0L;
 
       for (var entry = source.next(); entry != null; entry = source.next()) {
-        // Update our copy of the reader's position, but only if we're ahead of where
-        // we last knew the reader to be. If we're behind where we last knew the
-        // reader to be we should just continue advancing the start position.
-        var readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
-        if (!readerIsAhead) {
-          readerOffset = liveReaderOffset.get();
-          readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
-        }
+        try {
+          // Update our copy of the reader's position, but only if we're ahead of where
+          // we last knew the reader to be. If we're behind where we last knew the
+          // reader to be we should just continue advancing the start position.
+          var readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
+          if (!readerIsAhead) {
+            readerOffset = liveReaderOffset.get();
+            readerIsAhead = entry.key().compareTo(readerOffset) <= 0;
+          }
 
-        // So long as the reader is ahead of us keep advancing the start position
-        if (readerIsAhead) {
-          readerStartPosition = position;
-          readerStartKey = entry.key();
-        }
+          // So long as the reader is ahead of us keep advancing the start position
+          if (readerIsAhead) {
+            readerStartPosition = position;
+            readerStartKey = entry.key();
+          }
 
-        // Write key and pending item data
-        var key = entry.key();
-        writeKey(entry.key());
+          // Write key and pending item data
+          var key = entry.key();
+          writeKey(entry.key());
 
-        var item = entry.item();
-        if (item != null) {
-          writePendingItem(item);
-          pendingCount++;
-        } else {
-          tombstoneCount++;
-        }
+          var item = entry.item();
+          if (item != null) {
+            writePendingItem(item);
+            pendingCount++;
+          } else {
+            tombstoneCount++;
+          }
 
-        if (key.id() > maxId) {
-          maxId = key.id();
+          if (key.id() > maxId) {
+            maxId = key.id();
+          }
+        } finally {
+          entry.release();
         }
       }
 

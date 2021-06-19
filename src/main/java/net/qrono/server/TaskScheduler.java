@@ -1,11 +1,12 @@
 package net.qrono.server;
 
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * An abstract scheduler for IO tasks.
+ * An abstract task scheduler.
  */
-public interface IOScheduler {
+public interface TaskScheduler {
   /**
    * Registers the given task with the scheduler. The returned handle can be used to schedule the
    * task for execution. The task will initially be unscheduled.
@@ -13,7 +14,7 @@ public interface IOScheduler {
   Handle register(Task task);
 
   /**
-   * An IO task that runs periodically and cooperatively.
+   * A task that runs periodically and cooperatively.
    */
   interface Task {
     /**
@@ -40,6 +41,6 @@ public interface IOScheduler {
      * currently scheduled it will be unscheduled. If the task is currently running it will be
      * allowed to complete, but will not be permitted to be rescheduled.
      */
-    void cancel();
+    CompletableFuture<Void> cancel();
   }
 }

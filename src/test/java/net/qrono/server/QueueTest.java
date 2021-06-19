@@ -26,7 +26,7 @@ public class QueueTest {
   public void benchmarkEnqueue() throws IOException {
     var path = dir.getRoot().toPath();
     var segmentWriter = new StandardSegmentWriter(path);
-    var workerPool = new ExecutorIOScheduler(newSingleThreadExecutor());
+    var workerPool = new ExecutorTaskScheduler(newSingleThreadExecutor());
     var clock = Clock.systemUTC();
     IdGenerator idGenerator = new AtomicLong()::incrementAndGet;
     var segmentFlushScheduler = new SegmentFlushScheduler(100 * 1024 * 1024);
