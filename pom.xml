@@ -11,8 +11,10 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>16</maven.compiler.release>
-    <protobuf.version>3.11.4</protobuf.version>
-    <grpc.version>1.28.1</grpc.version>
+    <protobuf.version>3.17.3</protobuf.version>
+    <protobuf.classifier>${os.detected.classifier}</protobuf.classifier>
+    <grpc.version>1.38.1</grpc.version>
+    <grpc.classifier>${os.detected.classifier}</grpc.classifier>
     <errorprone.version>2.7.1</errorprone.version>
   </properties>
 
@@ -62,11 +64,11 @@
         <version>0.6.1</version>
         <configuration>
           <protocArtifact>
-            com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}
+            com.google.protobuf:protoc:${protobuf.version}:exe:${protobuf.classifier}
           </protocArtifact>
           <pluginId>grpc-java</pluginId>
           <pluginArtifact>
-            io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}
+            io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${grpc.classifier}
           </pluginArtifact>
         </configuration>
         <executions>
@@ -152,7 +154,7 @@
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-bom</artifactId>
-        <version>4.1.50.Final</version>
+        <version>4.1.65.Final</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -290,4 +292,20 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <profiles>
+    <!-- Until grpc-java releases native M1 support for protoc-gen-grpc-java we
+         will use the x86_64 version under Rosetta -->
+    <profile>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <grpc.classifier>osx-x86_64</grpc.classifier>
+      </properties>
+    </profile>
+  </profiles>
 </project>

@@ -8,8 +8,8 @@ import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.prometheus.client.CollectorRegistry;
 import io.prometheus.client.exporter.HTTPServer;
 import io.prometheus.client.hotspot.DefaultExports;
@@ -26,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class Main {
+
   private static final Logger log = LoggerFactory.getLogger(Main.class);
 
   public static void main(String[] args) throws IOException, InterruptedException {
@@ -87,11 +88,11 @@ public class Main {
     // Netty Redis
     // -----------------------------------------------------------------------
 
-    var parentGroup = new EpollEventLoopGroup();
-    var childGroup = new EpollEventLoopGroup();
+    var parentGroup = new NioEventLoopGroup();
+    var childGroup = new NioEventLoopGroup();
     var redisServer = new ServerBootstrap()
         .group(parentGroup, childGroup)
-        .channel(EpollServerSocketChannel.class)
+        .channel(NioServerSocketChannel.class)
         .childOption(ChannelOption.SO_KEEPALIVE, true)
         .childHandler(new RedisChannelInitializer(queueManager));
 
