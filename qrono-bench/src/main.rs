@@ -170,7 +170,12 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn new(rate: f64) -> RateLimiter {
-        let tick = Duration::from_secs_f64(1.0 / rate);
+        let tick = if rate <= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(1.0 / rate)
+        };
+
         RateLimiter {
             tick,
             last: Instant::now(),
@@ -178,6 +183,10 @@ impl RateLimiter {
     }
 
     fn acquire(&mut self, n: u32) {
+        if self.tick.is_zero() {
+            return;
+        }
+
         let now = Instant::now();
         let target = self.last + n * self.tick;
         if now < target {
@@ -570,7 +579,6 @@ fn main() {
             Arg::with_name("publish_rate")
                 .short("r")
                 .long("publish-rate")
-                .default_value("50")
                 .validator(|x| validate_min::<f64, _>(x, 1.0))
                 .help("Publish (enqueue) rate")
                 .takes_value(true),
@@ -615,7 +623,7 @@ fn main() {
         size: arg(&matches, "size"),
         consumer_count: arg(&matches, "consumer_count"),
         publisher_count: arg(&matches, "publisher_count"),
-        publish_rate: arg(&matches, "publish_rate"),
+        publish_rate: arg_or(&matches, "publish_rate", || -1.0),
         mode: {
             let mode = matches.value_of("mode").unwrap();
             match mode {
