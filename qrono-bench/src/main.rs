@@ -4,7 +4,7 @@ use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 use std::io::Error;
 use std::str::FromStr;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -287,173 +287,183 @@ struct Benchmark {
 
     // Latency histograms
     // Enqueue, Dequeue, Release, End-to-end
-    hist_enqueue: Arc<Mutex<Histogram<u64>>>,
-    hist_dequeue: Arc<Mutex<Histogram<u64>>>,
-    hist_release: Arc<Mutex<Histogram<u64>>>,
-    hist_end_to_end: Arc<Mutex<Histogram<u64>>>,
+    hist_enqueue: Mutex<Histogram<u64>>,
+    hist_dequeue: Mutex<Histogram<u64>>,
+    hist_release: Mutex<Histogram<u64>>,
+    hist_end_to_end: Mutex<Histogram<u64>>,
+
+    // Base time for end-to-end latencies
+    base_time: Instant,
 }
 
 impl Benchmark {
-    fn record_latency(hist: &Arc<Mutex<Histogram<u64>>>, start: Instant) {
+    fn record_latency(hist: &Mutex<Histogram<u64>>, start: Instant) {
         let nanos = start.elapsed().as_nanos() as u64;
         hist.lock().unwrap().saturating_record(nanos);
+    }
+
+    fn run_consumer(&self, client: &redis::Client, count: u64) -> Result<(), Error> {
+        let mut conn = client.get_connection().unwrap();
+        let queue_name = self.queue_name.clone();
+        let pipeline = self.pipeline;
+
+        let mut remaining = count;
+        while remaining > 0 {
+            let mut pipe = redis::pipe();
+            for _ in 0..remaining.min(pipeline as u64) {
+                pipe.cmd("DEQUEUE").arg(&queue_name);
+            }
+
+            let dequeue_start = Instant::now();
+            let resp: Vec<Option<DequeueResult>> = pipe.query(&mut conn).unwrap();
+            let resp: Vec<DequeueResult> = resp.into_iter().flatten().collect();
+
+            if !resp.is_empty() {
+                Self::record_latency(&self.hist_dequeue, dequeue_start);
+
+                let mut pipe = redis::pipe();
+                for dequeue in &resp {
+                    pipe.cmd("RELEASE").arg(&queue_name).arg(dequeue.id);
+                }
+
+                let release_start = Instant::now();
+                pipe.query::<Vec<bool>>(&mut conn).unwrap();
+                Self::record_latency(&self.hist_release, release_start);
+
+                for dequeue in &resp {
+                    // Extract timestamp and record end-to-end latency
+                    let enqueue_offset_bytes = dequeue.data[0..8].try_into().unwrap();
+                    let enqueue_offset_nanos = u64::from_be_bytes(enqueue_offset_bytes);
+                    let enqueue_offset = Duration::from_nanos(enqueue_offset_nanos);
+                    let enqueue_time = self.base_time + enqueue_offset;
+                    Self::record_latency(&self.hist_end_to_end, enqueue_time);
+                }
+
+                remaining -= resp.len() as u64;
+            } else {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn run_publisher(&self, client: &redis::Client, n: u64) -> Result<(), Error> {
+        let mut limiter = RateLimiter::new(self.publish_rate / self.publisher_count as f64);
+        let mut value = vec![b'A'; self.size];
+        let mut conn = client.get_connection().unwrap();
+        let queue_name = self.queue_name.clone();
+
+        for (_, count) in n.batches(self.pipeline as u64) {
+            limiter.acquire(count as u32);
+
+            // Write timestamp prefix to value
+            let timestamp = self.base_time.elapsed().as_nanos() as u64;
+            value[0..8].copy_from_slice(&timestamp.to_be_bytes());
+
+            let mut pipe = redis::pipe();
+            for _ in 0..count {
+                pipe.cmd("ENQUEUE").arg(&queue_name).arg(&value[..]);
+            }
+
+            let start = Instant::now();
+            pipe.query::<Vec<EnqueueResult>>(&mut conn).unwrap();
+            Self::record_latency(&self.hist_enqueue, start);
+        }
+
+        Ok(())
     }
 
     fn run(&self) -> Result<(), Error> {
         let client = redis::Client::open(&self.target).unwrap();
         let n = self.count.0;
-        let m = self.consumer_count;
 
-        // Base time for end-to-end latencies
-        let base_time = Instant::now();
+        let consumer_barrier = Barrier::new(self.consumer_count as usize + 1);
+        let publisher_barrier = Barrier::new(self.publisher_count as usize + 1);
 
-        // Need to dequeue as many items as are enqueued
-        let mut consumers = Vec::new();
+        crossbeam::scope(|s| {
+            // Need to dequeue as many items as are enqueued
+            let mut consumers = Vec::new();
+            if self.mode.has_consumer() {
+                for (_, count) in n.partition(self.consumer_count) {
+                    let client = &client;
+                    let consumer_barrier = &consumer_barrier;
+                    let handle = s.spawn(move |_| {
+                        consumer_barrier.wait();
+                        self.run_consumer(client, count).unwrap();
+                    });
 
-        // Consumer barrier. In PublishThenConsume mode, wait for all consumers to be
-        // ready and for production to be complete. Otherwise, allow consumers to run
-        // concurrently with producers.
-        let consumer_barrier = Arc::new(Barrier::new(match self.mode {
-            Mode::PublishThenConsume => m as usize + 1,
-            _ => m as usize,
-        }));
-
-        if self.mode.has_consumer() {
-            for (_, count) in n.partition(self.consumer_count) {
-                let mut conn = client.get_connection().unwrap();
-                let queue_name = self.queue_name.clone();
-                let pipeline = self.pipeline;
-                let consumer_start = Arc::clone(&consumer_barrier);
-                let hist_dequeue = Arc::clone(&self.hist_dequeue);
-                let hist_release = Arc::clone(&self.hist_release);
-                let hist_end_to_end = Arc::clone(&self.hist_end_to_end);
-
-                let handle = thread::spawn(move || {
-                    consumer_start.wait();
-                    let mut remaining = count;
-                    while remaining > 0 {
-                        let mut pipe = redis::pipe();
-                        for _ in 0..remaining.min(pipeline as u64) {
-                            pipe.cmd("DEQUEUE").arg(&queue_name);
-                        }
-
-                        let dequeue_start = Instant::now();
-                        let resp: Vec<Option<DequeueResult>> = pipe.query(&mut conn).unwrap();
-                        let resp: Vec<DequeueResult> = resp.into_iter().flatten().collect();
-
-                        if !resp.is_empty() {
-                            Self::record_latency(&hist_dequeue, dequeue_start);
-
-                            let mut pipe = redis::pipe();
-                            for dequeue in &resp {
-                                pipe.cmd("RELEASE").arg(&queue_name).arg(dequeue.id);
-                            }
-
-                            let release_start = Instant::now();
-                            pipe.query::<Vec<bool>>(&mut conn).unwrap();
-                            Self::record_latency(&hist_release, release_start);
-
-                            for dequeue in &resp {
-                                // Extract timestamp and record end-to-end latency
-                                let enqueue_offset_bytes = dequeue.data[0..8].try_into().unwrap();
-                                let enqueue_offset_nanos = u64::from_be_bytes(enqueue_offset_bytes);
-                                let enqueue_offset = Duration::from_nanos(enqueue_offset_nanos);
-                                let enqueue_time = base_time + enqueue_offset;
-                                Self::record_latency(&hist_end_to_end, enqueue_time);
-                            }
-
-                            remaining -= resp.len() as u64;
-                        } else {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                    }
-                });
-
-                consumers.push(handle);
-            }
-        }
-
-        let publisher_barrier = Arc::new(Barrier::new(self.publisher_count as usize + 1));
-        let mut publishers = Vec::new();
-        for (_, n) in n.partition(self.publisher_count) {
-            let mut limiter = RateLimiter::new(self.publish_rate / self.publisher_count as f64);
-            let mut value = vec![b'A'; self.size];
-            let mut conn = client.get_connection().unwrap();
-            let queue_name = self.queue_name.clone();
-            let hist = Arc::clone(&self.hist_enqueue);
-            let pipeline = self.pipeline;
-            let publisher_barrier = Arc::clone(&publisher_barrier);
-
-            publishers.push(thread::spawn(move || {
-                publisher_barrier.wait();
-
-                for (_, count) in n.batches(pipeline as u64) {
-                    limiter.acquire(count as u32);
-
-                    // Write timestamp prefix to value
-                    let timestamp = base_time.elapsed().as_nanos() as u64;
-                    value[0..8].copy_from_slice(&timestamp.to_be_bytes());
-
-                    let mut pipe = redis::pipe();
-                    for _ in 0..count {
-                        pipe.cmd("ENQUEUE").arg(&queue_name).arg(&value[..]);
-                    }
-
-                    let start = Instant::now();
-                    pipe.query::<Vec<EnqueueResult>>(&mut conn).unwrap();
-                    Self::record_latency(&hist, start);
+                    consumers.push(handle);
                 }
-            }));
-        }
-
-        publisher_barrier.wait();
-        let start_production = Instant::now();
-        for publisher in publishers {
-            publisher.join().unwrap();
-        }
-        let end_production = Instant::now();
-
-        match self.mode {
-            Mode::PublishThenDelete => {
-                let mut conn = client.get_connection().unwrap();
-                redis::cmd("DELETE")
-                    .arg(&self.queue_name)
-                    .query::<bool>(&mut conn)
-                    .unwrap();
             }
-            Mode::PublishThenConsume => {
-                // Signal consumer to start if necessary
+
+            let mut publishers = Vec::new();
+            for (_, n) in n.partition(self.publisher_count) {
+                let client = &client;
+                let publisher_barrier = &publisher_barrier;
+
+                publishers.push(s.spawn(move |_| {
+                    publisher_barrier.wait();
+                    self.run_publisher(client, n).unwrap();
+                }));
+            }
+
+            // Start consumers before publishers if they are meant to run concurrently.
+            if let Mode::PublishAndConsume = self.mode {
                 consumer_barrier.wait();
             }
-            _ => {}
-        }
 
-        let produce_duration = end_production - start_production;
-        let per_second = n as f64 / produce_duration.as_secs_f64();
-        println!(
-            "Producer done; duration={:.3}, rate={:.3}",
-            produce_duration.as_secs_f64(),
-            per_second
-        );
+            // Start publishers and wait for them to complete.
+            publisher_barrier.wait();
+            let start_production = Instant::now();
+            for publisher in publishers {
+                publisher.join().unwrap();
+            }
+            let end_production = Instant::now();
 
-        if self.mode.has_consumer() {
-            for consumer in consumers {
-                consumer.join().unwrap();
+            match self.mode {
+                Mode::PublishThenDelete => {
+                    let mut conn = client.get_connection().unwrap();
+                    redis::cmd("DELETE")
+                        .arg(&self.queue_name)
+                        .query::<bool>(&mut conn)
+                        .unwrap();
+                }
+                Mode::PublishThenConsume => {
+                    // Start consumers
+                    consumer_barrier.wait();
+                }
+                _ => {}
             }
 
-            let start_consume = match self.mode {
-                Mode::PublishThenConsume => end_production,
-                _ => start_production,
-            };
-
-            let consume_duration = start_consume.elapsed();
-            let per_second = n as f64 / consume_duration.as_secs_f64();
+            let produce_duration = end_production - start_production;
+            let per_second = n as f64 / produce_duration.as_secs_f64();
             println!(
-                "Consumer done; duration={:.3}, rate={:.3}",
-                consume_duration.as_secs_f64(),
+                "Producer done; duration={:.3}, rate={:.3}",
+                produce_duration.as_secs_f64(),
                 per_second
             );
-        }
+
+            if self.mode.has_consumer() {
+                for consumer in consumers {
+                    consumer.join().unwrap();
+                }
+
+                let start_consume = match self.mode {
+                    Mode::PublishThenConsume => end_production,
+                    _ => start_production,
+                };
+
+                let consume_duration = start_consume.elapsed();
+                let per_second = n as f64 / consume_duration.as_secs_f64();
+                println!(
+                    "Consumer done; duration={:.3}, rate={:.3}",
+                    consume_duration.as_secs_f64(),
+                    per_second
+                );
+            }
+        })
+        .unwrap();
 
         Ok(())
     }
@@ -634,11 +644,12 @@ fn main() {
             }
         },
         // Latency histograms
-        hist_enqueue: Arc::new(Mutex::new(new_latency_histogram(60))),
-        hist_dequeue: Arc::new(Mutex::new(new_latency_histogram(60))),
-        hist_release: Arc::new(Mutex::new(new_latency_histogram(60))),
-        hist_end_to_end: Arc::new(Mutex::new(new_latency_histogram(300))),
+        hist_enqueue: Mutex::new(new_latency_histogram(60)),
+        hist_dequeue: Mutex::new(new_latency_histogram(60)),
+        hist_release: Mutex::new(new_latency_histogram(60)),
+        hist_end_to_end: Mutex::new(new_latency_histogram(300)),
         pipeline: arg(&matches, "pipeline"),
+        base_time: Instant::now(),
     };
 
     benchmark.run().unwrap();
