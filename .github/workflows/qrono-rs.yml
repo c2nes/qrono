@@ -1,0 +1,52 @@
+name: qrono-rs
+
+on:
+  push:
+    branches:
+      - '*'
+    tags:
+      - '[0-9]+.*'
+    paths:
+      - 'qrono-rs/**'
+      - '.github/workflows/qrono-rs.yml'
+
+defaults:
+  run:
+    working-directory: 'qrono-rs/'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.57
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Cache Rust dependencies
+        uses: actions/cache@v2
+        with:
+          path: 'qrono-rs/target/'
+          key: rs-${{ hashFiles('**/Cargo.*') }}-check
+          restore-keys: |
+              rs-${{ hashFiles('**/Cargo.*') }}-
+              rs-
+      - name: Check
+        run: cargo check --workspace
+  test:
+    runs-on: ubuntu-latest
+    needs: check
+    container:
+      image: rust:1.57
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Cache Rust dependencies
+        uses: actions/cache@v2
+        with:
+          path: 'qrono-rs/target/'
+          key: rs-${{ hashFiles('**/Cargo.*') }}-test
+          restore-keys: |
+              rs-${{ hashFiles('**/Cargo.*') }}-
+              rs-
+      - name: Run tests
+        run: cargo test --workspace
