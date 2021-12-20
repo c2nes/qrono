@@ -509,6 +509,7 @@ struct MemorySegmentFlusher {
     writer: MemorySegmentWriter,
     directory: PathBuf,
     compactor: TaskHandle<Compactor>,
+    compactor_future: TaskFuture<Compactor>,
 }
 
 struct RotatedSegment {
@@ -1217,17 +1218,13 @@ impl Queue {
                 coordinator: coordinator.clone(),
                 shared: Arc::clone(&shared),
             });
-            compactor_future.transfer(|(_, res)| {
-                if let Err(err) = res {
-                    error!("Compactor failed: {:?}", err);
-                }
-            });
             scheduler.register(MemorySegmentFlusher {
                 coordinator: coordinator.clone(),
                 shared: Arc::clone(&shared),
                 directory: directory.clone(),
                 writer,
                 compactor,
+                compactor_future,
             })
         };
 
@@ -1553,7 +1550,11 @@ impl Qrono {
             op_processor.segment_flusher.cancel();
             // Wait for the writer to stop, but ignore the result; a "Canceled" error is to be
             // expected.
-            let _ = op_processor.segment_flusher_future.take();
+            let segment_flusher = op_processor.segment_flusher_future.take().0;
+
+            // Cancel compactor as well.
+            segment_flusher.compactor.cancel();
+            let _ = segment_flusher.compactor_future.take();
 
             // Move out fields from the Queue and OpProcessor that we still need
             let name = queue.name;

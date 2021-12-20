@@ -26,12 +26,12 @@ use qrono::working_set::WorkingSet;
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 // TODO:
-//  - Compact segments
 //  - Configurable storage paths
 //  - Error handling (audit unwrap calls)
 //  - Compact working set
 
 // Done
+//  - Compact segments
 //  - Reload queues on startup
 //  - Deleting queues
 
