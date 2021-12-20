@@ -7,6 +7,7 @@ import static net.qrono.server.TestData.PENDING_4_T15;
 import static net.qrono.server.TestData.PENDING_5_T20;
 import static net.qrono.server.TestData.TOMBSTONE_1_T5;
 import static net.qrono.server.TestData.TOMBSTONE_3_T10;
+import static net.qrono.server.TestData.TOMBSTONE_4_T15;
 import static net.qrono.server.TestData.TOMBSTONE_5_T20;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -187,6 +188,39 @@ public class MergedSegmentReaderTest {
     assertEquals(PENDING_3_T10, reader.next());
     assertEquals(PENDING_4_T15, reader.next());
     assertEquals(TOMBSTONE_5_T20, reader.next());
+    assertNull(reader.next());
+  }
+
+  // testAddNewNextEntry variant that covers the special handling of buffer, unpaired tombstones.
+  @Test
+  public void testReplaceSegments_NextWasUnpairedTombstone() throws IOException {
+    MergedSegmentReader reader = new MergedSegmentReader();
+    Segment segment0 = new InMemorySegment(
+        new SegmentName(0, 0),
+        List.of(PENDING_2_T0, TOMBSTONE_4_T15));
+
+    Segment segment1 = new InMemorySegment(
+        new SegmentName(0, 1),
+        List.of(PENDING_1_T5, PENDING_5_T20));
+
+    reader.addSegment(segment0, Key.ZERO);
+
+    // The reader only contains segment0 currently so we should read 1_T5.
+    // Peeking should then return 5_T20, but this will change after we added segment1.
+    assertEquals(PENDING_2_T0, reader.next());
+    assertEquals(TOMBSTONE_4_T15.key(), reader.peek());
+
+    // Confirm that after adding segment1 that the head of the reader updates accordingly.
+    reader.replaceSegments(List.of(segment0), segment0, PENDING_2_T0.key());
+    reader.addSegment(segment1, PENDING_2_T0.key());
+    assertEquals(PENDING_1_T5.key(), reader.peek());
+
+    // Read the remaining items.
+    assertEquals(PENDING_1_T5, reader.next());
+    assertEquals(TOMBSTONE_4_T15, reader.next());
+    // BUG! TOMBSTONE_4_15 is returned twice!
+    // assertEquals(TOMBSTONE_4_T15, reader.next());
+    assertEquals(PENDING_5_T20, reader.next());
     assertNull(reader.next());
   }
 
