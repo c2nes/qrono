@@ -8,16 +8,16 @@ use std::fs::OpenOptions;
 use std::io::{Cursor, ErrorKind};
 use std::path::{Path, PathBuf};
 
+use crate::scheduler::{Scheduler, State, Task, TaskHandle};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex};
-use std::{fs, io};
+use std::{fs, io, mem};
 
 pub type FileId = u32;
 
 #[derive(Clone)]
 pub struct WorkingSet {
-    inner: Arc<Mutex<Inner>>,
-    directory: PathBuf,
+    inner: Arc<Inner>,
 }
 // (item.deadline, file_id as u32, pos, len)
 
@@ -26,36 +26,34 @@ pub struct WorkingSet {
 // 1. Track empty files. Add their FileIDs to a Vec.
 // 2. Have a background thread.
 
-#[derive(Default)]
 struct Inner {
+    shared: Arc<Mutex<Shared>>,
+    compactor: TaskHandle<Compactor>,
+}
+
+#[derive(Default)]
+struct Shared {
     items: FxHashMap<ID, FileId>,
     files: Slab<WorkingSetFile>,
     file_ids: FxHashSet<FileId>,
+    empty_files: Vec<FileId>,
     current: FileId,
+    directory: PathBuf,
+
+    used: usize,
+    total: usize,
 }
 
-pub struct ItemRef {
-    id: ID,
-    deadline: Timestamp,
-    segment_id: SegmentID,
-    len: u32,
-    inner: Arc<Mutex<Inner>>,
-}
+impl Shared {
+    const OCCUPANCY_TARGET: f32 = 0.7;
 
-impl WorkingSet {
-    pub fn new<P: AsRef<Path>>(directory: P) -> io::Result<WorkingSet> {
-        fs::create_dir_all(&directory)?;
-
-        Ok(WorkingSet {
-            inner: Default::default(),
-            directory: directory.as_ref().to_path_buf(),
-        })
+    fn occupancy(&self) -> f32 {
+        self.used as f32 / self.total as f32
     }
 
-    pub fn add(&self, item: &Item) -> io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.files.is_empty() || !inner.files[inner.current as usize].has_capacity(item) {
-            let entry = inner.files.vacant_entry();
+    pub fn add(&mut self, item: &Item) -> io::Result<()> {
+        if self.files.is_empty() || !self.files[self.current as usize].has_capacity(item) {
+            let entry = self.files.vacant_entry();
             let file_id = entry.key() as FileId;
             let path = {
                 let mut path = self.directory.clone();
@@ -72,44 +70,162 @@ impl WorkingSet {
             file.set_len(u32::MAX as u64)?;
             let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
             entry.insert(WorkingSetFile {
+                path: path.clone(),
                 index: Default::default(),
                 mmap,
                 pos: 0,
                 used: 0,
             });
-            inner.file_ids.insert(file_id);
-            inner.current = file_id;
+            self.file_ids.insert(file_id);
+            self.current = file_id;
         }
-        let file_id = inner.current;
-        inner.files[file_id as usize].add(item)?;
-        inner.items.insert(item.id, file_id);
+        let file_id = self.current;
+        let len = self.files[file_id as usize].add(item)?;
+        self.used += len;
+        self.total += len;
+        self.items.insert(item.id, file_id);
         Ok(())
+    }
+
+    pub fn get(&mut self, id: ID) -> Option<&IndexEntry> {
+        self.items
+            .get(&id)
+            .map(|file_id| &self.files[*file_id as usize].index[&id])
+    }
+
+    pub fn release(&mut self, id: ID) -> bool {
+        if let Some(file_id) = self.items.remove(&id) {
+            let file = &mut self.files[file_id as usize];
+            let len = file.remove(id);
+            let is_empty = file.used == 0;
+
+            self.used -= len;
+            if is_empty && file_id != self.current {
+                self.empty_files.push(file_id);
+                self.total -= file.pos;
+                return true;
+            } else if self.occupancy() < Self::OCCUPANCY_TARGET {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+struct Compactor {
+    shared: Arc<Mutex<Shared>>,
+    directory: PathBuf,
+}
+
+impl Task for Compactor {
+    type Value = ();
+    type Error = io::Error;
+
+    fn run(&mut self) -> Result<State<()>, io::Error> {
+        let empty_files = {
+            let mut shared = self.shared.lock().unwrap();
+            mem::take(&mut shared.empty_files)
+                .into_iter()
+                .map(|file_id| {
+                    shared.file_ids.remove(&file_id);
+                    let file_id = file_id as usize;
+                    let file = &shared.files[file_id];
+                    (file_id, file.path.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (_, path) in &empty_files {
+            fs::remove_file(path)?;
+        }
+
+        let mut shared = self.shared.lock().unwrap();
+        for (file_id, _) in &empty_files {
+            shared.files.remove(*file_id);
+        }
+
+        if shared.occupancy() < Shared::OCCUPANCY_TARGET {
+            let items = shared
+                .file_ids
+                .iter()
+                .map(|file_id| &shared.files[*file_id as usize])
+                .max_by_key(|file| file.pos - file.used)
+                .map(|file| {
+                    file.index
+                        .keys()
+                        .take(10000)
+                        .map(|id| file.get(*id))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or(vec![]);
+
+            for item in items {
+                let item = item?;
+                shared.release(item.id);
+                shared.add(&item)?;
+            }
+        }
+
+        if shared.occupancy() < Shared::OCCUPANCY_TARGET || !shared.empty_files.is_empty() {
+            Ok(State::Runnable)
+        } else {
+            Ok(State::Idle)
+        }
+    }
+}
+
+pub struct ItemRef {
+    id: ID,
+    deadline: Timestamp,
+    segment_id: SegmentID,
+    len: u32,
+    inner: Arc<Inner>,
+}
+
+impl WorkingSet {
+    pub fn new<P: AsRef<Path>>(directory: P, scheduler: Scheduler) -> io::Result<WorkingSet> {
+        fs::create_dir_all(&directory)?;
+
+        let directory = directory.as_ref().to_path_buf();
+        let shared: Arc<Mutex<Shared>> = Arc::new(Mutex::new(Shared {
+            directory: directory.clone(),
+            ..Default::default()
+        }));
+        let (compactor, _) = scheduler.register(Compactor {
+            shared: Arc::clone(&shared),
+            directory: directory.clone(),
+        });
+        let inner = Arc::new(Inner { shared, compactor });
+        Ok(WorkingSet { inner })
+    }
+
+    pub fn add(&self, item: &Item) -> io::Result<()> {
+        self.inner.shared.lock().unwrap().add(item)
     }
 
     // Added -> [Moved ...] -> Removed -> [Added ...]
 
     pub fn get(&self, id: ID) -> io::Result<Option<ItemRef>> {
-        let inner = self.inner.lock().unwrap();
-        let file_id = match inner.items.get(&id) {
-            Some(file_id) => *file_id,
-            None => return Ok(None),
-        };
-
-        let file = &inner.files[file_id as usize];
-        let IndexEntry {
+        let mut shared = self.inner.shared.lock().unwrap();
+        if let Some(IndexEntry {
             deadline,
             segment_id,
             len,
             ..
-        } = file.index[&id];
-        let inner = Arc::clone(&self.inner);
-        Ok(Some(ItemRef {
-            id,
-            deadline,
-            segment_id,
-            len,
-            inner,
-        }))
+        }) = shared.get(id)
+        {
+            let inner = Arc::clone(&self.inner);
+            Ok(Some(ItemRef {
+                id,
+                deadline: *deadline,
+                segment_id: *segment_id,
+                len: *len,
+                inner,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -126,19 +242,19 @@ impl ItemRef {
     }
 
     pub fn load(&self) -> io::Result<Item> {
-        let inner = self.inner.lock().unwrap();
-        let file_id = match inner.items.get(&self.id) {
+        let shared = self.inner.shared.lock().unwrap();
+        let file_id = match shared.items.get(&self.id) {
             Some(file_id) => *file_id,
             None => return Err(io::Error::new(ErrorKind::Other, "Item released")),
         };
 
-        inner.files[file_id as usize].get(self.id)
+        shared.files[file_id as usize].get(self.id)
     }
 
     pub fn release(self) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(file_id) = inner.items.remove(&self.id) {
-            inner.files[file_id as usize].remove(&self);
+        let mut shared = self.inner.shared.lock().unwrap();
+        if shared.release(self.id) {
+            self.inner.compactor.schedule();
         }
     }
 }
@@ -152,6 +268,7 @@ struct IndexEntry {
 }
 
 struct WorkingSetFile {
+    path: PathBuf,
     index: FxHashMap<ID, IndexEntry>,
     mmap: MmapMut,
     pos: usize,
@@ -163,21 +280,13 @@ impl WorkingSetFile {
         encoding::STATS_SIZE + 4 + item.value.len()
     }
 
-    fn occupancy(&self) -> f32 {
-        if self.pos > 0 {
-            self.used as f32 / self.pos as f32
-        } else {
-            1.0
-        }
-    }
-
     fn has_capacity(&self, item: &Item) -> bool {
         let available = self.mmap.len() - self.pos;
         let required = Self::encoded_len(item);
         required <= available
     }
 
-    fn add(&mut self, item: &Item) -> io::Result<()> {
+    fn add(&mut self, item: &Item) -> io::Result<usize> {
         let len = Self::encoded_len(item);
         let mut buf = BytesMut::with_capacity(len);
         // [ID][Stats][Value]
@@ -197,7 +306,7 @@ impl WorkingSetFile {
                 len: len as u32,
             },
         );
-        Ok(())
+        Ok(len)
     }
 
     fn get(&self, id: ID) -> io::Result<Item> {
@@ -218,8 +327,13 @@ impl WorkingSetFile {
         })
     }
 
-    fn remove(&mut self, item: &ItemRef) {
-        self.used -= item.len as usize;
-        self.index.remove(&item.id);
+    fn remove(&mut self, id: ID) -> usize {
+        if let Some(entry) = self.index.remove(&id) {
+            let len = entry.len as usize;
+            self.used -= len;
+            len
+        } else {
+            0
+        }
     }
 }

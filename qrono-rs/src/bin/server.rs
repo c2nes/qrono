@@ -657,7 +657,7 @@ fn main() -> io::Result<()> {
     let scheduler = Scheduler::new(StaticPool::new(2));
     let deletion_scheduler = Scheduler::new(StaticPool::new(1));
     let id_generator = IdGenerator::new("/tmp/id", scheduler.clone()).unwrap();
-    let working_set = WorkingSet::new("/tmp/qrono-working").unwrap();
+    let working_set = WorkingSet::new("/tmp/qrono-working", scheduler.clone()).unwrap();
     let qrono = Qrono::new(
         scheduler.clone(),
         id_generator,
