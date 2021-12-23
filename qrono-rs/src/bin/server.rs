@@ -4,7 +4,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
-use std::{io, str};
+use std::{fs, io, str};
 
 use bytes::{Buf, Bytes, BytesMut};
 use log::{error, info, warn};
@@ -671,6 +671,8 @@ fn main() -> io::Result<()> {
 
     let start = Instant::now();
     info!("Starting...");
+
+    fs::create_dir_all(&opts.data)?;
 
     let scheduler = Scheduler::new(StaticPool::new(opts.workers.unwrap_or_else(|| {
         let n = num_cpus::get();

@@ -6,6 +6,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "qrono"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "qrono-bench"
+path = "src/bin/qrono_bench.rs"
+
 [profile.release]
 debug = true
 
