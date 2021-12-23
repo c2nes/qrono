@@ -45,7 +45,7 @@ struct Shared {
 }
 
 impl Shared {
-    const OCCUPANCY_TARGET: f32 = 0.7;
+    const OCCUPANCY_TARGET: f32 = 0.1;
 
     fn occupancy(&self) -> f32 {
         self.used as f32 / self.total as f32
@@ -67,7 +67,7 @@ impl Shared {
                 .create(true)
                 .truncate(true)
                 .open(&path)?;
-            file.set_len(u32::MAX as u64)?;
+            file.set_len(100 * 1024 * 1024)?;
             let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
             entry.insert(WorkingSetFile {
                 path: path.clone(),
