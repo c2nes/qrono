@@ -1,13 +1,13 @@
 use std::io::{ErrorKind, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use std::{io, str};
 
 use bytes::{Buf, Bytes, BytesMut};
 use log::{error, info, warn};
-
 use qrono::data::Timestamp;
 use qrono::id_generator::IdGenerator;
 use qrono::io::ReadBufUninitialized;
@@ -21,6 +21,7 @@ use qrono::redis::{PutValue, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::service::{Error, Qrono};
 use qrono::working_set::WorkingSet;
+use structopt::StructOpt;
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -647,25 +648,47 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
     Ok(())
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "qrono")]
+struct Opts {
+    /// Listen address
+    #[structopt(long, default_value = "0.0.0.0:16389")]
+    listen: String,
+
+    /// Data directory
+    #[structopt(long, parse(from_os_str), default_value = "/tmp/qrono")]
+    data: PathBuf,
+
+    /// Number of CPU worker threads to use
+    #[structopt(long)]
+    workers: Option<usize>,
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
+
+    let opts: Opts = Opts::from_args();
 
     let start = Instant::now();
     info!("Starting...");
 
-    // let scheduler = Scheduler::new(ThreadPoolBuilder::default().build().unwrap());
-    let scheduler = Scheduler::new(StaticPool::new(2));
+    let scheduler = Scheduler::new(StaticPool::new(opts.workers.unwrap_or_else(|| {
+        let n = num_cpus::get();
+        info!("Using {} scheduler threads.", n);
+        n
+    })));
     let deletion_scheduler = Scheduler::new(StaticPool::new(1));
-    let id_generator = IdGenerator::new("/tmp/id", scheduler.clone()).unwrap();
-    let working_set = WorkingSet::new("/tmp/qrono-working", scheduler.clone()).unwrap();
+    let id_generator = IdGenerator::new(opts.data.join("id"), scheduler.clone()).unwrap();
+    let working_set_scheduler = Scheduler::new(StaticPool::new(1));
+    let working_set = WorkingSet::new(opts.data.join("working"), working_set_scheduler).unwrap();
     let qrono = Qrono::new(
         scheduler.clone(),
         id_generator,
         working_set,
-        "/tmp/qrono",
+        opts.data.join("queues"),
         deletion_scheduler,
     );
-    let listener = TcpListener::bind("0.0.0.0:16389")?;
+    let listener = TcpListener::bind(&opts.listen)?;
     info!("Ready. Started in {:?}.", Instant::now() - start);
     for conn in listener.incoming() {
         let qrono = qrono.clone();

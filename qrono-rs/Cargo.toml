@@ -23,6 +23,8 @@ redis = "0.19"
 dashmap = "4"
 tempfile = "3.2"
 backtrace = "0.3"
+structopt = "0.3"
+num_cpus = "1"
 
 tokio = { version = "1", features = ["full"] }
 mio = { version = "0.7", features = ["os-poll", "net"] }
