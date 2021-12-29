@@ -21,6 +21,7 @@ use qrono::redis::{PutValue, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::service::{Error, Qrono};
 use qrono::working_set::WorkingSet;
+use rayon::ThreadPoolBuilder;
 use structopt::StructOpt;
 
 #[global_allocator]
@@ -662,6 +663,10 @@ struct Opts {
     /// Number of CPU worker threads to use
     #[structopt(long)]
     workers: Option<usize>,
+
+    /// Use Rayon thread pools.
+    #[structopt(long)]
+    rayon: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -674,11 +679,21 @@ fn main() -> io::Result<()> {
 
     fs::create_dir_all(&opts.data)?;
 
-    let scheduler = Scheduler::new(StaticPool::new(opts.workers.unwrap_or_else(|| {
-        let n = num_cpus::get();
-        info!("Using {} scheduler threads.", n);
-        n
-    })));
+    let scheduler = if opts.rayon {
+        Scheduler::new(
+            ThreadPoolBuilder::new()
+                .num_threads(opts.workers.unwrap_or(0))
+                .build()
+                .unwrap(),
+        )
+    } else {
+        Scheduler::new(StaticPool::new(opts.workers.unwrap_or_else(|| {
+            let n = num_cpus::get();
+            info!("Using {} scheduler threads.", n);
+            n
+        })))
+    };
+
     let deletion_scheduler = Scheduler::new(StaticPool::new(1));
     let id_generator = IdGenerator::new(opts.data.join("id"), scheduler.clone()).unwrap();
     let working_set_scheduler = Scheduler::new(StaticPool::new(1));
