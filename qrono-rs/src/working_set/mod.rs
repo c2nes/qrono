@@ -9,6 +9,7 @@ use std::io::{Cursor, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use crate::scheduler::{Scheduler, State, Task, TaskHandle};
+use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex};
 use std::{fs, io, mem};
@@ -52,37 +53,46 @@ impl Shared {
     }
 
     pub fn add(&mut self, item: &Item) -> io::Result<()> {
-        if self.files.is_empty() || !self.files[self.current as usize].has_capacity(item) {
-            let entry = self.files.vacant_entry();
-            let file_id = entry.key() as FileId;
-            let path = {
-                let mut path = self.directory.clone();
-                path.push(format!("working.{}", file_id));
-                path
-            };
+        let file = match self.files.get_mut(self.current as usize) {
+            Some(file) if file.has_capacity(item) => file,
+            old_file => {
+                if let Some(old_file) = old_file {
+                    self.used += old_file.used;
+                    self.total += old_file.pos;
+                }
 
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&path)?;
-            file.set_len(100 * 1024 * 1024)?;
-            let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
-            entry.insert(WorkingSetFile {
-                path: path.clone(),
-                index: Default::default(),
-                mmap,
-                pos: 0,
-                used: 0,
-            });
-            self.file_ids.insert(file_id);
-            self.current = file_id;
-        }
+                let entry = self.files.vacant_entry();
+                let file_id = entry.key() as FileId;
+                let path = {
+                    let mut path = self.directory.clone();
+                    path.push(format!("working.{}", file_id));
+                    path
+                };
+
+                self.file_ids.insert(file_id);
+                self.current = file_id;
+
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&path)?;
+                file.set_len(100 * 1024 * 1024)?;
+                let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+
+                entry.insert(WorkingSetFile {
+                    path: path.clone(),
+                    index: Default::default(),
+                    mmap,
+                    pos: 0,
+                    used: 0,
+                })
+            }
+        };
+
         let file_id = self.current;
-        let len = self.files[file_id as usize].add(item)?;
-        self.used += len;
-        self.total += len;
+        file.add(item)?;
         self.items.insert(item.id, file_id);
         Ok(())
     }
@@ -97,12 +107,17 @@ impl Shared {
         if let Some(file_id) = self.items.remove(&id) {
             let file = &mut self.files[file_id as usize];
             let len = file.remove(id);
-            let is_empty = file.used == 0;
+            if file_id != self.current {
+                self.used -= len;
+            }
 
-            self.used -= len;
-            if is_empty && file_id != self.current {
-                self.empty_files.push(file_id);
-                self.total -= file.pos;
+            if file.used == 0 {
+                if file_id == self.current {
+                    file.pos = 0;
+                } else {
+                    self.total -= file.pos;
+                    self.empty_files.push(file_id);
+                }
                 return true;
             } else if self.occupancy() < Self::OCCUPANCY_TARGET {
                 return true;
@@ -145,7 +160,12 @@ impl Task for Compactor {
             shared.files.remove(*file_id);
         }
 
-        if shared.occupancy() < Shared::OCCUPANCY_TARGET {
+        let occupancy = shared.occupancy();
+        if occupancy < Shared::OCCUPANCY_TARGET {
+            info!(
+                "Working set compaction triggered; occupancy={:.3}, used={}, total={}",
+                occupancy, shared.used, shared.total,
+            );
             let items = shared
                 .file_ids
                 .iter()
