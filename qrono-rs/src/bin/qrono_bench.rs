@@ -8,7 +8,7 @@ use std::sync::{Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clap::{App, Arg, ArgMatches};
+use clap::{App, Arg, ArgMatches, Values};
 use hdrhistogram::Histogram;
 use redis::{
     ConnectionAddr, ConnectionInfo, FromRedisValue, IntoConnectionInfo, RedisResult, Value,
@@ -268,7 +268,7 @@ impl<T: num::Integer + Copy> Batching for T {}
 
 struct Benchmark {
     target: HostAndPort,
-    queue_name: String,
+    queue_names: Vec<String>,
     count: HumanSize,
     size: usize,
     // value size
@@ -302,9 +302,13 @@ impl Benchmark {
         hist.lock().unwrap().saturating_record(nanos);
     }
 
-    fn run_consumer(&self, client: &redis::Client, count: u64) -> Result<(), Error> {
+    fn run_consumer(
+        &self,
+        client: &redis::Client,
+        queue_name: String,
+        count: u64,
+    ) -> Result<(), Error> {
         let mut conn = client.get_connection().unwrap();
-        let queue_name = self.queue_name.clone();
         let pipeline = self.pipeline;
 
         let mut remaining = count;
@@ -348,11 +352,15 @@ impl Benchmark {
         Ok(())
     }
 
-    fn run_publisher(&self, client: &redis::Client, n: u64) -> Result<(), Error> {
+    fn run_publisher(
+        &self,
+        client: &redis::Client,
+        queue_name: String,
+        n: u64,
+    ) -> Result<(), Error> {
         let mut limiter = RateLimiter::new(self.publish_rate / self.publisher_count as f64);
         let mut value = vec![b'A'; self.size];
         let mut conn = client.get_connection().unwrap();
-        let queue_name = self.queue_name.clone();
 
         for (_, count) in n.batches(self.pipeline as u64) {
             limiter.acquire(count as u32);
@@ -375,6 +383,19 @@ impl Benchmark {
     }
 
     fn run(&self) -> Result<(), Error> {
+        crossbeam::scope(|s| {
+            for queue_name in &self.queue_names {
+                s.spawn(move |_| {
+                    self.run_queue(queue_name.clone()).unwrap();
+                });
+            }
+        })
+        .unwrap();
+
+        Ok(())
+    }
+
+    fn run_queue(&self, queue_name: String) -> Result<(), Error> {
         let client = redis::Client::open(&self.target).unwrap();
         let n = self.count.0;
 
@@ -388,9 +409,10 @@ impl Benchmark {
                 for (_, count) in n.partition(self.consumer_count) {
                     let client = &client;
                     let consumer_barrier = &consumer_barrier;
+                    let queue_name = queue_name.clone();
                     let handle = s.spawn(move |_| {
                         consumer_barrier.wait();
-                        self.run_consumer(client, count).unwrap();
+                        self.run_consumer(client, queue_name, count).unwrap();
                     });
 
                     consumers.push(handle);
@@ -401,10 +423,11 @@ impl Benchmark {
             for (_, n) in n.partition(self.publisher_count) {
                 let client = &client;
                 let publisher_barrier = &publisher_barrier;
+                let queue_name = queue_name.clone();
 
                 publishers.push(s.spawn(move |_| {
                     publisher_barrier.wait();
-                    self.run_publisher(client, n).unwrap();
+                    self.run_publisher(client, queue_name, n).unwrap();
                 }));
             }
 
@@ -425,7 +448,7 @@ impl Benchmark {
                 Mode::PublishThenDelete => {
                     let mut conn = client.get_connection().unwrap();
                     redis::cmd("DELETE")
-                        .arg(&self.queue_name)
+                        .arg(&queue_name)
                         .query::<bool>(&mut conn)
                         .unwrap();
                 }
@@ -594,9 +617,11 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("queue_name")
-                .long("queue-name")
-                .help("Queue name (default random)")
+            Arg::with_name("queue_names")
+                .short("q")
+                .long("queue-names")
+                .help("Queue names (default random)")
+                .multiple(true)
                 .takes_value(true),
         )
         .arg(
@@ -620,15 +645,21 @@ fn main() {
         )
         .get_matches();
 
-    let name = arg_or(&matches, "queue_name", || {
-        let name = format!("q-{}", rand::random::<u32>());
-        println!("Generated queue name: {}", name);
-        name
-    });
+    let names = match matches.values_of("queue_names") {
+        Some(args) => args
+            .flat_map(|s| s.split(&[',', ' '][..]))
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        None => {
+            let name = format!("q-{}", rand::random::<u32>());
+            println!("Generated queue name: {}", name);
+            vec![name]
+        }
+    };
 
     let benchmark = Benchmark {
         target: arg(&matches, "target"),
-        queue_name: name,
+        queue_names: names.clone(),
         count: arg(&matches, "count"),
         size: arg(&matches, "size"),
         consumer_count: arg(&matches, "consumer_count"),
@@ -653,6 +684,17 @@ fn main() {
     };
 
     benchmark.run().unwrap();
+    if names.len() > 1 {
+        let total_count = names.len() as u64 * benchmark.count.0;
+        let total_time = benchmark.base_time.elapsed();
+        println!(
+            "Overall rate: count={}, duration={:?}, rate={:.3}",
+            total_count,
+            total_time,
+            total_count as f64 / total_time.as_secs_f64(),
+        );
+    }
+
     println!(
         "Enqueue:    {}",
         format_histogram(&benchmark.hist_enqueue.lock().unwrap())

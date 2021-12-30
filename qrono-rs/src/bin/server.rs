@@ -4,7 +4,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
-use std::{fs, io, str};
+use std::{fs, io, str, thread};
 
 use bytes::{Buf, Bytes, BytesMut};
 use log::{error, info, warn};
@@ -710,7 +710,13 @@ fn main() -> io::Result<()> {
     for conn in listener.incoming() {
         let qrono = qrono.clone();
         let scheduler = scheduler.clone();
-        std::thread::spawn(move || handle_client(qrono, scheduler, conn?));
+        let conn = conn?;
+        let addr = conn.peer_addr()?;
+        info!("Accepted connection from {}", &addr);
+        thread::Builder::new()
+            .name(format!("QronoClient[{}]", &addr))
+            .spawn(move || handle_client(qrono, scheduler, conn))
+            .unwrap();
     }
 
     Ok(())
