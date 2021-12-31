@@ -5,14 +5,14 @@ runcmd:
 
 package_update: true
 packages:
+- build-essential
 - git
 - tmux
-- gcc
 
 write_files:
 # The write-files module is configured to run before the users-groups modules so
 # we place these files in /etc/skel instead of putting them directly into
-# /home/ec2-user.
+# /home/ubuntu.
 - path: /etc/skel/.tmux.conf
   content: "${filebase64("${root}/tmux.conf")}"
   owner: root:root
@@ -26,7 +26,7 @@ write_files:
   permissions: '0644'
   encoding: b64
 
-# ec2-user init script
+# ubuntu user init script
 - path: /etc/skel/bin/user.init.sh
   content: "${filebase64("${root}/client-user.init.sh")}"
   owner: root:root

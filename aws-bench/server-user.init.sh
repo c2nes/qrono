@@ -4,32 +4,64 @@ set -euo pipefail
 
 cd "$HOME"
 
-# Symlink go/gofmt to gv for ec2-user...really seems like cloudinit should be
-# able to write symlinks, but here we are...
+# Symlink go/gofmt to gv for the ubuntu user...really seems like cloudinit
+# should be able to write symlinks, but here we are...
 ln -sv gv bin/go
 ln -sv gv bin/gofmt
 
 # For local tools, including Maven
 mkdir -p local
 
-# Install Maven
-MVN_VERSION="3.6.3"
-MVN_URL="https://downloads.apache.org/maven/maven-3/${MVN_VERSION}/binaries/apache-maven-${MVN_VERSION}-bin.tar.gz"
-curl -fsL "$MVN_URL" | tar -C local -xzf -
-ln -sv "$HOME/local/apache-maven-${MVN_VERSION}/bin/mvn" bin/mvn
+# Install async-profiler
+curl -fsL 'https://github.com/jvm-profiling-tools/async-profiler/releases/download/v2.0/async-profiler-2.0-linux-x64.tar.gz' \
+    | tar xzf - -C /var/lib/qrono
+
+# Install the Rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
 
 # Clone qrono
 git clone https://github.com/c2nes/qrono.git
 
-# Build Qrono server JAR
-(cd qrono && mvn -B package)
+# Build and install Qrono
+cargo install --path qrono/qrono-rs --bin qrono
 
-# Build Qrono gateway binary
-(cd qrono/gateway && go build .)
+# Build and install redis tools
+curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'
+tar -xzf redis-6.2.3.tar.gz
+(cd "$HOME/redis-6.2.3" && make && sudo make install)
+
+# Hotspot
+mkdir "$HOME/src"
+cd "$HOME/src"
+(
+    git clone https://github.com/rust-lang/rustc-demangle
+    cd rustc-demangle
+    cargo build -p rustc-demangle-capi --release
+    sudo cp target/release/librustc_demangle.so /usr/local/lib
+    sudo cp crates/capi/include/rustc_demangle.h /usr/local/include
+    sudo ldconfig
+)
+(
+    git clone https://github.com/KDAB/KDDockWidgets
+    mkdir KDDockWidgets-build
+    cd KDDockWidgets-build
+    cmake -G Ninja -DCMAKE_INSTALL_PREFIX=/usr/local ../KDDockWidgets
+    cmake --build .
+    sudo cmake --build . --target install
+)
+(
+    git clone --recurse-submodules https://github.com/KDAB/hotspot
+    mkdir hotspot-build
+    cd hotspot-build
+    cmake ../hotspot
+    make
+    sudo make install
+)
 
 # Start server in tmux
 tmux new-window -d -c "$HOME/qrono" -n server
-tmux send-keys -l -t server $'docker-run\n'
+tmux send-keys -l -t server $'RUST_LOG=debug RUST_BACKTRACE=full qrono --listen 0.0.0.0:16379 --data /var/lib/qrono\n'
 
 # Start top and enable some colors
 tmux new-window -n top
@@ -40,7 +72,7 @@ sleep 0.1; tmux send-keys -l -t top W
 
 # Monitor "q" size
 tmux new-window -n q-size
-tmux send-keys -l -t q-size $'watch -c "curl -s localhost:16380/v1/queues/q | jq -C ."\n'
+tmux send-keys -l -t q-size $'watch "redis-cli -p 16379 info q"\n'
 
 # Start a shell
 tmux new-window -n shell

@@ -1,4 +1,4 @@
 #!/bin/sh
 
 CLIENT_IP="$(cd "$(dirname "$0")" && terraform output -raw client_ip)"
-exec ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "ec2-user@${CLIENT_IP}" "$@"
+exec ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "ubuntu@${CLIENT_IP}" "$@"

@@ -116,6 +116,14 @@ resource "aws_security_group" "default" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # xrdp
+  ingress {
+    protocol    = "tcp"
+    from_port   = 3389
+    to_port     = 3389
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     protocol    = "-1"
     from_port   = 0
@@ -138,13 +146,12 @@ resource "aws_key_pair" "default" {
 }
 
 data "aws_ami" "default" {
-  owners      = ["amazon"]
+  owners      = ["099720109477"] # ubuntu
   most_recent = true
-  name_regex  = "-gp2$"
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-impish-21.10-*"]
   }
 
   filter {
@@ -211,7 +218,8 @@ resource "aws_instance" "server" {
 
   ebs_block_device {
     device_name           = "/dev/sdf"
-    volume_type           = "gp2"
+    volume_type           = "io2"
+    iops                  = 16000
     delete_on_termination = true
     volume_size           = 50 # GB
   }

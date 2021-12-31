@@ -89,6 +89,12 @@ go_list_versions() {
         | cut -f2
 }
 
+go_has_go_install() {
+    # "go install" has been preferred for installing packages since go1.16 which
+    # also introduced the io/fs package.
+    ${1:-go} list io/fs > /dev/null 2>&1
+}
+
 go_install() {
     N="$1"
 
@@ -123,7 +129,11 @@ go_install() {
             # Set GOVERSION explicitly to ensure a stable release is used to
             # install gotip and to prevent a potential infinite loop attempting
             # to install gotip using gotip.
-            GOVERSION=stable go get golang.org/dl/gotip
+            if GOVERSION=stable go_has_go_install; then
+                GOVERSION=stable go install golang.org/dl/gotip@latest
+            else
+                GOVERSION=stable go get golang.org/dl/gotip
+            fi
             GOVERSION=stable gotip download
         )
 
@@ -189,7 +199,12 @@ go_install() {
                     ;;
 
                 *)
-                    GOROOT="$PWD/go" go/bin/go get "golang.org/dl/$V"
+                    if GOROOT="$PWD/go" go_has_go_install go/bin/go; then
+                        GOROOT="$PWD/go" go/bin/go install "golang.org/dl/$V@latest"
+                    else
+                        GOROOT="$PWD/go" go/bin/go get "golang.org/dl/$V"
+                    fi
+
                     touch "go/.unpacked-success"
                     ;;
             esac

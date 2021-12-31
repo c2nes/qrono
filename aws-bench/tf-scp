@@ -10,13 +10,13 @@ trap "rm -f '$CONFIG'" EXIT
 
 cat <<EOF > "$CONFIG"
 Host server
-User ec2-user
+User ubuntu
 Hostname $SERVER_IP
 UserKnownHostsFile /dev/null
 StrictHostKeyChecking no
 
 Host client
-User ec2-user
+User ubuntu
 Hostname $CLIENT_IP
 UserKnownHostsFile /dev/null
 StrictHostKeyChecking no

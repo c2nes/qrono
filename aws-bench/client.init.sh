@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Start user level initialization in tmux
-runuser -u ec2-user -- bash -s <<'EOF'
+runuser -u ubuntu -- bash -s <<'EOF'
 set -euo pipefail
 cd "$HOME"
 tmux new-session -d -n init; sleep 1

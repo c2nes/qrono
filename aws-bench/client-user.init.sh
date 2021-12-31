@@ -17,8 +17,7 @@ tmux new-window -d -c "$HOME/redis-6.2.3" -n redis
 sleep 0.5; tmux send-keys -l -t redis $'make && sudo make install\n'
 
 # Build qrono-bench
-cd qrono/qrono-bench
-cargo build --release
+cargo install --path qrono/qrono-rs --bin qrono-bench
 
-tmux new-window -c "$HOME/qrono/qrono-bench" -n benchmark
-sleep 0.5; tmux send-keys -l -t benchmark 'target/release/qrono-bench -t server.qrono.test:16379 -r 250000 -n 2000000 -c 2 -C 500 --wait-to-consume --queue-name q'
+tmux new-window -c "$HOME/qrono/qrono-rs" -n benchmark
+sleep 0.5; tmux send-keys -l -t benchmark 'qrono-bench -t server.qrono.test:16379 -r 1e6 -n 10M --mode publish-then-delete --pipeline 100 -P 10 --queue-name q'
