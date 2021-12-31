@@ -34,6 +34,7 @@ struct Stripe {
 
 #[derive(Default)]
 struct Shared {
+    stripe_idx: usize,
     items: FxHashMap<ID, FileId>,
     files: Slab<WorkingSetFile>,
     file_ids: FxHashSet<FileId>,
@@ -65,7 +66,7 @@ impl Shared {
                 let file_id = entry.key() as FileId;
                 let path = {
                     let mut path = self.directory.clone();
-                    path.push(format!("working.{}", file_id));
+                    path.push(format!("working.{}.{}", self.stripe_idx, file_id));
                     path
                 };
 
@@ -204,19 +205,30 @@ pub struct ItemRef<'a> {
 }
 
 impl WorkingSet {
-    pub fn new<P: AsRef<Path>>(directory: P, scheduler: Scheduler) -> io::Result<WorkingSet> {
-        fs::create_dir_all(&directory)?;
+    pub fn new(stripes: Vec<(PathBuf, Scheduler)>) -> io::Result<WorkingSet> {
+        for (directory, _) in &stripes {
+            fs::create_dir_all(&directory)?;
+        }
 
-        let directory = directory.as_ref().to_path_buf();
-        let shared: Arc<Mutex<Shared>> = Arc::new(Mutex::new(Shared {
-            directory: directory.clone(),
-            ..Default::default()
-        }));
-        let (compactor, _) = scheduler.register(Compactor {
-            shared: Arc::clone(&shared),
-            directory: directory.clone(),
-        });
-        let stripes = Arc::new(vec![Stripe { shared, compactor }]);
+        let stripes = stripes
+            .into_iter()
+            .enumerate()
+            .map(|(stripe_idx, (directory, scheduler))| {
+                let shared = Arc::new(Mutex::new(Shared {
+                    stripe_idx,
+                    directory: directory.clone(),
+                    ..Default::default()
+                }));
+
+                let (compactor, _) = scheduler.register(Compactor {
+                    shared: Arc::clone(&shared),
+                    directory: directory.clone(),
+                });
+                Stripe { shared, compactor }
+            })
+            .collect::<Vec<_>>()
+            .into();
+
         Ok(WorkingSet { stripes })
     }
 

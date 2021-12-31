@@ -667,6 +667,10 @@ struct Opts {
     /// Use Rayon thread pools.
     #[structopt(long)]
     rayon: bool,
+
+    /// Number of working set stripes.
+    #[structopt(long, default_value = "1")]
+    working_set_stripes: usize,
 }
 
 fn main() -> io::Result<()> {
@@ -697,7 +701,11 @@ fn main() -> io::Result<()> {
     let deletion_scheduler = Scheduler::new(StaticPool::new(1));
     let id_generator = IdGenerator::new(opts.data.join("id"), scheduler.clone()).unwrap();
     let working_set_scheduler = Scheduler::new(StaticPool::new(1));
-    let working_set = WorkingSet::new(opts.data.join("working"), working_set_scheduler).unwrap();
+    let working_set_dir = opts.data.join("working");
+    let working_set_stripes = (0..opts.working_set_stripes)
+        .map(|_| (working_set_dir.clone(), working_set_scheduler.clone()))
+        .collect::<Vec<_>>();
+    let working_set = WorkingSet::new(working_set_stripes).unwrap();
     let qrono = Qrono::new(
         scheduler.clone(),
         id_generator,
