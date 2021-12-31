@@ -18,7 +18,7 @@ pub type FileId = u32;
 
 #[derive(Clone)]
 pub struct WorkingSet {
-    inner: Arc<Inner>,
+    stripes: Arc<Vec<Stripe>>,
 }
 // (item.deadline, file_id as u32, pos, len)
 
@@ -27,7 +27,7 @@ pub struct WorkingSet {
 // 1. Track empty files. Add their FileIDs to a Vec.
 // 2. Have a background thread.
 
-struct Inner {
+struct Stripe {
     shared: Arc<Mutex<Shared>>,
     compactor: TaskHandle<Compactor>,
 }
@@ -195,12 +195,12 @@ impl Task for Compactor {
     }
 }
 
-pub struct ItemRef {
+pub struct ItemRef<'a> {
     id: ID,
     deadline: Timestamp,
     segment_id: SegmentID,
     len: u32,
-    inner: Arc<Inner>,
+    stripe: &'a Stripe,
 }
 
 impl WorkingSet {
@@ -216,18 +216,25 @@ impl WorkingSet {
             shared: Arc::clone(&shared),
             directory: directory.clone(),
         });
-        let inner = Arc::new(Inner { shared, compactor });
-        Ok(WorkingSet { inner })
+        let stripes = Arc::new(vec![Stripe { shared, compactor }]);
+        Ok(WorkingSet { stripes })
+    }
+
+    fn stripe(&self, id: ID) -> &Stripe {
+        let n = self.stripes.len();
+        let idx = id as usize % n;
+        &self.stripes[idx]
     }
 
     pub fn add(&self, item: &Item) -> io::Result<()> {
-        self.inner.shared.lock().unwrap().add(item)
+        self.stripe(item.id).shared.lock().unwrap().add(item)
     }
 
     // Added -> [Moved ...] -> Removed -> [Added ...]
 
     pub fn get(&self, id: ID) -> io::Result<Option<ItemRef>> {
-        let mut shared = self.inner.shared.lock().unwrap();
+        let stripe = self.stripe(id);
+        let mut shared = stripe.shared.lock().unwrap();
         if let Some(IndexEntry {
             deadline,
             segment_id,
@@ -235,13 +242,12 @@ impl WorkingSet {
             ..
         }) = shared.get(id)
         {
-            let inner = Arc::clone(&self.inner);
             Ok(Some(ItemRef {
                 id,
                 deadline: *deadline,
                 segment_id: *segment_id,
                 len: *len,
-                inner,
+                stripe,
             }))
         } else {
             Ok(None)
@@ -249,7 +255,7 @@ impl WorkingSet {
     }
 }
 
-impl ItemRef {
+impl<'a> ItemRef<'a> {
     pub fn key(&self) -> Key {
         Key::Pending {
             id: self.id,
@@ -262,7 +268,7 @@ impl ItemRef {
     }
 
     pub fn load(&self) -> io::Result<Item> {
-        let shared = self.inner.shared.lock().unwrap();
+        let shared = self.stripe.shared.lock().unwrap();
         let file_id = match shared.items.get(&self.id) {
             Some(file_id) => *file_id,
             None => return Err(io::Error::new(ErrorKind::Other, "Item released")),
@@ -272,9 +278,9 @@ impl ItemRef {
     }
 
     pub fn release(self) {
-        let mut shared = self.inner.shared.lock().unwrap();
+        let mut shared = self.stripe.shared.lock().unwrap();
         if shared.release(self.id) {
-            self.inner.compactor.schedule();
+            self.stripe.compactor.schedule();
         }
     }
 }
