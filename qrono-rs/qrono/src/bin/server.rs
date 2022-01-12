@@ -20,7 +20,7 @@ use qrono::promise::Future;
 use qrono::redis::Error::{Incomplete, ProtocolError};
 use qrono::redis::{PutValue, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
-use qrono::service;
+
 use qrono::service::Result as QronoResult;
 use qrono::service::{Error, Qrono};
 use qrono::working_set::WorkingSet;
@@ -183,7 +183,7 @@ impl Response {
                 Self::convert(future.take(), |v| Value::Integer(v.deadline.millis()))
             }
             Response::Release(future) | Response::Delete(future) | Response::Compact(future) => {
-                Self::convert(future.take(), |v| Value::SimpleString("OK".into()))
+                Self::convert(future.take(), |_| Value::SimpleString("OK".into()))
             }
             Response::Info(future) => Self::convert(future.take(), |v| {
                 Value::Array(vec![

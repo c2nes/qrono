@@ -8,7 +8,7 @@ use std::sync::{Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clap::{App, Arg, ArgMatches, Values};
+use clap::{App, Arg, ArgMatches};
 use hdrhistogram::Histogram;
 use redis::{
     ConnectionAddr, ConnectionInfo, FromRedisValue, IntoConnectionInfo, RedisResult, Value,

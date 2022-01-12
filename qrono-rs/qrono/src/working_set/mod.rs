@@ -6,7 +6,7 @@ use slab::Slab;
 
 use std::fs::OpenOptions;
 use std::io::{Cursor, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::scheduler::{Scheduler, State, Task, TaskHandle};
 use log::info;
