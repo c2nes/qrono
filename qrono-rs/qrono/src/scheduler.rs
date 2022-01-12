@@ -1,7 +1,7 @@
 use rayon::ThreadPool;
 use std::fmt::{Debug, Formatter};
 
-use crate::promise::{Future, Promise};
+use crate::promise::{Future, Promise, TransferableFuture};
 use crate::scheduler::ScheduleState::{Complete, Failed};
 use crossbeam::channel::Sender;
 use std::panic::AssertUnwindSafe;
@@ -380,13 +380,15 @@ impl Scheduler {
     pub fn spawn<T: FnOnce() + Send + 'static>(&self, task: T) {
         self.pool.spawn(Box::new(task));
     }
+}
 
-    pub fn on_completion<T: Send + 'static, F: FnOnce(T) + Send + 'static>(
-        &self,
-        future: Future<T>,
-        f: F,
-    ) {
-        let scheduler = self.clone();
-        future.transfer(move |t| scheduler.spawn(move || f(t)))
+pub trait TransferAsync<T> {
+    fn transfer_async<F: FnOnce(T) + Send + 'static>(self, scheduler: &Scheduler, handler: F);
+}
+
+impl<T: Send + 'static> TransferAsync<T> for TransferableFuture<T> {
+    fn transfer_async<F: FnOnce(T) + Send + 'static>(self, scheduler: &Scheduler, handler: F) {
+        let scheduler = scheduler.clone();
+        self.transfer(move |val| scheduler.spawn(move || handler(val)))
     }
 }

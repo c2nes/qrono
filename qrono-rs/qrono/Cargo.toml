@@ -1,0 +1,48 @@
+[package]
+name = "qrono"
+version = "0.1.0"
+authors = ["Chris Thunes <cthunes@brewtab.com>"]
+edition = "2021"
+
+[[bin]]
+name = "qrono"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "qrono-bench"
+path = "src/bin/qrono_bench.rs"
+
+[[bench]]
+name = "benches"
+harness = false
+
+[dependencies]
+bytes = "1"
+clap = "2"
+crossbeam = "0.8"
+hdrhistogram = "7"
+num = "0.4"
+rand = "0.8"
+redis = "0.19"
+dashmap = "4"
+tempfile = "3.2"
+backtrace = "0.3"
+structopt = "0.3"
+num_cpus = "1"
+
+tokio = { version = "1", features = ["full"] }
+mio = { version = "0.7", features = ["os-poll", "net"] }
+slab = "0.4"
+rayon = "1"
+murmur3 = "0.5"
+jemallocator = "0.3.2"
+memmap = "0.7"
+indexmap = "1.7"
+log = "0.4"
+env_logger = "0.8.4"
+rustc-hash = "1.1.0"
+
+qrono-promise = { path = "../qrono-promise" }
+
+[dev-dependencies]
+criterion = { version = "0.3", features = ["html_reports", "async_tokio"] }

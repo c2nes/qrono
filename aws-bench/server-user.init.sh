@@ -31,34 +31,6 @@ curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'
 tar -xzf redis-6.2.3.tar.gz
 (cd "$HOME/redis-6.2.3" && make && sudo make install)
 
-# Hotspot
-mkdir "$HOME/src"
-cd "$HOME/src"
-(
-    git clone https://github.com/rust-lang/rustc-demangle
-    cd rustc-demangle
-    cargo build -p rustc-demangle-capi --release
-    sudo cp target/release/librustc_demangle.so /usr/local/lib
-    sudo cp crates/capi/include/rustc_demangle.h /usr/local/include
-    sudo ldconfig
-)
-(
-    git clone https://github.com/KDAB/KDDockWidgets
-    mkdir KDDockWidgets-build
-    cd KDDockWidgets-build
-    cmake -G Ninja -DCMAKE_INSTALL_PREFIX=/usr/local ../KDDockWidgets
-    cmake --build .
-    sudo cmake --build . --target install
-)
-(
-    git clone --recurse-submodules https://github.com/KDAB/hotspot
-    mkdir hotspot-build
-    cd hotspot-build
-    cmake ../hotspot
-    make
-    sudo make install
-)
-
 # Start server in tmux
 tmux new-window -d -c "$HOME/qrono" -n server
 tmux send-keys -l -t server $'RUST_LOG=debug RUST_BACKTRACE=full qrono --listen 0.0.0.0:16379 --data /var/lib/qrono\n'

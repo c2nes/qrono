@@ -12,13 +12,16 @@ use qrono::data::Timestamp;
 use qrono::id_generator::IdGenerator;
 use qrono::io::ReadBufUninitialized;
 use qrono::ops::{
-    CompactReq, DeleteReq, DequeueReq, EnqueueReq, IdPattern, InfoReq, PeekReq, ReleaseReq,
-    RequeueReq,
+    CompactReq, CompactResp, DeleteReq, DeleteResp, DequeueReq, DequeueResp, EnqueueReq,
+    EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp,
+    RequeueReq, RequeueResp,
 };
 use qrono::promise::Future;
 use qrono::redis::Error::{Incomplete, ProtocolError};
 use qrono::redis::{PutValue, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
+use qrono::service;
+use qrono::service::Result as QronoResult;
 use qrono::service::{Error, Qrono};
 use qrono::working_set::WorkingSet;
 use rayon::ThreadPoolBuilder;
@@ -122,6 +125,93 @@ impl Command {
     }
 }
 
+enum Response {
+    Enqueue(Future<QronoResult<EnqueueResp>>),
+    Dequeue(Future<QronoResult<DequeueResp>>),
+    Requeue(Future<QronoResult<RequeueResp>>),
+    Release(Future<QronoResult<ReleaseResp>>),
+    Info(Future<QronoResult<InfoResp>>),
+    Peek(Future<QronoResult<PeekResp>>),
+    Delete(Future<QronoResult<DeleteResp>>),
+    Compact(Future<QronoResult<CompactResp>>),
+    Error(String),
+    Value(Value),
+}
+
+impl Response {
+    fn convert<T, F>(result: QronoResult<T>, converter: F) -> Value
+    where
+        F: Fn(T) -> Value,
+    {
+        match result {
+            Ok(resp) => converter(resp),
+            Err(err) => match err {
+                Error::NoSuchQueue => Value::Error("ERR no such queue".into()),
+                Error::NoItemReady => Value::NullArray,
+                Error::ItemNotDequeued => Value::Error("ERR item not dequeued".into()),
+                Error::Internal(_) | Error::IOError(_, _) => Value::Error("ERR internal".into()),
+            },
+        }
+    }
+
+    fn take(self) -> Value {
+        match self {
+            Response::Enqueue(future) => Self::convert(future.take(), |v| {
+                Value::Array(vec![
+                    Value::Integer(v.id as i64),
+                    Value::Integer(v.deadline.millis()),
+                ])
+            }),
+            Response::Dequeue(future) | Response::Peek(future) => {
+                let res = future.take();
+                if let Err(Error::NoSuchQueue) = res {
+                    return Value::NullArray;
+                }
+
+                Self::convert(res, |v| {
+                    Value::Array(vec![
+                        Value::Integer(v.id as i64),
+                        Value::Integer(v.deadline.millis()),
+                        Value::Integer(v.stats.enqueue_time.millis()),
+                        Value::Integer(v.stats.requeue_time.millis()),
+                        Value::Integer(v.stats.dequeue_count as i64),
+                        Value::BulkString(v.value),
+                    ])
+                })
+            }
+            Response::Requeue(future) => {
+                Self::convert(future.take(), |v| Value::Integer(v.deadline.millis()))
+            }
+            Response::Release(future) | Response::Delete(future) | Response::Compact(future) => {
+                Self::convert(future.take(), |v| Value::SimpleString("OK".into()))
+            }
+            Response::Info(future) => Self::convert(future.take(), |v| {
+                Value::Array(vec![
+                    Value::Integer(v.pending as i64),
+                    Value::Integer(v.dequeued as i64),
+                ])
+            }),
+            Response::Error(msg) => Value::Error(msg),
+            Response::Value(val) => val,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Response::Enqueue(future) => future.is_complete(),
+            Response::Dequeue(future) => future.is_complete(),
+            Response::Requeue(future) => future.is_complete(),
+            Response::Release(future) => future.is_complete(),
+            Response::Info(future) => future.is_complete(),
+            Response::Peek(future) => future.is_complete(),
+            Response::Delete(future) => future.is_complete(),
+            Response::Compact(future) => future.is_complete(),
+            Response::Value(_) => true,
+            Response::Error(_) => true,
+        }
+    }
+}
+
 fn shutdown_connection(conn: &TcpStream) {
     if let Err(err) = conn.shutdown(Shutdown::Both) {
         match err.kind() {
@@ -134,10 +224,10 @@ fn shutdown_connection(conn: &TcpStream) {
 fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io::Result<()> {
     conn.set_nodelay(true).unwrap();
 
-    let (resp_tx, resp_rx) = mpsc::channel::<Future<Value>>();
+    let (resp_tx, resp_rx) = mpsc::channel::<Response>();
 
     let schedule = {
-        let mut resp_head: Option<Future<Value>> = None;
+        let mut resp_head: Option<Response> = None;
         let mut writer = std::io::BufWriter::new(conn.try_clone()?);
         let mut buf = BytesMut::new();
 
@@ -157,7 +247,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
             let mut flush = false;
             for _ in 0..128 {
                 if let Some(future) = &resp_head {
-                    if future.is_complete() {
+                    if future.is_ready() {
                         let val = resp_head.take().unwrap().take();
                         buf.put_redis_value(val);
                         if handle_io_result(writer.write_all(&buf[..])).is_err() {
@@ -177,7 +267,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                 assert!(resp_head.is_none());
 
                 resp_head = match resp_rx.try_recv() {
-                    Ok(future) => Some(future),
+                    Ok(response) => Some(response),
                     Err(_) => {
                         handle_io_result(writer.flush());
                         return false;
@@ -216,7 +306,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                         Err(err) => match err {
                             Incomplete => panic!("BUG"),
                             ProtocolError(msg) => {
-                                resp_tx.send(Future::completed(Value::Error(msg))).unwrap();
+                                resp_tx.send(Response::Error(msg)).unwrap();
                                 schedule.schedule();
                                 continue;
                             }
@@ -246,10 +336,10 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     let keyword = args.next().unwrap();
                                     if !keyword.eq_ignore_ascii_case(b"DEADLINE") {
                                         resp_tx
-                                            .send(Future::completed(Value::Error(
+                                            .send(Response::Error(
                                                 "ERR unexpected keyword, expected \"DEADLINE\""
                                                     .into(),
-                                            )))
+                                            ))
                                             .unwrap();
                                         schedule.schedule();
                                         continue;
@@ -258,7 +348,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     let deadline = match qrono::redis::parse_signed(&deadline) {
                                         Ok(deadline) => deadline,
                                         Err(err) => {
-                                            resp_tx.send(Future::completed(err.into())).unwrap();
+                                            resp_tx.send(Response::Value(err.into())).unwrap();
                                             schedule.schedule();
                                             continue;
                                         }
@@ -271,69 +361,38 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                 }
                                 _ => {
                                     resp_tx
-                                        .send(Future::completed(Value::Error(
+                                        .send(Response::Error(
                                             "incorrect number of arguments to ENQUEUE".to_string(),
-                                        )))
+                                        ))
                                         .unwrap();
                                     schedule.schedule();
                                     continue;
                                 }
                             };
 
-                            let resp = qrono.enqueue(&queue, req);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                let v = v.unwrap();
-                                p.complete(Value::Array(vec![
-                                    Value::Integer(v.id as i64),
-                                    Value::Integer(v.deadline.millis()),
-                                ]));
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Enqueue(resp)).unwrap();
+                            qrono.enqueue(&queue, req, promise);
                         }
                         Command::Dequeue => {
                             if args.len() != 1 {
                                 resp_tx
-                                    .send(Future::completed(Value::Error(
+                                    .send(Response::Error(
                                         "incorrect number of arguments".to_string(),
-                                    )))
+                                    ))
                                     .unwrap();
                                 schedule.schedule();
                                 continue;
                             }
 
                             let queue = str::from_utf8(&args[0]).unwrap();
-                            let resp = qrono.dequeue(queue, DequeueReq);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(v) => p.complete(Value::Array(vec![
-                                        Value::Integer(v.id as i64),
-                                        Value::Integer(v.deadline.millis()),
-                                        Value::Integer(v.stats.enqueue_time.millis()),
-                                        Value::Integer(v.stats.requeue_time.millis()),
-                                        Value::Integer(v.stats.dequeue_count as i64),
-                                        Value::BulkString(v.value),
-                                    ])),
-                                    Err(Error::NoItemReady | Error::NoSuchQueue) => {
-                                        p.complete(Value::NullArray)
-                                    }
-                                    Err(err) => {
-                                        error!("err: {:?}", err);
-                                        p.complete(Value::Error("internal error".to_string()))
-                                    }
-                                };
-
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Dequeue(resp)).unwrap();
+                            qrono.dequeue(queue, DequeueReq, promise);
                         }
                         Command::Requeue => {
                             // REQUEUE <queue> <id> [DEADLINE <deadline>]
@@ -349,9 +408,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                             if id.eq_ignore_ascii_case(b"ANY") {
                                                 IdPattern::Any
                                             } else {
-                                                resp_tx
-                                                    .send(Future::completed(err.into()))
-                                                    .unwrap();
+                                                resp_tx.send(Response::Value(err.into())).unwrap();
                                                 schedule.schedule();
                                                 continue;
                                             }
@@ -371,9 +428,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                             if id.eq_ignore_ascii_case(b"ANY") {
                                                 IdPattern::Any
                                             } else {
-                                                resp_tx
-                                                    .send(Future::completed(err.into()))
-                                                    .unwrap();
+                                                resp_tx.send(Response::Value(err.into())).unwrap();
                                                 schedule.schedule();
                                                 continue;
                                             }
@@ -382,10 +437,10 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     let keyword = args.next().unwrap();
                                     if !keyword.eq_ignore_ascii_case(b"DEADLINE") {
                                         resp_tx
-                                            .send(Future::completed(Value::Error(
+                                            .send(Response::Error(
                                                 "ERR unexpected keyword, expected \"DEADLINE\""
                                                     .into(),
-                                            )))
+                                            ))
                                             .unwrap();
                                         schedule.schedule();
                                         continue;
@@ -394,7 +449,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     let deadline = match qrono::redis::parse_signed(&deadline) {
                                         Ok(deadline) => deadline,
                                         Err(err) => {
-                                            resp_tx.send(Future::completed(err.into())).unwrap();
+                                            resp_tx.send(Response::Value(err.into())).unwrap();
                                             schedule.schedule();
                                             continue;
                                         }
@@ -407,39 +462,20 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                 }
                                 _ => {
                                     resp_tx
-                                        .send(Future::completed(Value::Error(
+                                        .send(Response::Error(
                                             "incorrect number of arguments".to_string(),
-                                        )))
+                                        ))
                                         .unwrap();
                                     schedule.schedule();
                                     continue;
                                 }
                             };
 
-                            let resp = qrono.requeue(&queue, req);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(v) => {
-                                        p.complete(Value::Integer(v.deadline.millis()));
-                                    }
-                                    Err(Error::ItemNotDequeued) => {
-                                        p.complete(Value::Error("ERR item not dequeued".into()))
-                                    }
-                                    Err(Error::NoSuchQueue) => {
-                                        p.complete(Value::Error("ERR no such queue".into()))
-                                    }
-                                    Err(err) => {
-                                        error!("err: {:?}", err);
-                                        p.complete(Value::Error("ERR internal error".into()))
-                                    }
-                                }
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Requeue(resp)).unwrap();
+                            qrono.requeue(&queue, req, promise);
                         }
                         Command::Release => {
                             // RELEASE <queue> <id>
@@ -455,9 +491,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                             if id.eq_ignore_ascii_case(b"ANY") {
                                                 IdPattern::Any
                                             } else {
-                                                resp_tx
-                                                    .send(Future::completed(err.into()))
-                                                    .unwrap();
+                                                resp_tx.send(Response::Value(err.into())).unwrap();
                                                 schedule.schedule();
                                                 continue;
                                             }
@@ -468,166 +502,98 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                 }
                                 _ => {
                                     resp_tx
-                                        .send(Future::completed(Value::Error(
+                                        .send(Response::Error(
                                             "incorrect number of arguments".to_string(),
-                                        )))
+                                        ))
                                         .unwrap();
                                     schedule.schedule();
                                     continue;
                                 }
                             };
 
-                            let resp = qrono.release(&queue, req);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(_) => {
-                                        p.complete(Value::SimpleString("OK".into()));
-                                    }
-                                    Err(Error::ItemNotDequeued) => {
-                                        p.complete(Value::Error("ERR item not dequeued".into()))
-                                    }
-                                    Err(Error::NoSuchQueue) => {
-                                        p.complete(Value::Error("ERR no such queue".into()))
-                                    }
-                                    Err(_) => p.complete(Value::Error("ERR internal error".into())),
-                                }
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Release(resp)).unwrap();
+                            qrono.release(&queue, req, promise);
                         }
                         Command::Peek => {
                             if args.len() != 1 {
                                 resp_tx
-                                    .send(Future::completed(Value::Error(
+                                    .send(Response::Error(
                                         "incorrect number of arguments to ENQUEUE".to_string(),
-                                    )))
+                                    ))
                                     .unwrap();
                                 schedule.schedule();
                                 continue;
                             }
 
                             let queue = str::from_utf8(&args[0]).unwrap();
-                            let resp = qrono.peek(queue, PeekReq);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(v) => p.complete(Value::Array(vec![
-                                        Value::Integer(v.id as i64),
-                                        Value::Integer(v.deadline.millis()),
-                                        Value::Integer(v.stats.enqueue_time.millis()),
-                                        Value::Integer(v.stats.requeue_time.millis()),
-                                        Value::Integer(v.stats.dequeue_count as i64),
-                                        Value::BulkString(v.value),
-                                    ])),
-                                    Err(Error::NoItemReady | Error::NoSuchQueue) => {
-                                        p.complete(Value::NullArray)
-                                    }
-                                    _ => p.complete(Value::Error("internal error".to_string())),
-                                };
-
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Peek(resp)).unwrap();
+                            qrono.peek(&queue, PeekReq, promise);
                         }
                         Command::Ping => {
                             resp_tx
-                                .send(Future::completed(Value::SimpleString("PONG".to_string())))
+                                .send(Response::Value(Value::SimpleString("PONG".to_string())))
                                 .unwrap();
                             schedule.schedule();
                         }
                         Command::Info => {
                             if args.len() != 1 {
                                 resp_tx
-                                    .send(Future::completed(Value::Error(
+                                    .send(Response::Error(
                                         "incorrect number of arguments".to_string(),
-                                    )))
+                                    ))
                                     .unwrap();
                                 schedule.schedule();
                                 continue;
                             }
 
                             let queue = str::from_utf8(&args[0]).unwrap();
-                            let resp = qrono.info(queue, InfoReq);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(v) => p.complete(Value::Array(vec![
-                                        Value::Integer(v.pending as i64),
-                                        Value::Integer(v.dequeued as i64),
-                                    ])),
-                                    Err(Error::NoSuchQueue) => p.complete(Value::NullArray),
-                                    _ => p.complete(Value::Error("internal error".to_string())),
-                                };
-
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Info(resp)).unwrap();
+                            qrono.info(&queue, InfoReq, promise);
                         }
                         Command::Delete => {
                             if args.len() != 1 {
                                 resp_tx
-                                    .send(Future::completed(Value::Error(
+                                    .send(Response::Error(
                                         "incorrect number of arguments".to_string(),
-                                    )))
+                                    ))
                                     .unwrap();
                                 schedule.schedule();
                                 continue;
                             }
 
                             let queue = str::from_utf8(&args[0]).unwrap();
-                            let resp = qrono.delete(queue, DeleteReq);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(_) => p.complete(Value::SimpleString("OK".to_string())),
-                                    Err(Error::NoSuchQueue) => p.complete(Value::NullArray),
-                                    _ => p.complete(Value::Error("internal error".to_string())),
-                                };
-
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Delete(resp)).unwrap();
+                            qrono.delete(&queue, DeleteReq, promise);
                         }
                         Command::Compact => {
                             if args.len() != 1 {
                                 resp_tx
-                                    .send(Future::completed(Value::Error(
+                                    .send(Response::Error(
                                         "incorrect number of arguments".to_string(),
-                                    )))
+                                    ))
                                     .unwrap();
                                 schedule.schedule();
                                 continue;
                             }
 
                             let queue = str::from_utf8(&args[0]).unwrap();
-                            let resp = qrono.compact(queue, CompactReq);
-
-                            let (f, p) = Future::new();
-                            resp_tx.send(f).unwrap();
-
                             let schedule = Arc::clone(&schedule);
-                            resp.transfer(move |v| {
-                                match v {
-                                    Ok(_) => p.complete(Value::SimpleString("OK".to_string())),
-                                    Err(Error::NoSuchQueue) => p.complete(Value::NullArray),
-                                    _ => p.complete(Value::Error("internal error".to_string())),
-                                };
-
-                                schedule.schedule();
-                            });
+                            let (resp, mut promise) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Compact(resp)).unwrap();
+                            qrono.compact(&queue, CompactReq, promise);
                         }
                     }
                 }
@@ -635,9 +601,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                     Incomplete => break,
                     ProtocolError(_err) => {
                         resp_tx
-                            .send(Future::completed(Value::Error(
-                                "ERR protocol error".to_owned(),
-                            )))
+                            .send(Response::Error("ERR protocol error".to_owned()))
                             .unwrap();
 
                         schedule.schedule();

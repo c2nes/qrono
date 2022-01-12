@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -8,7 +7,6 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
 use qrono::id_generator::IdGenerator;
-use qrono::promise::Future;
 use qrono::redis::Value;
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::segment::mock::{MockSegment, MockSegmentReader};
@@ -165,72 +163,6 @@ pub fn murmur3(c: &mut Criterion) {
     drop(group);
 }
 
-pub fn promise(c: &mut Criterion) {
-    c.bench_function("promise/future", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| tokio::spawn(std::future::ready(1)))
-    });
-
-    c.bench_function("promise/rayon", |b| {
-        b.iter(|| {
-            let (rx, tx) = Future::new();
-            rayon::spawn(move || tx.complete(1));
-            rx.take();
-        })
-    });
-
-    c.bench_function("promise/promise", |b| {
-        b.iter(|| {
-            let (rx, tx) = Future::new();
-            tx.complete(());
-            rx.take()
-        })
-    });
-
-    c.bench_function("promise/atomic", |b| {
-        b.iter(|| {
-            let x = AtomicUsize::new(0);
-            x.swap(1, Ordering::Relaxed);
-            x.swap(1, Ordering::Relaxed)
-        })
-    });
-
-    c.bench_function("promise/promise/transfer", |b| {
-        b.iter(|| {
-            let (rx, tx) = Future::new();
-            rx.transfer(|v| {
-                black_box(v);
-            });
-            tx.complete(())
-        })
-    });
-
-    c.bench_function("promise/promise/map", |b| {
-        b.iter(|| {
-            let (rx, tx) = Future::new();
-            let rx = rx.map(|v| v + 1);
-            tx.complete(1);
-            rx.take()
-        })
-    });
-
-    c.bench_function("promise/mpsc", |b| {
-        b.iter(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(1).unwrap();
-            rx.recv().unwrap()
-        })
-    });
-
-    c.bench_function("promise/crossbeam", |b| {
-        b.iter(|| {
-            let (tx, rx) = crossbeam::channel::bounded(1);
-            tx.send(1).unwrap();
-            rx.recv().unwrap()
-        })
-    });
-}
-
 pub fn id_generator(c: &mut Criterion) {
     c.bench_function("IdGenerator::generate_id", |b| {
         let generator = IdGenerator::new(
@@ -355,7 +287,6 @@ criterion_group!(
     mem_segment,
     adler32,
     murmur3,
-    promise,
     id_generator,
     indexed_segment,
     merged_segment,

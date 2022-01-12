@@ -9,7 +9,7 @@ use std::fs::File;
 use std::hash::BuildHasherDefault;
 
 use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp, ID};
-use crate::scheduler::{Scheduler, SimpleTask, State, Task, TaskFuture, TaskHandle};
+use crate::scheduler::{Scheduler, SimpleTask, State, Task, TaskFuture, TaskHandle, TransferAsync};
 use crate::segment::{
     FilteredSegmentReader, FrozenMemorySegment, ImmutableSegment, MemorySegment,
     MemorySegmentReader, MergedSegmentReader, Metadata, Segment, SegmentReader,
@@ -1253,46 +1253,34 @@ impl Queue {
         })
     }
 
-    fn enqueue(&self, req: EnqueueReq) -> Future<EnqueueResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Enqueue(req, p)).unwrap();
+    fn enqueue(&self, req: EnqueueReq, resp: Promise<EnqueueResp>) {
+        self.op_sender.send(Op::Enqueue(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn dequeue(&self, req: DequeueReq) -> Future<DequeueResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Dequeue(req, p)).unwrap();
+    fn dequeue(&self, req: DequeueReq, resp: Promise<DequeueResp>) {
+        self.op_sender.send(Op::Dequeue(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn requeue(&self, req: RequeueReq) -> Future<RequeueResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Requeue(req, p)).unwrap();
+    fn requeue(&self, req: RequeueReq, resp: Promise<RequeueResp>) {
+        self.op_sender.send(Op::Requeue(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn release(&self, req: ReleaseReq) -> Future<ReleaseResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Release(req, p)).unwrap();
+    fn release(&self, req: ReleaseReq, resp: Promise<ReleaseResp>) {
+        self.op_sender.send(Op::Release(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn info(&self, req: InfoReq) -> Future<InfoResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Info(req, p)).unwrap();
+    fn info(&self, req: InfoReq, resp: Promise<InfoResp>) {
+        self.op_sender.send(Op::Info(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn peek(&self, req: PeekReq) -> Future<PeekResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Peek(req, p)).unwrap();
+    fn peek(&self, req: PeekReq, resp: Promise<PeekResp>) {
+        self.op_sender.send(Op::Peek(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
     fn mark_deleted(&self) -> Result<()> {
@@ -1300,18 +1288,14 @@ impl Queue {
         Ok(())
     }
 
-    fn delete(&self, req: DeleteReq) -> Future<DeleteResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Delete(req, p)).unwrap();
+    fn delete(&self, req: DeleteReq, resp: Promise<DeleteResp>) {
+        self.op_sender.send(Op::Delete(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 
-    fn compact(&self, req: CompactReq) -> Future<CompactResp> {
-        let (f, p) = Future::new();
-        self.op_sender.send(Op::Compact(req, p)).unwrap();
+    fn compact(&self, req: CompactReq, resp: Promise<CompactResp>) {
+        self.op_sender.send(Op::Compact(req, resp)).unwrap();
         self.op_processor.schedule();
-        f
     }
 }
 
@@ -1442,7 +1426,7 @@ impl Qrono {
         qrono
     }
 
-    pub fn enqueue(&self, queue_name: &str, req: EnqueueReq) -> Future<EnqueueResp> {
+    pub fn enqueue(&self, queue_name: &str, req: EnqueueReq, resp: Promise<EnqueueResp>) {
         let queue = match self.queues.get(queue_name) {
             None => {
                 let inner = self.inner.lock().unwrap();
@@ -1465,9 +1449,7 @@ impl Qrono {
                             Ok(queue) => queue,
                             Err(err) => {
                                 error!("Error creating queue: {}", err);
-                                return Future::completed(Err(Error::Internal(
-                                    "error creating queue",
-                                )));
+                                return resp.complete(Err(Error::Internal("error creating queue")));
                             }
                         };
 
@@ -1480,63 +1462,65 @@ impl Qrono {
             Some(queue) => queue,
         };
 
-        queue.enqueue(req)
+        queue.enqueue(req, resp)
     }
 
-    pub fn dequeue(&self, queue: &str, req: DequeueReq) -> Future<DequeueResp> {
+    pub fn dequeue(&self, queue: &str, req: DequeueReq, resp: Promise<DequeueResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.dequeue(req);
+            return queue.dequeue(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
-    pub fn requeue(&self, queue: &str, req: RequeueReq) -> Future<RequeueResp> {
+    pub fn requeue(&self, queue: &str, req: RequeueReq, resp: Promise<RequeueResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.requeue(req);
+            return queue.requeue(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
-    pub fn release(&self, queue: &str, req: ReleaseReq) -> Future<ReleaseResp> {
+    pub fn release(&self, queue: &str, req: ReleaseReq, resp: Promise<ReleaseResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.release(req);
+            return queue.release(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
-    pub fn info(&self, queue: &str, req: InfoReq) -> Future<InfoResp> {
+    pub fn info(&self, queue: &str, req: InfoReq, resp: Promise<InfoResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.info(req);
+            return queue.info(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
-    pub fn peek(&self, queue: &str, req: PeekReq) -> Future<PeekResp> {
+    pub fn peek(&self, queue: &str, req: PeekReq, resp: Promise<PeekResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.peek(req);
+            return queue.peek(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
-    pub fn delete(&self, queue_name: &str, req: DeleteReq) -> Future<()> {
+    pub fn delete(&self, queue_name: &str, req: DeleteReq, resp: Promise<DeleteResp>) {
         let inner = self.inner.lock().unwrap();
         let queue = if let Some(queue) = self.queues.get(queue_name) {
             if let Err(err) = queue.mark_deleted() {
                 error!("Error marking queue deleted: {}", err);
-                return Future::completed(Err(Error::Internal("error marking queue deleted")));
+                return resp.complete(Err(Error::Internal("error marking queue deleted")));
             }
 
             drop(queue);
             self.queues.remove(queue_name).unwrap().1
         } else {
-            return Future::completed(Err(Error::NoSuchQueue));
+            return resp.complete(Err(Error::NoSuchQueue));
         };
 
         let deletion_scheduler = self.deletion_scheduler.clone();
         let deletion_backlog = Arc::clone(&self.deletion_backlog);
         deletion_backlog.fetch_add(1, Ordering::SeqCst);
 
-        inner.scheduler.on_completion(queue.delete(req), move |_| {
+        let (promise, future) = Future::transferable();
+        queue.delete(req, promise);
+        future.transfer_async(&inner.scheduler, move |_| {
             let start = Instant::now();
 
             // The queue is now idle. We can cancel the OpProcessor and retake ownership of it.
@@ -1591,14 +1575,14 @@ impl Qrono {
             });
         });
 
-        Future::completed(Ok(()))
+        resp.complete(Ok(()))
     }
 
-    pub fn compact(&self, queue: &str, req: CompactReq) -> Future<CompactResp> {
+    pub fn compact(&self, queue: &str, req: CompactReq, resp: Promise<CompactResp>) {
         if let Some(queue) = self.queues.get(queue) {
-            return queue.compact(req);
+            return queue.compact(req, resp);
         }
-        Future::completed(Err(Error::NoSuchQueue))
+        resp.complete(Err(Error::NoSuchQueue))
     }
 
     pub fn list(&self) -> Vec<String> {

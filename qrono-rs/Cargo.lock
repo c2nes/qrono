@@ -962,6 +962,7 @@ dependencies = [
  "murmur3",
  "num",
  "num_cpus",
+ "qrono-promise",
  "rand",
  "rayon",
  "redis",
@@ -970,6 +971,18 @@ dependencies = [
  "structopt",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "qrono-promise"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "crossbeam",
+ "crossbeam-utils",
+ "jemallocator",
+ "parking_lot",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -1318,9 +1331,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.3.1"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "848a1e1181b9f6753b5e96a092749e29b11d19ede67dfbbd6c7dc7e0f49b5338"
+checksum = "2c1c1d5a42b6245520c249549ec267180beaffcc0615401ac8e31853d4b6d8d2"
 dependencies = [
  "tinyvec_macros",
 ]

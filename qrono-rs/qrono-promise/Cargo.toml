@@ -1,0 +1,18 @@
+[package]
+name = "qrono-promise"
+version = "0.1.0"
+edition = "2021"
+
+[[bench]]
+name = "benches"
+harness = false
+
+[dependencies]
+crossbeam-utils = "0.8"
+parking_lot = "0.11"
+parking_lot_core = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.3", default-features = false }
+jemallocator = "0.3"
+crossbeam = "0.8"
