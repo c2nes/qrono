@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::{Cursor, ErrorKind};
 use std::path::PathBuf;
 
-use crate::scheduler::{Scheduler, State, Task, TaskHandle};
+use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex};
@@ -138,7 +138,7 @@ impl Task for Compactor {
     type Value = ();
     type Error = io::Error;
 
-    fn run(&mut self) -> Result<State<()>, io::Error> {
+    fn run(&mut self, _: &TaskContext<Compactor>) -> Result<State<()>, io::Error> {
         let empty_files = {
             let mut shared = self.shared.lock().unwrap();
             mem::take(&mut shared.empty_files)

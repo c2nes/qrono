@@ -1,10 +1,28 @@
 use crate::data::{Item, Timestamp, ID};
 use bytes::Bytes;
+use std::time::Duration;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum DeadlineReq {
+    Now,
+    Relative(Duration),
+    Absolute(Timestamp),
+}
+
+impl DeadlineReq {
+    pub fn resolve(self, now: Timestamp) -> Timestamp {
+        match self {
+            DeadlineReq::Now => now,
+            DeadlineReq::Relative(delay) => now + delay,
+            DeadlineReq::Absolute(timestamp) => timestamp,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct EnqueueReq {
     pub value: Bytes,
-    pub deadline: Option<Timestamp>,
+    pub deadline: DeadlineReq,
 }
 
 #[derive(Debug)]
@@ -14,9 +32,12 @@ pub struct EnqueueResp {
 }
 
 #[derive(Debug)]
-pub struct DequeueReq;
+pub struct DequeueReq {
+    pub timeout: Duration,
+    pub count: u64,
+}
 
-pub type DequeueResp = Item;
+pub type DequeueResp = Vec<Item>;
 
 #[derive(Debug)]
 pub struct RequeueReq {

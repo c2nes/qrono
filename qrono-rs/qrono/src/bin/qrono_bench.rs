@@ -277,6 +277,7 @@ struct Benchmark {
     // TODO: Replace with --num-threads
     publish_rate: f64,
     pipeline: u32,
+    dequeue_timeout: u64,
 
     // --publish-then-delete
     // --publish-then-consume
@@ -313,14 +314,17 @@ impl Benchmark {
 
         let mut remaining = count;
         while remaining > 0 {
-            let mut pipe = redis::pipe();
-            for _ in 0..remaining.min(pipeline as u64) {
-                pipe.cmd("DEQUEUE").arg(&queue_name);
+            let mut dequeue = redis::cmd("DEQUEUE");
+            dequeue.arg(&queue_name);
+            if self.pipeline > 1 {
+                dequeue.arg("COUNT").arg(pipeline);
+            }
+            if self.dequeue_timeout > 0 {
+                dequeue.arg("TIMEOUT").arg(self.dequeue_timeout);
             }
 
             let dequeue_start = Instant::now();
-            let resp: Vec<Option<DequeueResult>> = pipe.query(&mut conn).unwrap();
-            let resp: Vec<DequeueResult> = resp.into_iter().flatten().collect();
+            let resp: Vec<DequeueResult> = dequeue.query(&mut conn).unwrap();
 
             if !resp.is_empty() {
                 Self::record_latency(&self.hist_dequeue, dequeue_start);
@@ -344,8 +348,6 @@ impl Benchmark {
                 }
 
                 remaining -= resp.len() as u64;
-            } else {
-                thread::sleep(Duration::from_millis(10));
             }
         }
 
@@ -617,14 +619,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("queue_names")
-                .short("q")
-                .long("queue-names")
-                .help("Queue names (default random)")
-                .multiple(true)
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("pipeline")
                 .long("pipeline")
                 .help("Pipeline length (i.e. batch size)")
@@ -642,6 +636,20 @@ fn main() {
                     "publish-and-consume",
                     "publish-then-consume",
                 ]),
+        )
+        .arg(
+            Arg::with_name("dequeue_timeout")
+                .help("Dequeue timeout in milliseconds")
+                .long("dequeue-timeout")
+                .takes_value(true)
+                .default_value("0")
+                .validator(|x| validate_min::<u64, _>(x, 0)),
+        )
+        .arg(
+            Arg::with_name("queue_names")
+                .help("Queue names (default random)")
+                .multiple(true)
+                .takes_value(true),
         )
         .get_matches();
 
@@ -665,6 +673,7 @@ fn main() {
         consumer_count: arg(&matches, "consumer_count"),
         publisher_count: arg(&matches, "publisher_count"),
         publish_rate: arg_or(&matches, "publish_rate", || -1.0),
+        dequeue_timeout: arg(&matches, "dequeue_timeout"),
         mode: {
             let mode = matches.value_of("mode").unwrap();
             match mode {

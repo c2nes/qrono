@@ -66,21 +66,21 @@ pub struct Scheduler {
 }
 
 pub struct TaskHandle<T: Task + 'static> {
-    inner: TaskInner<T>,
+    inner: TaskContext<T>,
 }
 
-struct TaskInner<T: Task + 'static> {
+pub struct TaskContext<T: Task + 'static> {
     pool: Arc<dyn Spawn>,
     f: Arc<Mutex<Option<(T, TaskPromise<T>)>>>,
     state: Arc<AtomicScheduleState>,
 }
 
-impl<T: Task + 'static> Clone for TaskInner<T> {
+impl<T: Task + 'static> Clone for TaskContext<T> {
     fn clone(&self) -> Self {
         let pool = self.pool.clone();
         let f = self.f.clone();
         let state = self.state.clone();
-        TaskInner { pool, f, state }
+        TaskContext { pool, f, state }
     }
 }
 
@@ -133,11 +133,11 @@ pub enum State<T> {
     Complete(T),
 }
 
-pub trait Task: Send {
+pub trait Task: Send + Sized {
     type Value: Send;
     type Error: Send;
 
-    fn run(&mut self) -> Result<State<Self::Value>, Self::Error>;
+    fn run(&mut self, ctx: &TaskContext<Self>) -> Result<State<Self::Value>, Self::Error>;
 }
 
 pub trait SimpleTask: Send {
@@ -148,7 +148,7 @@ impl<T: SimpleTask> Task for T {
     type Value = ();
     type Error = ();
 
-    fn run(&mut self) -> Result<State<Self::Value>, Self::Error> {
+    fn run(&mut self, _: &TaskContext<T>) -> Result<State<Self::Value>, Self::Error> {
         Ok(if self.run() {
             State::Runnable
         } else {
@@ -177,8 +177,8 @@ impl<F: FnMut() -> bool + Send + 'static> From<F> for FnTask {
     }
 }
 
-impl<T: Task + 'static> TaskInner<T> {
-    fn schedule(&self) {
+impl<T: Task + 'static> TaskContext<T> {
+    pub fn schedule(&self) {
         loop {
             match self.state.load() {
                 Idle => {
@@ -216,18 +216,18 @@ impl<T: Task + 'static> TaskInner<T> {
     }
 
     fn submit(&self) {
-        let schedule = self.clone();
+        let context = self.clone();
         self.pool.spawn(Box::new(move || {
             // Mark ourselves as running.
-            if let Err(state) = schedule.state.compare_exchange(Scheduled, Running) {
+            if let Err(state) = context.state.compare_exchange(Scheduled, Running) {
                 match state {
                     Canceled | Failed | Complete => return,
                     state => panic!("unexpected state, {:?}", state),
                 }
             }
 
-            let task_state = match schedule.f.lock().unwrap().as_mut() {
-                Some((task, _)) => task.run(),
+            let task_state = match context.f.lock().unwrap().as_mut() {
+                Some((task, _)) => task.run(&context),
                 None => return,
             };
 
@@ -235,17 +235,17 @@ impl<T: Task + 'static> TaskInner<T> {
                 Ok(State::Idle) => false,
                 Ok(State::Runnable) => true,
                 Ok(State::Complete(value)) => {
-                    if let Some((task, promise)) = schedule.f.lock().unwrap().take() {
+                    if let Some((task, promise)) = context.f.lock().unwrap().take() {
                         promise.complete((task, Ok(value)));
-                        schedule.state.store(Complete);
+                        context.state.store(Complete);
                     }
 
                     return;
                 }
                 Err(err) => {
-                    if let Some((task, promise)) = schedule.f.lock().unwrap().take() {
+                    if let Some((task, promise)) = context.f.lock().unwrap().take() {
                         promise.complete((task, Err(TaskError::Failed(err))));
-                        schedule.state.store(Failed);
+                        context.state.store(Failed);
                     }
 
                     return;
@@ -253,18 +253,18 @@ impl<T: Task + 'static> TaskInner<T> {
             };
 
             loop {
-                match schedule.state.load() {
+                match context.state.load() {
                     Rescheduled => {
-                        if schedule
+                        if context
                             .state
                             .compare_exchange(Rescheduled, Scheduled)
                             .is_ok()
                         {
-                            return schedule.submit();
+                            return context.submit();
                         }
                     }
                     Canceled => {
-                        if let Some((task, promise)) = schedule.f.lock().unwrap().take() {
+                        if let Some((task, promise)) = context.f.lock().unwrap().take() {
                             promise.complete((task, Err(TaskError::Canceled)));
                         }
                         return;
@@ -272,10 +272,10 @@ impl<T: Task + 'static> TaskInner<T> {
                     Complete | Failed => panic!("BUG"),
                     state => {
                         if reschedule {
-                            if schedule.state.compare_exchange(state, Scheduled).is_ok() {
-                                return schedule.submit();
+                            if context.state.compare_exchange(state, Scheduled).is_ok() {
+                                return context.submit();
                             }
-                        } else if schedule.state.compare_exchange(state, Idle).is_ok() {
+                        } else if context.state.compare_exchange(state, Idle).is_ok() {
                             return;
                         }
                     }
@@ -367,7 +367,7 @@ impl Scheduler {
         let (future, promise) = Future::new();
         (
             TaskHandle {
-                inner: TaskInner {
+                inner: TaskContext {
                     pool: Arc::clone(&self.pool),
                     f: Arc::new(Mutex::new(Some((task, promise)))),
                     state: Arc::new(AtomicScheduleState::new(Idle)),

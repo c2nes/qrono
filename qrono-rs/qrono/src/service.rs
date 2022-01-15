@@ -3,13 +3,15 @@ use crate::ops::{
     EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp,
     RequeueReq, RequeueResp,
 };
-use crate::promise;
+use crate::{promise, timer};
 
 use std::fs::File;
 use std::hash::BuildHasherDefault;
 
 use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp, ID};
-use crate::scheduler::{Scheduler, SimpleTask, State, Task, TaskFuture, TaskHandle, TransferAsync};
+use crate::scheduler::{
+    Scheduler, SimpleTask, State, Task, TaskContext, TaskFuture, TaskHandle, TransferAsync,
+};
 use crate::segment::{
     FilteredSegmentReader, FrozenMemorySegment, ImmutableSegment, MemorySegment,
     MemorySegmentReader, MergedSegmentReader, Metadata, Segment, SegmentReader,
@@ -27,14 +29,15 @@ use rustc_hash::{FxHashSet, FxHasher};
 
 use std::path::{Path, PathBuf};
 
+use crate::service::blocked_dequeues::BlockedDequeues;
 use backtrace::Backtrace;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::{fs, io};
+use std::{fs, io, result};
 use QueueFile::{DeletionMarker, PendingSegment, TemporarySegmentDirectory, TombstoneSegment};
 
 const SEGMENT_FLUSH_THRESHOLD: usize = 128 * 1024 * 1024;
@@ -93,6 +96,18 @@ struct Shared {
     force_flush: bool,
 }
 
+enum DequeueError {
+    Empty,
+    Pending(Timestamp),
+    IOError(io::Error),
+}
+
+impl From<io::Error> for DequeueError {
+    fn from(err: io::Error) -> Self {
+        DequeueError::IOError(err)
+    }
+}
+
 impl Shared {
     fn head(&mut self) -> Option<(&mut dyn SegmentReader, Key, &'static str)> {
         let key_current = self.current_reader.peek_key();
@@ -112,14 +127,24 @@ impl Shared {
         }
     }
 
-    fn dequeue(&mut self, now: Timestamp) -> Result<Option<Entry>> {
+    fn dequeue(&mut self, now: Timestamp) -> result::Result<Item, DequeueError> {
         if let Some((reader, key, reader_name)) = self.head() {
             if key.deadline() <= now {
-                trace!("dequeue: {:?} from {}", key, reader_name);
-                return Ok(reader.next()?);
+                match reader.next()?.unwrap() {
+                    Entry::Pending(item) => Ok(item),
+                    Entry::Tombstone { id, deadline, .. } => {
+                        panic!(
+                            "BUG: dequeued tombstone; id={}, deadline={:?}",
+                            id, deadline
+                        );
+                    }
+                }
+            } else {
+                Err(DequeueError::Pending(key.deadline()))
             }
+        } else {
+            Err(DequeueError::Empty)
         }
-        Ok(None)
     }
 
     fn peek(&mut self, now: Timestamp) -> Result<Option<Entry>> {
@@ -141,10 +166,17 @@ struct OpProcessor {
     id_generator: IdGenerator,
     segment_flusher: TaskHandle<MemorySegmentFlusher>,
     segment_flusher_future: TaskFuture<MemorySegmentFlusher>,
+
+    blocked_dequeues: BlockedDequeues,
+    timer: timer::Scheduler,
+    timer_id: Option<timer::ID>,
 }
 
-impl SimpleTask for OpProcessor {
-    fn run(&mut self) -> bool {
+impl Task for OpProcessor {
+    type Value = ();
+    type Error = ();
+
+    fn run(&mut self, ctx: &TaskContext<Self>) -> result::Result<State<()>, ()> {
         let batch: Vec<Op> = self.op_receiver.try_iter().take(100).collect();
         let more_ready = batch.len() == 100;
 
@@ -160,12 +192,14 @@ impl SimpleTask for OpProcessor {
         let mut dequeue_count = 0;
         let mut requeue_count = 0;
         let mut release_count = 0;
+        let mut deleted = false;
         for op in batch.iter() {
             match op {
                 Op::Enqueue(_, _) => enqueue_count += 1,
                 Op::Dequeue(_, _) => dequeue_count += 1,
                 Op::Requeue(_, _) => requeue_count += 1,
                 Op::Release(_, _) => release_count += 1,
+                Op::Delete(_, _) => deleted = true,
                 _ => {}
             }
         }
@@ -195,7 +229,7 @@ impl SimpleTask for OpProcessor {
             match op {
                 Op::Enqueue(req, resp) => {
                     let id = ids.next().unwrap();
-                    let deadline = adjust_deadline(id, req.deadline.unwrap_or(now));
+                    let deadline = adjust_deadline(id, req.deadline.resolve(now));
                     let val = Ok(EnqueueResp { id, deadline });
                     responses.push(Response::Enqueue(resp, val));
                     entries.push(Entry::Pending(Item {
@@ -209,7 +243,7 @@ impl SimpleTask for OpProcessor {
                         segment_id: locked.current_id,
                     }));
                 }
-                Op::Dequeue(_, resp) => dequeues.push(resp),
+                Op::Dequeue(req, resp) => dequeues.push((req, resp)),
                 Op::Requeue(req, resp) => {
                     let id = match req.id {
                         IdPattern::Any => self.working_set_ids.pop(),
@@ -331,9 +365,20 @@ impl SimpleTask for OpProcessor {
             self.segment_flusher.schedule();
         }
 
-        for resp in dequeues {
-            let val = match locked.dequeue(now).unwrap() {
-                Some(Entry::Pending(item)) => {
+        let mut empty = false;
+        let mut pending = None;
+        let mut try_dequeue = || {
+            if empty {
+                return Err(DequeueError::Empty);
+            }
+
+            if let Some(deadline) = pending {
+                return Err(DequeueError::Pending(deadline));
+            }
+
+            let res = locked.dequeue(now);
+            match &res {
+                Ok(item) => {
                     self.working_set.add(&item).unwrap();
                     self.working_set_ids.insert(item.id);
 
@@ -341,19 +386,102 @@ impl SimpleTask for OpProcessor {
                         id: item.id,
                         deadline: item.deadline,
                     };
-
-                    Ok(item)
                 }
-                None => Err(Error::NoItemReady),
-                Some(Entry::Tombstone { id, deadline, .. }) => {
-                    error!("Dequeued tombstone! id={}, deadline={:?}", id, deadline);
-                    Err(Error::Internal("BUG: dequeued tombstone"))
+                Err(DequeueError::Empty) => {
+                    empty = true;
+                }
+                Err(DequeueError::Pending(deadline)) => {
+                    pending = Some(*deadline);
+                }
+                _ => {}
+            }
+            res
+        };
+
+        let mut pending_deadline = None;
+
+        // Deliver to blocked dequeues first
+        while let Some((_, _, resp)) = self.blocked_dequeues.front() {
+            // Drop cancelled dequeues
+            if resp.is_cancelled() {
+                self.blocked_dequeues.pop_front();
+                continue;
+            }
+
+            match try_dequeue() {
+                Ok(item) => {
+                    let (_, count, resp) = self.blocked_dequeues.pop_front().unwrap();
+                    let mut items = vec![item];
+                    // TODO: Make this configurable
+                    const MAX_BATCH_SIZE: u64 = 100;
+                    let count = count.min(MAX_BATCH_SIZE) as usize;
+                    while items.len() < count {
+                        match try_dequeue() {
+                            Ok(item) => items.push(item),
+                            _ => break,
+                        }
+                    }
+                    responses.push(Response::Dequeue(resp, Ok(items)));
+                }
+                Err(DequeueError::Empty) => {
+                    break;
+                }
+                Err(DequeueError::Pending(deadline)) => {
+                    pending_deadline = Some(deadline);
+                    break;
+                }
+                Err(DequeueError::IOError(err)) => {
+                    error!("IO error on dequeue: {:?}", err);
+                    let (_, _, resp) = self.blocked_dequeues.pop_front().unwrap();
+                    responses.push(Response::Dequeue(resp, Err(err.into())));
+                }
+            }
+        }
+
+        // Handle new dequeues next
+        for (req, resp) in dequeues {
+            let val = match try_dequeue() {
+                Ok(item) => {
+                    let mut items = vec![item];
+                    // TODO: Make this configurable
+                    const MAX_BATCH_SIZE: u64 = 100;
+                    let count = req.count.min(MAX_BATCH_SIZE) as usize;
+                    while items.len() < count {
+                        match try_dequeue() {
+                            Ok(item) => items.push(item),
+                            _ => break,
+                        }
+                    }
+                    Ok(items)
+                }
+                Err(DequeueError::IOError(err)) => {
+                    error!("IO error on dequeue: {:?}", err);
+                    Err(err.into())
+                }
+                Err(err) => {
+                    if let DequeueError::Pending(deadline) = err {
+                        pending_deadline = Some(deadline);
+                    }
+
+                    if req.timeout.is_zero() {
+                        Err(Error::NoItemReady)
+                    } else {
+                        self.blocked_dequeues
+                            .push_back(now + req.timeout, req.count, resp);
+                        continue;
+                    }
                 }
             };
 
             responses.push(Response::Dequeue(resp, val));
         }
+
         drop(locked);
+
+        // Complete blocked dequeues that have timed out
+        for (_, _, resp) in self.blocked_dequeues.expire(now) {
+            responses.push(Response::Dequeue(resp, Err(Error::NoItemReady)));
+        }
 
         for item_ref in working_set_releases {
             item_ref.release();
@@ -363,7 +491,40 @@ impl SimpleTask for OpProcessor {
             resp.complete();
         }
 
-        more_ready
+        let next_wakeup = pending_deadline
+            .iter()
+            .chain(self.blocked_dequeues.next_timeout().iter())
+            .min()
+            .cloned();
+
+        if let Some(deadline) = next_wakeup {
+            trace!("Scheduling wake up in {:?}", deadline - now);
+            if let Some(id) = self.timer_id.take() {
+                self.timer.cancel(id);
+            }
+
+            let deadline = Instant::now() + (deadline - now);
+            self.timer_id = {
+                let ctx = ctx.clone();
+                Some(self.timer.schedule(deadline, move || ctx.schedule()))
+            };
+        }
+
+        if deleted {
+            while let Some((_, _, resp)) = self.blocked_dequeues.pop_front() {
+                resp.complete(Err(Error::NoItemReady));
+            }
+
+            if let Some(id) = self.timer_id.take() {
+                self.timer.cancel(id);
+            }
+
+            Ok(State::Complete(()))
+        } else if more_ready {
+            Ok(State::Runnable)
+        } else {
+            Ok(State::Idle)
+        }
     }
 }
 
@@ -659,7 +820,7 @@ impl Task for Compactor {
     type Value = ();
     type Error = Error;
 
-    fn run(&mut self) -> std::result::Result<State<()>, Error> {
+    fn run(&mut self, _: &TaskContext<Compactor>) -> result::Result<State<()>, Error> {
         // 1. Find and delete fully tombstoned segments.
 
         // 1. Find segment with the most tombstones.
@@ -1155,6 +1316,7 @@ impl Queue {
     fn open<P: AsRef<Path>>(
         name: String,
         scheduler: Scheduler,
+        timer: timer::Scheduler,
         id_generator: IdGenerator,
         working_set: WorkingSet,
         directory: P,
@@ -1241,6 +1403,9 @@ impl Queue {
                 id_generator,
                 segment_flusher,
                 segment_flusher_future,
+                blocked_dequeues: BlockedDequeues::new(),
+                timer,
+                timer_id: None,
             })
         };
 
@@ -1311,6 +1476,7 @@ pub struct Qrono {
 
 struct Inner {
     scheduler: Scheduler,
+    timer: timer::Scheduler,
     id_generator: IdGenerator,
 }
 
@@ -1351,7 +1517,7 @@ impl Display for Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 pub type Future<T> = promise::Future<Result<T>>;
 pub type Promise<T> = promise::Promise<Result<T>>;
 
@@ -1372,6 +1538,7 @@ impl Qrono {
 
     pub fn new<P: AsRef<Path>>(
         scheduler: Scheduler,
+        timer: timer::Scheduler,
         id_generator: IdGenerator,
         working_set: WorkingSet,
         queues_directory: P,
@@ -1379,6 +1546,7 @@ impl Qrono {
     ) -> Qrono {
         let inner = Arc::new(Mutex::new(Inner {
             scheduler: scheduler.clone(),
+            timer: timer.clone(),
             id_generator: id_generator.clone(),
         }));
 
@@ -1414,6 +1582,7 @@ impl Qrono {
             let queue = Queue::open(
                 name.clone(),
                 scheduler.clone(),
+                timer.clone(),
                 id_generator.clone(),
                 working_set.clone(),
                 entry.path(),
@@ -1433,6 +1602,7 @@ impl Qrono {
                 match self.queues.get(queue_name) {
                     None => {
                         let scheduler = inner.scheduler.clone();
+                        let timer = inner.timer.clone();
                         let id_generator = inner.id_generator.clone();
                         let queue_id = id_generator.generate_id();
                         let queue_path = self
@@ -1442,6 +1612,7 @@ impl Qrono {
                         let queue = match Queue::open(
                             queue_name.to_string(),
                             scheduler,
+                            timer,
                             id_generator,
                             self.working_set.clone(),
                             queue_path,
@@ -1587,5 +1758,288 @@ impl Qrono {
 
     pub fn list(&self) -> Vec<String> {
         self.queues.iter().map(|e| e.key().to_string()).collect()
+    }
+}
+
+mod blocked_dequeues {
+    use crate::data::Timestamp;
+    use crate::ops::DequeueResp;
+    use crate::service::slab_deque::SlabDeque;
+    use crate::service::Promise;
+    use slab::Slab;
+    use std::collections::BTreeSet;
+
+    #[derive(Default)]
+    pub struct BlockedDequeues {
+        by_arrival: SlabDeque<(Timestamp, u64, Promise<DequeueResp>)>,
+        by_deadline: BTreeSet<(Timestamp, usize)>,
+    }
+
+    impl BlockedDequeues {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn push_back(&mut self, timeout: Timestamp, count: u64, resp: Promise<DequeueResp>) {
+            let key = self.by_arrival.push_back((timeout, count, resp));
+            self.by_deadline.insert((timeout, key));
+        }
+
+        pub fn pop_front(&mut self) -> Option<(Timestamp, u64, Promise<DequeueResp>)> {
+            match self.by_arrival.pop_front() {
+                Some((key, (timeout, count, resp))) => {
+                    self.by_deadline.remove(&(timeout, key));
+                    Some((timeout, count, resp))
+                }
+                None => None,
+            }
+        }
+
+        pub fn front(&mut self) -> Option<(Timestamp, u64, &Promise<DequeueResp>)> {
+            match self.by_arrival.front() {
+                Some((_, (timeout, count, resp))) => Some((*timeout, *count, resp)),
+                None => None,
+            }
+        }
+
+        pub fn expire(&mut self, now: Timestamp) -> Vec<(Timestamp, u64, Promise<DequeueResp>)> {
+            let removed = self
+                .by_deadline
+                .range(..(now, usize::MAX))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let mut expired = vec![];
+            for (timeout, key) in removed {
+                expired.push(self.by_arrival.remove(key).unwrap());
+                self.by_deadline.remove(&(timeout, key));
+            }
+            expired
+        }
+
+        pub fn next_timeout(&self) -> Option<Timestamp> {
+            self.by_deadline.iter().next().map(|(t, _)| *t)
+        }
+    }
+}
+
+mod slab_deque {
+    use std::mem;
+
+    /// An optional pointer to a entry. Roughly equivalent to `Option<usize>`
+    /// without the discriminant overhead.
+    #[derive(Copy, Clone, Debug, Default)]
+    struct Pointer(usize);
+
+    impl Pointer {
+        #[inline(always)]
+        const fn none() -> Pointer {
+            Pointer(0)
+        }
+
+        fn get(self) -> Option<usize> {
+            match self.0 {
+                0 => None,
+                val => Some(val - 1),
+            }
+        }
+
+        fn is_none(self) -> bool {
+            self.0 == 0
+        }
+    }
+
+    impl From<Pointer> for Option<usize> {
+        fn from(val: Pointer) -> Self {
+            val.get()
+        }
+    }
+
+    impl From<Option<usize>> for Pointer {
+        fn from(val: Option<usize>) -> Self {
+            match val {
+                None => Pointer(0),
+                Some(val) => Pointer(val + 1),
+            }
+        }
+    }
+
+    impl From<usize> for Pointer {
+        fn from(val: usize) -> Self {
+            Some(val).into()
+        }
+    }
+
+    struct Occupied<T> {
+        val: T,
+        next: Pointer,
+        prev: Pointer,
+    }
+
+    struct Free {
+        next: Pointer,
+    }
+
+    enum Slot<T> {
+        Occupied(Occupied<T>),
+        Free(Free),
+    }
+
+    impl<T> Slot<T> {
+        fn unwrap_occupied(self) -> Occupied<T> {
+            match self {
+                Slot::Occupied(occupied) => occupied,
+                Slot::Free(_) => panic!(),
+            }
+        }
+
+        fn unwrap_occupied_mut(&mut self) -> &mut Occupied<T> {
+            match self {
+                Slot::Occupied(occupied) => occupied,
+                Slot::Free(_) => panic!(),
+            }
+        }
+
+        fn unwrap_occupied_ref(&self) -> &Occupied<T> {
+            match self {
+                Slot::Occupied(occupied) => occupied,
+                Slot::Free(_) => panic!(),
+            }
+        }
+
+        fn unwrap_free_mut(&mut self) -> &mut Free {
+            match self {
+                Slot::Free(free) => free,
+                Slot::Occupied(_) => panic!(),
+            }
+        }
+    }
+
+    impl<T> Default for Slot<T> {
+        fn default() -> Self {
+            Slot::Free(Free {
+                next: Pointer::none(),
+            })
+        }
+    }
+
+    pub struct SlabDeque<T> {
+        slots: Vec<Slot<T>>,
+        head: Pointer,
+        tail: Pointer,
+        free: Pointer,
+        len: usize,
+    }
+
+    impl<T> Default for SlabDeque<T> {
+        fn default() -> Self {
+            SlabDeque {
+                slots: vec![],
+                head: Pointer::none(),
+                tail: Pointer::none(),
+                free: Pointer::none(),
+                len: 0,
+            }
+        }
+    }
+
+    impl<T> SlabDeque<T> {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn push_back(&mut self, val: T) -> usize {
+            let idx = if let Some(idx) = self.free.get() {
+                let slot = &mut self.slots[idx];
+                self.free = slot.unwrap_free_mut().next;
+                idx
+            } else {
+                self.slots.push(Slot::default());
+                self.slots.len() - 1
+            };
+
+            let pointer = Pointer::from(idx);
+            let occupied = Occupied {
+                val,
+                prev: self.tail,
+                next: Pointer::none(),
+            };
+
+            if let Some(idx) = self.tail.get() {
+                let tail = self.slots[idx].unwrap_occupied_mut();
+                tail.next = pointer;
+            }
+
+            if occupied.prev.is_none() {
+                self.head = pointer;
+            }
+
+            self.tail = pointer;
+            self.slots[idx] = Slot::Occupied(occupied);
+            self.len += 1;
+            idx
+        }
+
+        pub fn front(&self) -> Option<(usize, &T)> {
+            if let Some(idx) = self.head.get() {
+                Some((idx, &self.slots[idx].unwrap_occupied_ref().val))
+            } else {
+                None
+            }
+        }
+
+        pub fn pop_front(&mut self) -> Option<(usize, T)> {
+            if let Some(idx) = self.head.get() {
+                self.removed_unchecked(idx).map(|val| (idx, val))
+            } else {
+                None
+            }
+        }
+
+        pub fn remove(&mut self, idx: usize) -> Option<T> {
+            if let Some(Slot::Occupied(_)) = self.slots.get(idx) {
+                self.removed_unchecked(idx)
+            } else {
+                None
+            }
+        }
+
+        fn removed_unchecked(&mut self, idx: usize) -> Option<T> {
+            let free = Slot::Free(Free { next: self.free });
+            let slot = mem::replace(&mut self.slots[idx], free);
+            self.free = Pointer::from(idx);
+            self.len -= 1;
+
+            let occupied = slot.unwrap_occupied();
+
+            if self.len == 0 {
+                self.clear();
+                return Some(occupied.val);
+            }
+
+            if let Some(prev) = occupied.prev.get() {
+                let next = self.slots[prev].unwrap_occupied_mut();
+                next.next = occupied.next;
+            } else {
+                self.head = occupied.next;
+            }
+
+            if let Some(next) = occupied.next.get() {
+                let next = self.slots[next].unwrap_occupied_mut();
+                next.prev = occupied.prev;
+            } else {
+                self.tail = occupied.prev;
+            }
+
+            Some(occupied.val)
+        }
+
+        fn clear(&mut self) {
+            self.slots.clear();
+            self.head = Pointer::none();
+            self.tail = Pointer::none();
+            self.free = Pointer::none();
+            self.len = 0;
+        }
     }
 }

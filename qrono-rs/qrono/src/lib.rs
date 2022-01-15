@@ -12,6 +12,7 @@ pub mod wal;
 
 pub mod id_generator;
 pub mod io;
+pub mod timer;
 pub mod working_set;
 
 pub mod path {

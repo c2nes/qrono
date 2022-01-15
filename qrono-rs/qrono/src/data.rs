@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::cmp::Ordering;
 
-use std::ops::{Add, AddAssign};
+use std::ops::{Add, AddAssign, Sub};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Default)]
@@ -61,6 +61,18 @@ impl Add<i64> for Timestamp {
 impl AddAssign<i64> for Timestamp {
     fn add_assign(&mut self, rhs: i64) {
         self.0 += rhs;
+    }
+}
+
+impl Sub for Timestamp {
+    type Output = Duration;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        let millis = self.0 - rhs.0;
+        if millis < 0 {
+            panic!("negative duration")
+        }
+        Duration::from_millis(millis as u64)
     }
 }
 
