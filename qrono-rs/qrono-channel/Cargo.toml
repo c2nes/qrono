@@ -1,0 +1,16 @@
+[package]
+name = "qrono-channel"
+version = "0.1.0"
+edition = "2021"
+
+[[bench]]
+name = "benches"
+harness = false
+
+[dependencies]
+crossbeam-utils = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.3", default-features = false }
+jemallocator = "0.3"
+crossbeam = "0.8"

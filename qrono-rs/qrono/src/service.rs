@@ -3,7 +3,7 @@ use crate::ops::{
     EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp,
     RequeueReq, RequeueResp,
 };
-use crate::{promise, timer};
+use crate::{promise, timer, working_set};
 
 use std::fs::File;
 use std::hash::BuildHasherDefault;
@@ -19,20 +19,20 @@ use crate::segment::{
 use crate::wal::{ReadError, WriteAheadLog};
 
 use crate::id_generator::IdGenerator;
-use crossbeam::channel::{Receiver, Sender};
 use dashmap::DashMap;
 
-use crate::working_set::WorkingSet;
-use indexmap::IndexSet;
+use crate::working_set::{WorkingItem, WorkingSet};
+use indexmap::{IndexMap, IndexSet};
 use log::{debug, error, info, trace};
 use rustc_hash::{FxHashSet, FxHasher};
 
 use std::path::{Path, PathBuf};
 
+use crate::channel::batch::{Receiver, Sender};
 use crate::service::blocked_dequeues::BlockedDequeues;
 use backtrace::Backtrace;
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -96,11 +96,20 @@ struct Shared {
     force_flush: bool,
 }
 
+#[derive(Debug)]
 enum DequeueError {
     Empty,
     Pending(Timestamp),
     IOError(io::Error),
 }
+
+impl Display for DequeueError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for DequeueError {}
 
 impl From<io::Error> for DequeueError {
     fn from(err: io::Error) -> Self {
@@ -127,8 +136,8 @@ impl Shared {
         }
     }
 
-    fn dequeue(&mut self, now: Timestamp) -> result::Result<Item, DequeueError> {
-        if let Some((reader, key, reader_name)) = self.head() {
+    fn dequeue_one(&mut self, now: Timestamp) -> result::Result<Item, DequeueError> {
+        if let Some((reader, key, _)) = self.head() {
             if key.deadline() <= now {
                 match reader.next()?.unwrap() {
                     Entry::Pending(item) => Ok(item),
@@ -147,6 +156,17 @@ impl Shared {
         }
     }
 
+    fn dequeue(&mut self, now: Timestamp, count: usize) -> (VecDeque<Item>, Option<DequeueError>) {
+        let mut items = VecDeque::with_capacity(count);
+        while items.len() < count {
+            match self.dequeue_one(now) {
+                Ok(item) => items.push_back(item),
+                Err(err) => return (items, Some(err)),
+            }
+        }
+        (items, None)
+    }
+
     fn peek(&mut self, now: Timestamp) -> Result<Option<Entry>> {
         if let Some((reader, key, _)) = self.head() {
             if key.deadline() <= now {
@@ -162,7 +182,7 @@ struct OpProcessor {
     shared: Arc<Mutex<Shared>>,
     coordinator: Arc<Mutex<SegmentCoordinator>>,
     working_set: WorkingSet,
-    working_set_ids: IndexSet<ID, BuildHasherDefault<FxHasher>>,
+    working_set_ids: IndexMap<ID, (Timestamp, SegmentID), BuildHasherDefault<FxHasher>>,
     id_generator: IdGenerator,
     segment_flusher: TaskHandle<MemorySegmentFlusher>,
     segment_flusher_future: TaskFuture<MemorySegmentFlusher>,
@@ -177,8 +197,8 @@ impl Task for OpProcessor {
     type Error = ();
 
     fn run(&mut self, ctx: &TaskContext<Self>) -> result::Result<State<()>, ()> {
-        let batch: Vec<Op> = self.op_receiver.try_iter().take(100).collect();
-        let more_ready = batch.len() == 100;
+        let mut batch = self.op_receiver.recv();
+        let more_ready = !batch.is_empty();
 
         /*
         1. Execute read-only operations (peek, info).
@@ -208,7 +228,7 @@ impl Task for OpProcessor {
         let now = Timestamp::now();
         let mut entries = Vec::with_capacity(enqueue_count + 2 * requeue_count + release_count);
         let mut dequeues = Vec::with_capacity(dequeue_count);
-        let mut working_set_releases = Vec::with_capacity(requeue_count + release_count);
+        let mut working_set_tx = self.working_set.tx();
         let mut responses = Vec::with_capacity(batch.len());
 
         let mut locked = self.shared.lock().unwrap();
@@ -243,34 +263,50 @@ impl Task for OpProcessor {
                         segment_id: locked.current_id,
                     }));
                 }
-                Op::Dequeue(req, resp) => dequeues.push((req, resp)),
+                Op::Dequeue(mut req, resp) => {
+                    // TODO: Make this configurable
+                    const MAX_BATCH_SIZE: u64 = 100;
+                    if req.count > MAX_BATCH_SIZE {
+                        req.count = MAX_BATCH_SIZE;
+                    }
+                    dequeues.push((req, resp))
+                }
                 Op::Requeue(req, resp) => {
-                    let id = match req.id {
+                    let working_entry = match req.id {
                         IdPattern::Any => self.working_set_ids.pop(),
-                        IdPattern::Id(id) => self.working_set_ids.take(&id),
+                        IdPattern::Id(id) => self.working_set_ids.remove_entry(&id),
                     };
 
-                    if let Some(id) = id {
+                    if let Some((id, (deadline, segment_id))) = working_entry {
+                        // Push tombstone with original deadline
+                        entries.push(Entry::Tombstone {
+                            id,
+                            deadline,
+                            segment_id,
+                        });
+
                         let deadline = adjust_deadline(id, req.deadline.unwrap_or(now));
                         let item_ref = self
                             .working_set
                             .get(id)
                             .expect("TODO: Handle error")
                             .expect("BUG: id in working_set_ids but not in working_set");
-                        entries.push(Entry::Tombstone {
+                        let WorkingItem {
+                            mut stats, value, ..
+                        } = item_ref.load().unwrap();
+                        stats.dequeue_count += 1;
+                        stats.requeue_time = now;
+                        let item = Item {
                             id,
-                            deadline: item_ref.key().deadline(),
-                            segment_id: item_ref.segment_id(),
-                        });
-                        let mut item = item_ref.load().unwrap();
-                        item.deadline = deadline;
-                        item.stats.dequeue_count += 1;
-                        item.stats.requeue_time = now;
-                        item.segment_id = locked.current_id;
+                            deadline,
+                            stats,
+                            value,
+                            segment_id: locked.current_id,
+                        };
                         entries.push(Entry::Pending(item));
                         let val = Ok(RequeueResp { deadline });
                         responses.push(Response::Requeue(resp, val));
-                        working_set_releases.push(item_ref);
+                        working_set_tx.release(id);
                     } else {
                         let val = Err(Error::ItemNotDequeued);
                         responses.push(Response::Requeue(resp, val));
@@ -278,24 +314,19 @@ impl Task for OpProcessor {
                 }
                 Op::Release(req, resp) => {
                     // TODO: Handle duplicate Requeue/Release in batch!
-                    let id = match req.id {
+                    let working_entry = match req.id {
                         IdPattern::Any => self.working_set_ids.pop(),
-                        IdPattern::Id(id) => self.working_set_ids.take(&id),
+                        IdPattern::Id(id) => self.working_set_ids.remove_entry(&id),
                     };
 
-                    if let Some(id) = id {
-                        let item_ref = self
-                            .working_set
-                            .get(id)
-                            .expect("TODO: Handle error")
-                            .expect("BUG: id in working_set_ids but not in working_set");
+                    if let Some((id, (deadline, segment_id))) = working_entry {
                         entries.push(Entry::Tombstone {
                             id,
-                            deadline: item_ref.key().deadline(),
-                            segment_id: item_ref.segment_id(),
+                            deadline,
+                            segment_id,
                         });
                         responses.push(Response::Release(resp, Ok(())));
-                        working_set_releases.push(item_ref);
+                        working_set_tx.release(id);
                     } else {
                         let val = Err(Error::ItemNotDequeued);
                         responses.push(Response::Release(resp, val));
@@ -365,40 +396,30 @@ impl Task for OpProcessor {
             self.segment_flusher.schedule();
         }
 
-        let mut empty = false;
-        let mut pending = None;
-        let mut try_dequeue = || {
-            if empty {
-                return Err(DequeueError::Empty);
-            }
+        // Dequeue all of the items we need
+        let dequeue_total_count = (self.blocked_dequeues.total_count()
+            + dequeues.iter().map(|(req, _)| req.count).sum::<u64>())
+            as usize;
+        let (mut dequeued_items, dequeue_err) = locked.dequeue(now, dequeue_total_count);
 
-            if let Some(deadline) = pending {
-                return Err(DequeueError::Pending(deadline));
-            }
+        // Remember the most recently dequeued key
+        if let Some(item) = dequeued_items.iter().last() {
+            locked.last = Key::Pending {
+                id: item.id,
+                deadline: item.deadline,
+            };
+        }
 
-            let res = locked.dequeue(now);
-            match &res {
-                Ok(item) => {
-                    self.working_set.add(&item).unwrap();
-                    self.working_set_ids.insert(item.id);
+        drop(locked);
 
-                    locked.last = Key::Pending {
-                        id: item.id,
-                        deadline: item.deadline,
-                    };
-                }
-                Err(DequeueError::Empty) => {
-                    empty = true;
-                }
-                Err(DequeueError::Pending(deadline)) => {
-                    pending = Some(*deadline);
-                }
-                _ => {}
-            }
-            res
-        };
+        // Add all of the items to the working set
+        for item in &dequeued_items {
+            working_set_tx.add(item);
+            self.working_set_ids
+                .insert(item.id, (item.deadline, item.segment_id));
+        }
 
-        let mut pending_deadline = None;
+        working_set_tx.commit().unwrap();
 
         // Deliver to blocked dequeues first
         while let Some((_, _, resp)) = self.blocked_dequeues.front() {
@@ -408,94 +429,83 @@ impl Task for OpProcessor {
                 continue;
             }
 
-            match try_dequeue() {
-                Ok(item) => {
+            match dequeued_items.pop_front() {
+                Some(item) => {
                     let (_, count, resp) = self.blocked_dequeues.pop_front().unwrap();
                     let mut items = vec![item];
-                    // TODO: Make this configurable
-                    const MAX_BATCH_SIZE: u64 = 100;
-                    let count = count.min(MAX_BATCH_SIZE) as usize;
-                    while items.len() < count {
-                        match try_dequeue() {
-                            Ok(item) => items.push(item),
-                            _ => break,
+                    while items.len() < count as usize {
+                        match dequeued_items.pop_front() {
+                            Some(item) => items.push(item),
+                            None => break,
                         }
                     }
                     responses.push(Response::Dequeue(resp, Ok(items)));
                 }
-                Err(DequeueError::Empty) => {
-                    break;
-                }
-                Err(DequeueError::Pending(deadline)) => {
-                    pending_deadline = Some(deadline);
-                    break;
-                }
-                Err(DequeueError::IOError(err)) => {
-                    error!("IO error on dequeue: {:?}", err);
-                    let (_, _, resp) = self.blocked_dequeues.pop_front().unwrap();
-                    responses.push(Response::Dequeue(resp, Err(err.into())));
-                }
+                None => match &dequeue_err {
+                    Some(DequeueError::IOError(err)) => {
+                        error!("IO error on dequeue: {:?}", err);
+                        let (_, _, resp) = self.blocked_dequeues.pop_front().unwrap();
+                        responses.push(Response::Dequeue(resp, Err(err.into())));
+                    }
+                    Some(DequeueError::Empty | DequeueError::Pending(_)) => {
+                        break;
+                    }
+                    None => panic!("BUG: too few items in dequeued_items"),
+                },
             }
         }
 
         // Handle new dequeues next
         for (req, resp) in dequeues {
-            let val = match try_dequeue() {
-                Ok(item) => {
+            let val = match dequeued_items.pop_front() {
+                Some(item) => {
                     let mut items = vec![item];
-                    // TODO: Make this configurable
-                    const MAX_BATCH_SIZE: u64 = 100;
-                    let count = req.count.min(MAX_BATCH_SIZE) as usize;
-                    while items.len() < count {
-                        match try_dequeue() {
-                            Ok(item) => items.push(item),
-                            _ => break,
+                    while items.len() < req.count as usize {
+                        match dequeued_items.pop_front() {
+                            Some(item) => items.push(item),
+                            None => break,
                         }
                     }
                     Ok(items)
                 }
-                Err(DequeueError::IOError(err)) => {
-                    error!("IO error on dequeue: {:?}", err);
-                    Err(err.into())
-                }
-                Err(err) => {
-                    if let DequeueError::Pending(deadline) = err {
-                        pending_deadline = Some(deadline);
+                None => match &dequeue_err {
+                    Some(DequeueError::IOError(err)) => {
+                        error!("IO error on dequeue: {:?}", err);
+                        Err(err.into())
                     }
-
-                    if req.timeout.is_zero() {
-                        Err(Error::NoItemReady)
-                    } else {
-                        self.blocked_dequeues
-                            .push_back(now + req.timeout, req.count, resp);
-                        continue;
+                    Some(DequeueError::Empty | DequeueError::Pending(_)) => {
+                        if req.timeout.is_zero() {
+                            Err(Error::NoItemReady)
+                        } else {
+                            self.blocked_dequeues
+                                .push_back(now + req.timeout, req.count, resp);
+                            continue;
+                        }
                     }
-                }
+                    None => panic!("BUG: too few items in dequeued_items"),
+                },
             };
 
             responses.push(Response::Dequeue(resp, val));
         }
-
-        drop(locked);
 
         // Complete blocked dequeues that have timed out
         for (_, _, resp) in self.blocked_dequeues.expire(now) {
             responses.push(Response::Dequeue(resp, Err(Error::NoItemReady)));
         }
 
-        for item_ref in working_set_releases {
-            item_ref.release();
-        }
-
         for resp in responses {
             resp.complete();
         }
 
-        let next_wakeup = pending_deadline
-            .iter()
-            .chain(self.blocked_dequeues.next_timeout().iter())
-            .min()
-            .cloned();
+        let next_timeout = self.blocked_dequeues.next_timeout();
+        let next_wakeup = match dequeue_err {
+            Some(DequeueError::Pending(deadline)) => match next_timeout {
+                Some(timeout) => Some(timeout.min(deadline)),
+                None => Some(deadline),
+            },
+            _ => next_timeout,
+        };
 
         if let Some(deadline) = next_wakeup {
             trace!("Scheduling wake up in {:?}", deadline - now);
@@ -1390,7 +1400,7 @@ impl Queue {
             })
         };
 
-        let (op_sender, op_receiver) = crossbeam::channel::unbounded();
+        let (op_sender, op_receiver) = crate::channel::batch::channel();
 
         let (op_processor, op_processor_future) = {
             let shared = Arc::clone(&shared);
@@ -1419,32 +1429,32 @@ impl Queue {
     }
 
     fn enqueue(&self, req: EnqueueReq, resp: Promise<EnqueueResp>) {
-        self.op_sender.send(Op::Enqueue(req, resp)).unwrap();
+        self.op_sender.send(Op::Enqueue(req, resp));
         self.op_processor.schedule();
     }
 
     fn dequeue(&self, req: DequeueReq, resp: Promise<DequeueResp>) {
-        self.op_sender.send(Op::Dequeue(req, resp)).unwrap();
+        self.op_sender.send(Op::Dequeue(req, resp));
         self.op_processor.schedule();
     }
 
     fn requeue(&self, req: RequeueReq, resp: Promise<RequeueResp>) {
-        self.op_sender.send(Op::Requeue(req, resp)).unwrap();
+        self.op_sender.send(Op::Requeue(req, resp));
         self.op_processor.schedule();
     }
 
     fn release(&self, req: ReleaseReq, resp: Promise<ReleaseResp>) {
-        self.op_sender.send(Op::Release(req, resp)).unwrap();
+        self.op_sender.send(Op::Release(req, resp));
         self.op_processor.schedule();
     }
 
     fn info(&self, req: InfoReq, resp: Promise<InfoResp>) {
-        self.op_sender.send(Op::Info(req, resp)).unwrap();
+        self.op_sender.send(Op::Info(req, resp));
         self.op_processor.schedule();
     }
 
     fn peek(&self, req: PeekReq, resp: Promise<PeekResp>) {
-        self.op_sender.send(Op::Peek(req, resp)).unwrap();
+        self.op_sender.send(Op::Peek(req, resp));
         self.op_processor.schedule();
     }
 
@@ -1454,12 +1464,12 @@ impl Queue {
     }
 
     fn delete(&self, req: DeleteReq, resp: Promise<DeleteResp>) {
-        self.op_sender.send(Op::Delete(req, resp)).unwrap();
+        self.op_sender.send(Op::Delete(req, resp));
         self.op_processor.schedule();
     }
 
     fn compact(&self, req: CompactReq, resp: Promise<CompactResp>) {
-        self.op_sender.send(Op::Compact(req, resp)).unwrap();
+        self.op_sender.send(Op::Compact(req, resp));
         self.op_processor.schedule();
     }
 }
@@ -1491,6 +1501,18 @@ pub enum Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
+        Self::IOError(err, Backtrace::new())
+    }
+}
+
+impl From<&io::Error> for Error {
+    fn from(err: &io::Error) -> Self {
+        // Manually clone the source error (approximately)
+        let err = match err.raw_os_error() {
+            Some(code) => io::Error::from_raw_os_error(code),
+            None => io::Error::new(err.kind(), err.to_string()),
+        };
+
         Self::IOError(err, Backtrace::new())
     }
 }
@@ -1720,7 +1742,7 @@ impl Qrono {
             // The remaining cleanup steps may take a while so execute them on a separate executor.
             deletion_scheduler.spawn(move || {
                 // Release all items from the working set
-                for id in working_set_ids.drain(..) {
+                for (id, _) in working_set_ids.drain(..) {
                     working_set
                         .get(id)
                         .expect("FIXME: Error retrieving working set entry")
@@ -1773,6 +1795,7 @@ mod blocked_dequeues {
     pub struct BlockedDequeues {
         by_arrival: SlabDeque<(Timestamp, u64, Promise<DequeueResp>)>,
         by_deadline: BTreeSet<(Timestamp, usize)>,
+        total_count: u64,
     }
 
     impl BlockedDequeues {
@@ -1783,12 +1806,14 @@ mod blocked_dequeues {
         pub fn push_back(&mut self, timeout: Timestamp, count: u64, resp: Promise<DequeueResp>) {
             let key = self.by_arrival.push_back((timeout, count, resp));
             self.by_deadline.insert((timeout, key));
+            self.total_count += count;
         }
 
         pub fn pop_front(&mut self) -> Option<(Timestamp, u64, Promise<DequeueResp>)> {
             match self.by_arrival.pop_front() {
                 Some((key, (timeout, count, resp))) => {
                     self.by_deadline.remove(&(timeout, key));
+                    self.total_count -= count;
                     Some((timeout, count, resp))
                 }
                 None => None,
@@ -1811,14 +1836,20 @@ mod blocked_dequeues {
 
             let mut expired = vec![];
             for (timeout, key) in removed {
-                expired.push(self.by_arrival.remove(key).unwrap());
+                let (_, count, resp) = self.by_arrival.remove(key).unwrap();
+                expired.push((timeout, count, resp));
                 self.by_deadline.remove(&(timeout, key));
+                self.total_count -= count;
             }
             expired
         }
 
         pub fn next_timeout(&self) -> Option<Timestamp> {
             self.by_deadline.iter().next().map(|(t, _)| *t)
+        }
+
+        pub fn total_count(&self) -> u64 {
+            self.total_count
         }
     }
 }

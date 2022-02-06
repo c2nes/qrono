@@ -4,6 +4,7 @@ pub mod ops;
 pub mod segment;
 
 pub mod hash;
+pub use qrono_channel as channel;
 pub use qrono_promise as promise;
 pub mod redis;
 pub mod scheduler;

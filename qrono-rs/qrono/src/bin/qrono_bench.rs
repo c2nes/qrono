@@ -317,7 +317,7 @@ impl Benchmark {
             let mut dequeue = redis::cmd("DEQUEUE");
             dequeue.arg(&queue_name);
             if self.pipeline > 1 {
-                dequeue.arg("COUNT").arg(pipeline);
+                dequeue.arg("COUNT").arg(remaining.min(pipeline as u64));
             }
             if self.dequeue_timeout > 0 {
                 dequeue.arg("TIMEOUT").arg(self.dequeue_timeout);

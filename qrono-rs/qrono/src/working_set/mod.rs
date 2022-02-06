@@ -1,4 +1,4 @@
-use crate::data::{Item, Key, SegmentID, Timestamp, ID};
+use crate::data::{Item, Key, SegmentID, Stats, Timestamp, ID};
 use crate::encoding;
 use bytes::{Buf, Bytes, BytesMut};
 use memmap::{MmapMut, MmapOptions};
@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fs, io, mem};
 
@@ -53,7 +54,7 @@ impl Shared {
         self.used as f32 / self.total as f32
     }
 
-    pub fn add(&mut self, item: &Item) -> io::Result<()> {
+    pub fn add<I: ItemData>(&mut self, item: &I) -> io::Result<()> {
         let file = match self.files.get_mut(self.current as usize) {
             Some(file) if file.has_capacity(item) => file,
             old_file => {
@@ -94,7 +95,7 @@ impl Shared {
 
         let file_id = self.current;
         file.add(item)?;
-        self.items.insert(item.id, file_id);
+        self.items.insert(item.id(), file_id);
         Ok(())
     }
 
@@ -196,12 +197,137 @@ impl Task for Compactor {
     }
 }
 
+trait ItemData {
+    fn id(&self) -> ID;
+    fn stats(&self) -> &Stats;
+    fn value(&self) -> &Bytes;
+}
+
+/// A WorkingItem contains the subset of Item data stored by the WorkingSet itself.
+pub struct WorkingItem {
+    pub id: ID,
+    pub stats: Stats,
+    pub value: Bytes,
+}
+
+impl ItemData for WorkingItem {
+    fn id(&self) -> ID {
+        self.id
+    }
+
+    fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    fn value(&self) -> &Bytes {
+        &self.value
+    }
+}
+
+impl ItemData for Item {
+    fn id(&self) -> ID {
+        self.id
+    }
+
+    fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    fn value(&self) -> &Bytes {
+        &self.value
+    }
+}
+
+impl<'a> ItemData for &'a Item {
+    fn id(&self) -> ID {
+        self.id
+    }
+
+    fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    fn value(&self) -> &Bytes {
+        &self.value
+    }
+}
+
 pub struct ItemRef<'a> {
     id: ID,
-    deadline: Timestamp,
-    segment_id: SegmentID,
     len: u32,
     stripe: &'a Stripe,
+}
+
+enum Op<'a> {
+    Add(&'a Item),
+    Release(ID),
+}
+
+pub struct Transaction<'a> {
+    stripes: Vec<(&'a Stripe, Vec<Op<'a>>)>,
+}
+
+impl<'a> Transaction<'a> {
+    fn stripe(&mut self, id: ID) -> &mut (&'a Stripe, Vec<Op<'a>>) {
+        let n = self.stripes.len();
+        let idx = id as usize % n;
+        &mut self.stripes[idx]
+    }
+
+    pub fn add(&mut self, item: &'a Item) {
+        self.stripe(item.id).1.push(Op::Add(item));
+    }
+
+    pub fn release(&mut self, id: ID) {
+        self.stripe(id).1.push(Op::Release(id));
+    }
+
+    pub fn commit(mut self) -> io::Result<()> {
+        let mut batch = self.stripes;
+        let mut next = Vec::with_capacity(batch.len());
+        let mut block = false;
+
+        while !batch.is_empty() {
+            let mut progressed = false;
+            for (stripe, ops) in batch.drain(..) {
+                if ops.is_empty() {
+                    continue;
+                }
+
+                if let Ok(mut locked) = if block {
+                    block = false;
+                    Ok(stripe.shared.lock().unwrap())
+                } else {
+                    stripe.shared.try_lock()
+                } {
+                    progressed = true;
+                    let mut schedule_compaction = false;
+                    for op in ops {
+                        match op {
+                            Op::Add(item) => locked.add(item)?,
+                            Op::Release(id) => {
+                                if locked.release(id) {
+                                    schedule_compaction = true;
+                                }
+                            }
+                        }
+                    }
+                    if schedule_compaction {
+                        stripe.compactor.schedule();
+                    }
+                } else {
+                    next.push((stripe, ops));
+                }
+            }
+
+            mem::swap(&mut batch, &mut next);
+            if !progressed {
+                block = true;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl WorkingSet {
@@ -232,6 +358,14 @@ impl WorkingSet {
         Ok(WorkingSet { stripes })
     }
 
+    pub fn tx(&self) -> Transaction {
+        let mut stripes = vec![];
+        for stripe in self.stripes.iter() {
+            stripes.push((stripe, vec![]));
+        }
+        Transaction { stripes }
+    }
+
     fn stripe(&self, id: ID) -> &Stripe {
         let n = self.stripes.len();
         let idx = id as usize % n;
@@ -247,17 +381,9 @@ impl WorkingSet {
     pub fn get(&self, id: ID) -> io::Result<Option<ItemRef>> {
         let stripe = self.stripe(id);
         let mut shared = stripe.shared.lock().unwrap();
-        if let Some(IndexEntry {
-            deadline,
-            segment_id,
-            len,
-            ..
-        }) = shared.get(id)
-        {
+        if let Some(IndexEntry { len, .. }) = shared.get(id) {
             Ok(Some(ItemRef {
                 id,
-                deadline: *deadline,
-                segment_id: *segment_id,
                 len: *len,
                 stripe,
             }))
@@ -268,18 +394,7 @@ impl WorkingSet {
 }
 
 impl<'a> ItemRef<'a> {
-    pub fn key(&self) -> Key {
-        Key::Pending {
-            id: self.id,
-            deadline: self.deadline,
-        }
-    }
-
-    pub fn segment_id(&self) -> SegmentID {
-        self.segment_id
-    }
-
-    pub fn load(&self) -> io::Result<Item> {
+    pub fn load(&self) -> io::Result<WorkingItem> {
         let shared = self.stripe.shared.lock().unwrap();
         let file_id = match shared.items.get(&self.id) {
             Some(file_id) => *file_id,
@@ -299,8 +414,6 @@ impl<'a> ItemRef<'a> {
 
 #[derive(Copy, Clone)]
 struct IndexEntry {
-    deadline: Timestamp,
-    segment_id: SegmentID,
     pos: u32,
     len: u32,
 }
@@ -314,32 +427,30 @@ struct WorkingSetFile {
 }
 
 impl WorkingSetFile {
-    fn encoded_len(item: &Item) -> usize {
-        encoding::STATS_SIZE + 4 + item.value.len()
+    fn encoded_len<I: ItemData>(item: &I) -> usize {
+        encoding::STATS_SIZE + 4 + item.value().len()
     }
 
-    fn has_capacity(&self, item: &Item) -> bool {
+    fn has_capacity<I: ItemData>(&self, item: &I) -> bool {
         let available = self.mmap.len() - self.pos;
         let required = Self::encoded_len(item);
         required <= available
     }
 
-    fn add(&mut self, item: &Item) -> io::Result<usize> {
+    fn add<I: ItemData>(&mut self, item: &I) -> io::Result<usize> {
         let len = Self::encoded_len(item);
         let mut buf = BytesMut::with_capacity(len);
         // [ID][Stats][Value]
         // [
-        encoding::put_stats(&mut buf, &item.stats);
-        encoding::put_value(&mut buf, &item.value);
+        encoding::put_stats(&mut buf, item.stats());
+        encoding::put_value(&mut buf, item.value());
         self.mmap[self.pos..self.pos + len].copy_from_slice(&buf);
         let pos = self.pos;
         self.pos += len;
         self.used += len;
         self.index.insert(
-            item.id,
+            item.id(),
             IndexEntry {
-                deadline: item.deadline,
-                segment_id: item.segment_id,
                 pos: pos as u32,
                 len: len as u32,
             },
@@ -347,7 +458,7 @@ impl WorkingSetFile {
         Ok(len)
     }
 
-    fn get(&self, id: ID) -> io::Result<Item> {
+    fn get(&self, id: ID) -> io::Result<WorkingItem> {
         let entry = self.index[&id];
         let offset = entry.pos as usize;
         let mut buf = Cursor::new(&self.mmap[offset..]);
@@ -356,13 +467,7 @@ impl WorkingSetFile {
         let offset = offset + encoding::STATS_SIZE + 4;
         let value = &self.mmap[offset..offset + len];
         let value = Bytes::copy_from_slice(value);
-        Ok(Item {
-            id,
-            deadline: entry.deadline,
-            stats,
-            value,
-            segment_id: entry.segment_id,
-        })
+        Ok(WorkingItem { id, stats, value })
     }
 
     fn remove(&mut self, id: ID) -> usize {

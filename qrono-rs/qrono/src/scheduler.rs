@@ -178,7 +178,15 @@ impl<F: FnMut() -> bool + Send + 'static> From<F> for FnTask {
 }
 
 impl<T: Task + 'static> TaskContext<T> {
+    #[inline]
     pub fn schedule(&self) {
+        match self.state.load() {
+            Scheduled | Rescheduled => return,
+            _ => self.schedule_slow(),
+        }
+    }
+
+    fn schedule_slow(&self) {
         loop {
             match self.state.load() {
                 Idle => {
@@ -326,11 +334,11 @@ impl AtomicScheduleState {
     }
 
     fn load(&self) -> ScheduleState {
-        self.0.load(Ordering::Acquire).into()
+        self.0.load(Ordering::Relaxed).into()
     }
 
     fn store(&self, val: ScheduleState) {
-        self.0.store(val.into(), Ordering::Release)
+        self.0.store(val.into(), Ordering::Relaxed)
     }
 
     fn compare_exchange(
@@ -341,8 +349,8 @@ impl AtomicScheduleState {
         match self.0.compare_exchange(
             current.into(),
             new.into(),
-            Ordering::AcqRel,
-            Ordering::Acquire,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
         ) {
             Ok(state) => Ok(state.into()),
             Err(state) => Err(state.into()),

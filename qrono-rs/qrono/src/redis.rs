@@ -1,16 +1,17 @@
+use std::fmt::Write;
 use std::num::ParseIntError;
 use std::ops::{Range, RangeInclusive};
-use std::str;
 use std::str::FromStr;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
+use std::{ptr, str};
 
 use crate::redis::Error::{Incomplete, ProtocolError};
 use crate::redis::Value::{Integer, SimpleString};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use num::integer::div_rem;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     SimpleString(String),
     Error(String),
@@ -313,7 +314,7 @@ impl Value {
         Ok((value, parser.pos))
     }
 
-    fn put(&self, mut buf: &mut BytesMut) {
+    pub fn put<B: RedisBuf>(&self, buf: &mut B) {
         match self {
             Value::SimpleString(s) => {
                 buf.put_u8(b'+');
@@ -327,19 +328,20 @@ impl Value {
             }
             Value::Integer(n) => {
                 buf.put_u8(b':');
-                put_i64(&mut buf, *n);
+                put_i64(buf, *n);
                 buf.put_slice(b"\r\n");
             }
             Value::BulkString(b) => {
                 buf.put_u8(b'$');
-                put_usize(&mut buf, b.len());
+                // TODO: Overflow check?
+                put_u32(buf, b.len() as u32);
                 buf.put_slice(b"\r\n");
                 buf.put_slice(b);
                 buf.put_slice(b"\r\n");
             }
             Value::Array(vals) => {
                 buf.put_u8(b'*');
-                put_usize(&mut buf, vals.len());
+                put_u32(buf, vals.len() as u32);
                 buf.put_slice(b"\r\n");
                 for val in vals {
                     val.put(buf);
@@ -355,9 +357,9 @@ impl Value {
             Value::SimpleString(s) => s.len() + 3, // +<s>\r\n
             Value::Error(s) => s.len() + 3,        // -<s>\r\n
             Value::Integer(n) => i64_len(*n) + 3,  // :<n>\r\n
-            Value::BulkString(b) => usize_len(b.len()) + b.len() + 5, // $<len>\r\n<b>\r\n
+            Value::BulkString(b) => u32_len(b.len() as u32) + b.len() + 5, // $<len>\r\n<b>\r\n
             Value::Array(els) => {
-                let mut size = usize_len(els.len()) + 3; // *<len>\r\n[elements...]
+                let mut size = u32_len(els.len() as u32) + 3; // *<len>\r\n[elements...]
                 for el in els {
                     size += el.encoded_length();
                 }
@@ -369,108 +371,202 @@ impl Value {
     }
 }
 
-pub trait PutValue {
-    fn put_redis_value(&mut self, value: Value);
-}
-
-impl PutValue for BytesMut {
-    fn put_redis_value(&mut self, value: Value) {
-        self.reserve(value.encoded_length());
-        value.put(self);
-    }
-}
-
-fn i64_len(mut n: i64) -> usize {
-    if n >= 0 {
-        if n < 10 {
-            return 1;
-        }
-        if n < 100 {
-            return 2;
-        }
-        if n < 1000 {
-            return 3;
-        }
-        if n < 10000 {
-            return 4;
-        }
-        if n < 100000 {
-            return 5;
-        }
-        if n < 1000000 {
-            return 6;
-        }
-    }
-    let mut len = 1;
+#[inline]
+pub fn i64_len(n: i64) -> usize {
     if n < 0 {
-        len += 1;
-        n *= -1;
+        let n = !(n as u64) + 1;
+        1 + u64_len(n)
+    } else {
+        u64_len(n as u64)
     }
-    while n >= 10 {
-        n /= 10;
-        len += 1;
-    }
-    len
 }
 
-fn usize_len(mut n: usize) -> usize {
+// Take from stdlib unstable method
+#[inline]
+const fn less_than_5(val: u32) -> u32 {
+    // Similar to u8, when adding one of these constants to val,
+    // we get two possible bit patterns above the low 17 bits,
+    // depending on whether val is below or above the threshold.
+    const C1: u32 = 0b011_00000000000000000 - 10; // 393206
+    const C2: u32 = 0b100_00000000000000000 - 100; // 524188
+    const C3: u32 = 0b111_00000000000000000 - 1000; // 916504
+    const C4: u32 = 0b100_00000000000000000 - 10000; // 514288
+
+    // Value of top bits:
+    //                +c1  +c2  1&2  +c3  +c4  3&4   ^
+    //         0..=9  010  011  010  110  011  010  000 = 0
+    //       10..=99  011  011  011  110  011  010  001 = 1
+    //     100..=999  011  100  000  110  011  010  010 = 2
+    //   1000..=9999  011  100  000  111  011  011  011 = 3
+    // 10000..=99999  011  100  000  111  100  100  100 = 4
+    (((val + C1) & (val + C2)) ^ ((val + C3) & (val + C4))) >> 17
+}
+
+#[inline]
+pub const fn log10_u64(mut val: u64) -> u32 {
+    let mut log = 0;
+    if val >= 10_000_000_000 {
+        val /= 10_000_000_000;
+        log += 10;
+    }
+    if val >= 100_000 {
+        val /= 100_000;
+        log += 5;
+    }
+    log + less_than_5(val as u32)
+}
+
+#[inline]
+pub const fn log10_u32(mut val: u32) -> u32 {
+    let mut log = 0;
+    if val >= 100_000 {
+        val /= 100_000;
+        log += 5;
+    }
+    log + less_than_5(val)
+}
+
+#[inline]
+pub const fn u64_len(val: u64) -> usize {
+    (log10_u64(val) + 1) as usize
+}
+
+#[inline]
+pub const fn u32_len(val: u32) -> usize {
+    (log10_u32(val) + 1) as usize
+}
+
+macro_rules! digits_fn {
+    ($name:ident, $width: literal) => {
+        #[inline]
+        fn $name(n: usize, dst: &mut [u8]) {
+            const MAX: usize = 10usize.pow($width);
+            const DIGITS: [u8; $width * MAX] = {
+                let mut digits = [b'0'; $width * MAX];
+                let mut i = 0;
+                while i < MAX {
+                    let mut off = ($width * i) + ($width - 1);
+                    let mut n = i;
+                    while n >= 10 {
+                        digits[off] = b'0' + (n % 10) as u8;
+                        n = n / 10;
+                        off -= 1;
+                    }
+                    digits[off] = b'0' + (n as u8);
+                    i += 1;
+                }
+                digits
+            };
+            let idx = $width * n;
+            let src = &DIGITS[idx..idx + $width];
+            dst.copy_from_slice(src);
+        }
+    };
+}
+
+digits_fn!(digits2, 2);
+digits_fn!(digits4, 4);
+
+pub trait RedisBuf: Sized {
+    fn put_u8(&mut self, val: u8) {
+        self.put_slice(&[val]);
+    }
+
+    fn put_slice(&mut self, val: &[u8]);
+
+    fn put_value(&mut self, val: &Value) {
+        val.put(self)
+    }
+}
+
+impl RedisBuf for BytesMut {
+    fn put_u8(&mut self, val: u8) {
+        BufMut::put_u8(self, val)
+    }
+
+    fn put_slice(&mut self, val: &[u8]) {
+        BufMut::put_slice(self, val)
+    }
+
+    fn put_value(&mut self, val: &Value) {
+        self.reserve(val.encoded_length());
+        val.put(self);
+    }
+}
+
+impl RedisBuf for Vec<u8> {
+    #[inline]
+    fn put_u8(&mut self, val: u8) {
+        self.push(val);
+    }
+
+    #[inline]
+    fn put_slice(&mut self, val: &[u8]) {
+        self.extend_from_slice(val);
+    }
+}
+
+#[inline]
+pub fn put_u32<B: RedisBuf>(buf: &mut B, n: u32) {
     if n < 10 {
-        return 1;
+        buf.put_u8(b'0' + n as u8);
+    } else {
+        put_u32_slow(buf, n)
     }
-    if n < 100 {
-        return 2;
-    }
-    if n < 1000 {
-        return 3;
-    }
-    if n < 10000 {
-        return 4;
-    }
-    if n < 100000 {
-        return 5;
-    }
-    if n < 1000000 {
-        return 6;
-    }
-
-    let mut len = 1;
-    while n >= 10 {
-        n /= 10;
-        len += 1;
-    }
-    len
 }
 
-fn put_usize(buf: &mut BytesMut, mut n: usize) {
-    let start = buf.len();
-    while n >= 10 {
-        let (q, r) = div_rem(n, 10);
-        buf.put_u8(r as u8 + b'0');
+fn put_u32_slow<B: RedisBuf>(buf: &mut B, mut n: u32) {
+    const N: u32 = 10_000;
+    let mut temp = [0u8; 10];
+    let len = u32_len(n);
+
+    let q = n / N;
+    let r = n % N;
+    digits4(r as usize, &mut temp[6..10]);
+    n = q;
+
+    let q = n / N;
+    let r = n % N;
+    digits4(r as usize, &mut temp[2..6]);
+    n = q;
+
+    digits2(n as usize, &mut temp[0..2]);
+
+    buf.put_slice(&temp[temp.len() - len..]);
+}
+
+#[inline]
+pub fn put_u64<B: RedisBuf>(buf: &mut B, n: u64) {
+    if n < 10 {
+        buf.put_u8(b'0' + n as u8)
+    } else {
+        put_u64_slow(buf, n)
+    }
+}
+
+fn put_u64_slow<B: RedisBuf>(buf: &mut B, mut n: u64) {
+    const N: u64 = 10_000;
+    let mut temp = [0u8; 20];
+    let mut pos = temp.len();
+    let len = u64_len(n);
+    while pos > 0 {
+        let q = n / N;
+        let r = n % N;
+        digits4(r as usize, &mut temp[pos - 4..pos]);
         n = q;
+        pos -= 4;
     }
-    buf.put_u8(n as u8 + b'0');
-    let len = buf.len() - start;
-    if len > 1 {
-        buf[start..].reverse();
-    }
+    buf.put_slice(&temp[temp.len() - len..]);
 }
 
-fn put_i64(buf: &mut BytesMut, mut n: i64) {
+#[inline]
+pub fn put_i64<B: RedisBuf>(buf: &mut B, n: i64) {
     if n < 0 {
         buf.put_u8(b'-');
-        n = -n;
-    }
-
-    let start = buf.len();
-    while n >= 10 {
-        let (q, r) = div_rem(n, 10);
-        buf.put_u8(r as u8 + b'0');
-        n = q;
-    }
-    buf.put_u8(n as u8 + b'0');
-    let len = buf.len() - start;
-    if len > 1 {
-        buf[start..].reverse();
+        let n = !(n as u64) + 1;
+        put_u64(buf, n);
+    } else {
+        put_u64(buf, n as u64);
     }
 }
 
@@ -518,15 +614,135 @@ pub fn parse_unsigned(src: &[u8]) -> Result<u64, Error> {
 
 #[cfg(test)]
 mod tests {
-    use crate::redis::{put_usize, Error, Value};
+    use crate::redis::{put_i64, put_u32, put_u64, Error, Value};
     use bytes::BytesMut;
 
+    fn buf() -> Vec<u8> {
+        Vec::new()
+    }
+
     #[test]
-    fn test_put_usize() {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(b"hello world!");
-        put_usize(&mut buf, 1);
-        println!("{:?}", buf);
+    fn test_put_u32() {
+        let test = |n: u32| {
+            let expected = format!("{}", n);
+            let mut buf = buf();
+            put_u32(&mut buf, n);
+            let actual = &buf[..];
+            assert_eq!(expected.as_str(), std::str::from_utf8(actual).unwrap());
+        };
+        for i in 0..=100000 {
+            test(i);
+        }
+        for s in 0..u32::BITS {
+            test(1 << s);
+        }
+
+        let maxpow = (u32::MAX as f64).log10() as u32;
+        for pow in 0..=maxpow {
+            let n = 10u32.pow(pow);
+
+            test(n - 1);
+            test(n);
+            test(n + 1);
+        }
+
+        test(u32::MIN);
+        test(u32::MAX);
+    }
+
+    #[test]
+    fn test_put_u64() {
+        let test = |n: u64| {
+            let expected = format!("{}", n);
+            let mut buf = buf();
+            put_u64(&mut buf, n);
+            let actual = &buf[..];
+            assert_eq!(expected.as_str(), std::str::from_utf8(actual).unwrap());
+        };
+        for i in 0..=100000 {
+            test(i);
+        }
+        for s in 0..u64::BITS {
+            test(1 << s);
+        }
+
+        let maxpow = (u64::MAX as f64).log10() as u32;
+        for pow in 0..=maxpow {
+            let n = 10u64.pow(pow);
+
+            test(n - 1);
+            test(n);
+            test(n + 1);
+        }
+
+        test(u64::MIN);
+        test(u64::MAX);
+    }
+
+    #[test]
+    fn test_encode_integer() {
+        let test = |n: i64| {
+            let expected = format!(":{}\r\n", n);
+            let mut buf = buf();
+            &Value::Integer(n).put(&mut buf);
+            let actual = &buf[..];
+            assert_eq!(expected.as_str(), std::str::from_utf8(actual).unwrap());
+        };
+        for i in -100000..=100000 {
+            test(i);
+        }
+        for s in 0..i64::BITS {
+            test(1 << s);
+        }
+
+        let maxpow = (i64::MAX as f64).log10() as u32;
+        for pow in 0..=maxpow {
+            let n = 10i64.pow(pow);
+
+            test(n - 1);
+            test(n);
+            test(n + 1);
+
+            test(-n - 1);
+            test(-n);
+            test(-n + 1);
+        }
+
+        test(i64::MIN);
+        test(i64::MAX);
+    }
+
+    #[test]
+    fn test_put_i64() {
+        let test = |n: i64| {
+            let expected = format!("{}", n);
+            let mut buf = buf();
+            put_i64(&mut buf, n);
+            let actual = &buf[..];
+            assert_eq!(expected.as_str(), std::str::from_utf8(actual).unwrap());
+        };
+        for i in -100000..=100000 {
+            test(i);
+        }
+        for s in 0..i64::BITS {
+            test(1 << s);
+        }
+
+        let maxpow = (i64::MAX as f64).log10() as u32;
+        for pow in 0..=maxpow {
+            let n = 10i64.pow(pow);
+
+            test(n - 1);
+            test(n);
+            test(n + 1);
+
+            test(-n - 1);
+            test(-n);
+            test(-n + 1);
+        }
+
+        test(i64::MIN);
+        test(i64::MAX);
     }
 
     #[test]

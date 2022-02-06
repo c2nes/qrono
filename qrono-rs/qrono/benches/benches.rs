@@ -1,8 +1,10 @@
 use std::io::Cursor;
+use std::iter;
 use std::time::Instant;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use log::error;
 
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
@@ -281,6 +283,132 @@ fn merged_segment(c: &mut Criterion) {
     bench(1_000_000, 10);
 }
 
+pub fn redis_serde(c: &mut Criterion) {
+    let mut group = c.benchmark_group("redis");
+    let deqeue = b"*4\r\n\
+    $7\r\n\
+    DEQUEUE\r\n\
+    $1\r\n\
+    q\r\n\
+    $7\r\n\
+    TIMEOUT\r\n\
+    $4\r\n\
+    1000\r\n";
+
+    group.bench_with_input("decode/dequeue", &deqeue[..], |b, x| {
+        b.iter(|| Value::from_bytes(x).unwrap());
+    });
+
+    let ping = b"*1\r\n\
+    $4\r\n\
+    PING\r\n";
+
+    group.bench_with_input("decode/ping", &ping[..], |b, x| {
+        b.iter(|| Value::from_bytes(x).unwrap());
+    });
+
+    let millis = Timestamp::now().millis();
+    let resp_one = Value::Array(vec![
+        Value::Integer(1000000000),
+        Value::Integer(millis),
+        Value::Integer(millis),
+        Value::Integer(millis),
+        Value::Integer(1),
+        Value::BulkString(Bytes::from(&b"01234567"[..])),
+    ]);
+    let resp = Value::Array(vec![resp_one.clone()]);
+    let resp_multi = Value::Array(iter::repeat(resp_one.clone()).take(5).collect());
+
+    let mut buf = Vec::new();
+
+    group.bench_with_input("encode/dequeue_resp", &resp, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            x.put(&mut buf);
+        });
+    });
+
+    group.bench_with_input("encode/dequeue_resp/one", &resp_one, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            x.put(&mut buf);
+        });
+    });
+
+    group.bench_with_input("encode/dequeue_resp/multi", &resp_multi, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            x.put(&mut buf);
+        });
+    });
+
+    group.bench_with_input("encode/timestamp", &Value::Integer(millis), |b, x| {
+        b.iter(|| {
+            buf.clear();
+            x.put(&mut buf);
+        });
+    });
+
+    group.bench_function("encode/put_u8", |b| {
+        b.iter(|| {
+            buf.clear();
+            buf.put_u8(b':');
+            buf.put_u8(b':');
+            buf.put_u8(b':');
+        });
+    });
+
+    group.bench_with_input("encode/u32/5", &5, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            qrono::redis::put_u32(&mut buf, *x);
+        });
+    });
+
+    group.bench_with_input("encode/u32/1643041326", &1643041326, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            qrono::redis::put_u32(&mut buf, *x);
+        });
+    });
+
+    group.bench_with_input("encode/u64/1643041326432", &1643041326432, |b, x| {
+        b.iter(|| {
+            buf.clear();
+            qrono::redis::put_i64(&mut buf, *x);
+        });
+    });
+
+    group.bench_with_input("encoded_length/dequeue_resp", &resp, |b, x| {
+        b.iter(|| x.encoded_length());
+    });
+
+    group.bench_with_input("i64_len/4", &4, |b, x| {
+        b.iter(|| qrono::redis::i64_len(*x));
+    });
+
+    group.bench_with_input("i64_len/1642893604833", &1642893604833, |b, x| {
+        b.iter(|| qrono::redis::i64_len(*x));
+    });
+
+    group.bench_with_input("put_slice/bytes", b"0124", |b, x| {
+        b.iter(|| {
+            buf.clear();
+            buf.put_slice(x);
+            buf.len()
+        })
+    });
+
+    let mut buf_vec = Vec::new();
+    group.bench_with_input("put_slice/vec", b"0123", |b, x| {
+        b.iter(|| {
+            buf_vec.clear();
+            buf_vec.extend_from_slice(x);
+            buf_vec.len()
+        })
+    });
+}
+
 criterion_group!(
     benches,
     parse_command,
@@ -290,6 +418,7 @@ criterion_group!(
     id_generator,
     indexed_segment,
     merged_segment,
+    redis_serde,
 );
 
 criterion_main!(benches);

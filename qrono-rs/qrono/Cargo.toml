@@ -43,6 +43,7 @@ env_logger = "0.8.4"
 rustc-hash = "1.1.0"
 
 qrono-promise = { path = "../qrono-promise" }
+qrono-channel = { path = "../qrono-channel" }
 
 [dev-dependencies]
 criterion = { version = "0.3", features = ["html_reports", "async_tokio"] }

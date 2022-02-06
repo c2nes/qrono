@@ -962,6 +962,7 @@ dependencies = [
  "murmur3",
  "num",
  "num_cpus",
+ "qrono-channel",
  "qrono-promise",
  "rand",
  "rayon",
@@ -971,6 +972,16 @@ dependencies = [
  "structopt",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "qrono-channel"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "crossbeam",
+ "crossbeam-utils",
+ "jemallocator",
 ]
 
 [[package]]

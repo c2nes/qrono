@@ -20,7 +20,7 @@ use qrono::ops::{
 };
 use qrono::promise::Future;
 use qrono::redis::Error::{Incomplete, ProtocolError};
-use qrono::redis::{PutValue, Value};
+use qrono::redis::{RedisBuf, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
 
 use qrono::service::Result as QronoResult;
@@ -321,7 +321,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
     let schedule = {
         let mut resp_head: Option<Response> = None;
         let mut writer = std::io::BufWriter::new(conn.try_clone()?);
-        let mut buf = BytesMut::new();
+        let mut buf = Vec::new();
 
         let conn = conn.try_clone()?;
         let handle_io_result = move |res| {
@@ -341,7 +341,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                 if let Some(future) = &resp_head {
                     if future.is_ready() {
                         let val = resp_head.take().unwrap().take();
-                        buf.put_redis_value(val);
+                        buf.put_value(&val);
                         if handle_io_result(writer.write_all(&buf[..])).is_err() {
                             return false;
                         }

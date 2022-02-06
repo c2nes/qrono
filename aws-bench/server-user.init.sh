@@ -24,7 +24,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 git clone https://github.com/c2nes/qrono.git
 
 # Build and install Qrono
-cargo install --path qrono/qrono-rs --bin qrono
+cargo install --path qrono/qrono-rs/qrono --bin qrono
 
 # Build and install redis tools
 curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'

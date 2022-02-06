@@ -490,7 +490,6 @@ impl ImmutableSegmentReader {
 impl SegmentReader for ImmutableSegmentReader {
     fn next(&mut self) -> io::Result<Option<Entry>> {
         if let Some(entry) = self.peeked_entry.take() {
-            self.read_next_key()?;
             return Ok(Some(entry));
         }
 
@@ -505,9 +504,14 @@ impl SegmentReader for ImmutableSegmentReader {
     }
 
     fn peek(&mut self) -> io::Result<Option<Entry>> {
-        let entry = self.next()?;
-        self.peeked_entry = entry.clone();
-        Ok(entry)
+        match &self.peeked_entry {
+            Some(entry) => Ok(Some(entry.clone())),
+            None => {
+                let entry = self.next()?;
+                self.peeked_entry = entry.clone();
+                Ok(entry)
+            }
+        }
     }
 
     fn peek_key(&self) -> Option<Key> {
