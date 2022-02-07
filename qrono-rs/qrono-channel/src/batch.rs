@@ -18,12 +18,18 @@ struct Slot<T> {
 }
 
 impl<T> Slot<T> {
-    unsafe fn write(&self, value: T) {
+    /// Writes a value to the slot.
+    ///
+    /// ## Safety
+    ///
+    /// If there is an existing value in the slot it is replaced without dropping. To drop
+    /// an existing value, `take()` should be called first.
+    unsafe fn write(&mut self, value: T) {
         self.value.get().write(MaybeUninit::new(value));
         self.ready.store(true, Release);
     }
 
-    fn take(&self) -> T {
+    fn take(&mut self) -> T {
         let backoff = Backoff::new();
         while self
             .ready
@@ -32,8 +38,9 @@ impl<T> Slot<T> {
         {
             backoff.spin();
         }
-        let value = self.value.get() as *const T;
-        unsafe { value.read() }
+
+        // SAFETY: `write` sets `ready` to true only after writing an initialized value.
+        unsafe { ptr::read(self.value.get() as *const T) }
     }
 
     fn borrow(&self) -> &T {
@@ -41,8 +48,12 @@ impl<T> Slot<T> {
         while !self.ready.load(Acquire) {
             backoff.spin();
         }
-        let value = self.value.get() as *const T;
-        unsafe { &*value }
+
+        // SAFETY:
+        // - `write` sets `ready` to true only after writing an initialized value.
+        // - The reference is valid until `take` or `write` are called, both of which
+        //   require a mutable reference.
+        unsafe { &*(self.value.get() as *const T) }
     }
 }
 
@@ -53,6 +64,11 @@ struct Block<T> {
 
 impl<T> Block<T> {
     fn new() -> Self {
+        // SAFETY: All fields can be safely zeroed.
+        // - slots can be safely zeroed because Slot<T> can be safely zeroed.
+        //   - Slot.value can be safely zeroed because it is uninitialized.
+        //   - Slot.ready can be safely zeroed because its underlying representation is `false`.
+        // - next can be safely zeroed because it is a null pointer.
         unsafe { MaybeUninit::zeroed().assume_init() }
     }
 }
@@ -113,7 +129,8 @@ impl<T> Shared<T> {
                     if next_pos == SLOTS {
                         self.push_new_tail(None, tail, next_index);
                     }
-                    (*tail).slots.get_unchecked(pos).write(value);
+
+                    (*tail).slots.get_unchecked_mut(pos).write(value);
                     return;
                 },
                 Err(idx) => {
@@ -304,7 +321,7 @@ impl<'a, T> Batch<'a, T> {
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
-            batch: &self,
+            batch: self,
             pos: self.pos,
         }
     }
@@ -314,11 +331,11 @@ impl<'a, T> Iterator for Batch<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &self.block {
+        match &mut self.block {
             None => None,
             Some(block) => {
                 if self.pos < self.len {
-                    let slot = &block.slots[self.pos];
+                    let slot = &mut block.slots[self.pos];
                     let val = slot.take();
                     self.pos += 1;
                     Some(val)
@@ -332,12 +349,12 @@ impl<'a, T> Iterator for Batch<'a, T> {
 
 impl<'a, T> Drop for Batch<'a, T> {
     fn drop(&mut self) {
-        if let Some(block) = self.block.take() {
-            for slot in &block.slots[self.pos..self.len] {
+        if let Some(mut block) = self.block.take() {
+            for slot in &mut block.slots[self.pos..self.len] {
                 drop(slot.take())
             }
 
-            self.free.insert(block);
+            *self.free = Some(block);
         }
     }
 }
@@ -369,24 +386,26 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let block = Box::into_raw(Box::new(Block::new()));
-    let ch = Shared {
+    let shared = Box::new(Shared {
         tail: Tail {
             block: AtomicPtr::new(block),
             index: AtomicUsize::new(0),
         },
         dropped: AtomicBool::new(false),
+    });
+
+    // SAFETY: `into_raw` returns a properly aligned and non-null pointer.
+    let shared = unsafe { NonNull::new_unchecked(Box::into_raw(shared)) };
+    let head = unsafe { NonNull::new_unchecked(block) };
+
+    let sender = Sender { shared };
+    let receiver = Receiver {
+        shared,
+        head,
+        free: None,
     };
 
-    let ch = NonNull::new(Box::into_raw(Box::new(ch))).unwrap();
-
-    (
-        Sender { shared: ch },
-        Receiver {
-            shared: ch,
-            head: NonNull::new(block).unwrap(),
-            free: None,
-        },
-    )
+    (sender, receiver)
 }
 
 #[cfg(test)]
@@ -396,23 +415,69 @@ mod tests {
     use std::sync::Barrier;
 
     #[test]
-    fn test() {
-        let (tx, mut rx) = channel::<usize>();
-        assert_eq!(0, rx.recv().len());
+    fn recv_empty() {
+        let (_, mut rx) = channel::<usize>();
+        let batch = rx.recv();
+        assert_eq!(0, batch.len());
+        assert!(batch.is_empty());
+    }
 
+    #[test]
+    fn recv_partial() {
+        let (tx, mut rx) = channel::<usize>();
         tx.send(1);
         tx.send(2);
         tx.send(3);
         assert_eq!(vec![1, 2, 3], rx.recv().collect::<Vec<_>>());
         assert_eq!(0, rx.recv().len());
+    }
 
-        for i in 0..(10 * SLOTS + 30) {
+    #[test]
+    fn recv_one_full() {
+        let (tx, mut rx) = channel::<usize>();
+        for i in 0..SLOTS {
+            tx.send(i);
+        }
+        assert_eq!(SLOTS, rx.recv().len());
+        assert_eq!(0, rx.recv().len());
+    }
+
+    #[test]
+    fn recv_cycle_mixed() {
+        let (tx, mut rx) = channel::<usize>();
+
+        tx.send(0);
+        for _ in 0..10 {
+            for i in 1..SLOTS {
+                tx.send(i);
+            }
+            tx.send(0);
+
+            let mut batch = rx.recv();
+            for i in 0..SLOTS {
+                assert_eq!(Some(i), batch.next());
+            }
+            assert_eq!(None, batch.next());
+        }
+        assert_eq!(1, rx.recv().len);
+
+        for i in 0..SLOTS - 1 {
             tx.send(i);
         }
         for _ in 0..10 {
-            assert_eq!(SLOTS, rx.recv().len());
+            tx.send(SLOTS - 1);
+            for i in 0..SLOTS - 1 {
+                tx.send(i);
+            }
+
+            let mut batch = rx.recv();
+            for i in 0..SLOTS {
+                assert_eq!(Some(i), batch.next());
+            }
+            assert_eq!(None, batch.next());
         }
-        assert_eq!(30, rx.recv().len());
+        assert_eq!(SLOTS - 1, rx.recv().len);
+
         assert_eq!(0, rx.recv().len());
     }
 
@@ -456,188 +521,52 @@ mod tests {
     }
 
     #[test]
-    fn mpsc() {
+    fn serial() {
         const N: i64 = 1_000_000;
-        const M: i64 = 4;
+        let (tx, mut rx) = channel::<i64>();
+        for i in 0..N {
+            tx.send(i);
+        }
+
+        let mut i = 0;
+        while i < N {
+            for x in rx.recv() {
+                assert_eq!(i, x);
+                i += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn mpsc() {
+        const N: i64 = 100_000;
+        const M: i64 = 100;
         let (tx, mut rx) = channel::<i64>();
         let barrier = Barrier::new((M + 1) as usize);
         crossbeam::scope(|scope| {
-            for _ in 0..M {
-                scope.spawn(|_| {
+            for i in 0..M {
+                let barrier = &barrier;
+                let tx = &tx;
+                scope.spawn(move |_| {
                     barrier.wait();
-                    for i in 0..N {
-                        tx.send(i);
+                    for j in 0..N {
+                        tx.send(i * N + j);
                     }
                 });
             }
 
             barrier.wait();
-            let mut i = 0;
-            while i < N * M {
+            let mut remaining = N * M;
+            let mut sum = 0;
+            while remaining > 0 {
                 for x in rx.recv() {
-                    i += 1;
+                    remaining -= 1;
+                    sum += x;
                 }
             }
+
+            assert_eq!((N * M) * (N * M - 1) / 2, sum);
         })
         .unwrap();
-    }
-
-    // #[test]
-    fn bench() {
-        benches::main();
-    }
-
-    pub mod benches {
-        use super::super::{Receiver, Sender};
-        use crossbeam::queue::SegQueue;
-        use std::thread;
-
-        mod message {
-            use std::fmt;
-
-            const LEN: usize = 1;
-
-            #[derive(Clone, Copy)]
-            pub struct Message(pub [usize; LEN]);
-
-            impl fmt::Debug for Message {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    f.pad("Message")
-                }
-            }
-
-            #[inline]
-            pub fn new(num: usize) -> Message {
-                Message([num; LEN])
-            }
-        }
-
-        const MESSAGES: usize = 50_000_000;
-        const THREADS: usize = 4;
-
-        fn new<T>() -> (Sender<T>, Receiver<T>) {
-            super::super::channel()
-        }
-
-        fn spsc() {
-            let (tx, mut rx) = new();
-
-            crossbeam::scope(|scope| {
-                scope.spawn(|_| {
-                    for i in 0..MESSAGES {
-                        tx.send(message::new(i));
-                    }
-                });
-
-                let mut i = 0;
-                while i < MESSAGES {
-                    let msgs = rx.recv();
-                    if msgs.is_empty() {
-                        std::thread::yield_now();
-                    } else {
-                        for _ in msgs {
-                            i += 1;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-        }
-
-        fn mpsc() {
-            let (tx, mut rx) = new();
-
-            crossbeam::scope(|scope| {
-                for _ in 0..THREADS {
-                    scope.spawn(|_| {
-                        for i in 0..MESSAGES / THREADS {
-                            tx.send(message::new(i));
-                        }
-                    });
-                }
-
-                let mut i = 0;
-                while i < MESSAGES {
-                    let msgs = rx.recv();
-                    if msgs.is_empty() {
-                        std::thread::yield_now();
-                    } else {
-                        for _ in msgs {
-                            i += 1;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-        }
-
-        fn segqueue_spsc() {
-            let q = SegQueue::new();
-
-            crossbeam::scope(|scope| {
-                scope.spawn(|_| {
-                    for i in 0..MESSAGES {
-                        q.push(message::new(i));
-                    }
-                });
-
-                for _ in 0..MESSAGES {
-                    loop {
-                        if q.pop().is_none() {
-                            thread::yield_now();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-        }
-
-        fn segqueue_mpsc() {
-            let q = SegQueue::new();
-
-            crossbeam::scope(|scope| {
-                for _ in 0..THREADS {
-                    scope.spawn(|_| {
-                        for i in 0..MESSAGES / THREADS {
-                            q.push(message::new(i));
-                        }
-                    });
-                }
-
-                for _ in 0..MESSAGES {
-                    loop {
-                        if q.pop().is_none() {
-                            thread::yield_now();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-        }
-
-        pub fn main() {
-            macro_rules! run {
-                ($name:expr, $f:expr) => {
-                    let now = ::std::time::Instant::now();
-                    $f;
-                    let elapsed = now.elapsed();
-                    println!(
-                        "{:25} {:15} {:7.3} sec",
-                        $name,
-                        "Qrono bulk_channel",
-                        elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1e9
-                    );
-                };
-            }
-
-            run!("unbounded_mpsc", mpsc());
-            run!("unbounded_spsc", spsc());
-            run!("segqueue_mpsc", segqueue_mpsc());
-            run!("segqueue_spsc", segqueue_spsc());
-        }
     }
 }
