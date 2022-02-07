@@ -454,7 +454,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             };
 
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Enqueue(resp)).unwrap();
                             qrono.enqueue(&queue, req, promise);
@@ -470,7 +470,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                 }
                             };
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Dequeue(resp)).unwrap();
                             qrono.dequeue(queue, req, promise);
@@ -553,7 +553,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             };
 
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Requeue(resp)).unwrap();
                             qrono.requeue(&queue, req, promise);
@@ -593,7 +593,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             };
 
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Release(resp)).unwrap();
                             qrono.release(&queue, req, promise);
@@ -611,7 +611,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
 
                             let queue = str::from_utf8(&args[0]).unwrap();
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Peek(resp)).unwrap();
                             qrono.peek(&queue, PeekReq, promise);
@@ -635,7 +635,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
 
                             let queue = str::from_utf8(&args[0]).unwrap();
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Info(resp)).unwrap();
                             qrono.info(&queue, InfoReq, promise);
@@ -653,7 +653,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
 
                             let queue = str::from_utf8(&args[0]).unwrap();
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Delete(resp)).unwrap();
                             qrono.delete(&queue, DeleteReq, promise);
@@ -671,7 +671,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
 
                             let queue = str::from_utf8(&args[0]).unwrap();
                             let schedule = Arc::clone(&schedule);
-                            let (resp, mut promise) = Future::new();
+                            let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Compact(resp)).unwrap();
                             qrono.compact(&queue, CompactReq, promise);

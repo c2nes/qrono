@@ -372,7 +372,7 @@ impl Scheduler {
     }
 
     pub fn register<T: Task + 'static>(&self, task: T) -> (TaskHandle<T>, TaskFuture<T>) {
-        let (future, promise) = Future::new();
+        let (promise, future) = Future::new();
         (
             TaskHandle {
                 inner: TaskContext {

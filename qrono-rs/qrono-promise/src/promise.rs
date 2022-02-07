@@ -1,7 +1,6 @@
 use crate::transfer;
 use crate::transfer::{Receiver, Sender};
 use std::mem;
-use std::sync::Arc;
 
 pub use transferable::Future as TransferableFuture;
 
@@ -86,14 +85,14 @@ pub struct Future<T> {
 }
 
 impl<T> Future<T> {
-    pub fn new() -> (Future<T>, Promise<T>) {
+    pub fn new() -> (Promise<T>, Future<T>) {
         let (tx, rx) = transfer::pair();
         (
-            Future { cell: rx },
             Promise {
                 completable: Completable::Cell(tx),
                 callbacks: Callbacks::None,
             },
+            Future { cell: rx },
         )
     }
 
@@ -117,17 +116,12 @@ impl<T> Future<T> {
     where
         T: Send + 'static,
     {
-        let inner = Arc::new(transferable::Inner::new());
-        let promise = {
-            let inner = inner.clone();
-            Self::transfer(move |val| inner.complete(val))
-        };
-        (promise, TransferableFuture { inner })
+        TransferableFuture::new()
     }
 
     pub fn map<U: Send + 'static, F: FnOnce(T) -> U + Send + 'static>(
         f: F,
-    ) -> (Future<U>, Promise<T>)
+    ) -> (Promise<T>, Future<U>)
     where
         T: Send + 'static,
     {
@@ -135,7 +129,7 @@ impl<T> Future<T> {
         let tx0 = Future::transfer(move |val| {
             tx1.send(f(val));
         });
-        (Future { cell: rx1 }, tx0)
+        (tx0, Future { cell: rx1 })
     }
 
     pub fn is_complete(&self) -> bool {
@@ -155,28 +149,29 @@ impl<T> Future<T> {
 }
 
 mod transferable {
+    use crate::Promise;
     use parking_lot::{Condvar, Mutex};
     use std::mem;
     use std::sync::Arc;
 
     pub struct Future<T> {
-        pub inner: Arc<Inner<T>>,
+        inner: Arc<Inner<T>>,
     }
 
-    pub struct Inner<T> {
+    struct Inner<T> {
         state: Mutex<State<T>>,
         ready: Condvar,
     }
 
     impl<T> Inner<T> {
-        pub fn new() -> Self {
+        fn new() -> Self {
             Self {
                 state: Default::default(),
                 ready: Default::default(),
             }
         }
 
-        pub fn complete(&self, val: T) {
+        fn complete(&self, val: T) {
             let mut state = self.state.lock();
             state.store_value(val);
             self.ready.notify_one();
@@ -226,6 +221,18 @@ mod transferable {
     }
 
     impl<T> Future<T> {
+        pub(super) fn new() -> (Promise<T>, Future<T>)
+        where
+            T: Send + 'static,
+        {
+            let inner = Arc::new(Inner::new());
+            let promise = {
+                let inner = inner.clone();
+                super::Future::transfer(move |val| inner.complete(val))
+            };
+            (promise, Self { inner })
+        }
+
         pub fn is_complete(&self) -> bool {
             self.inner.state.lock().is_complete()
         }
@@ -261,7 +268,7 @@ mod test {
 
     #[test]
     fn complete_then_take() {
-        let (rx, tx) = Future::new();
+        let (tx, rx) = Future::new();
         tx.complete("Hello, world!");
         let actual = rx.take();
         assert_eq!("Hello, world!", actual);
@@ -270,7 +277,7 @@ mod test {
     #[test]
     fn dropped_promise_panics_future() {
         // Intentionally drop the Promise and ensure Future::take panics.
-        let (rx, tx) = Future::<()>::new();
+        let (tx, rx) = Future::<()>::new();
         drop(tx);
         let res = std::panic::catch_unwind(AssertUnwindSafe(|| rx.take()));
         assert!(res.is_err());
@@ -278,14 +285,14 @@ mod test {
 
     #[test]
     fn map_then_complete() {
-        let (rx, tx) = Future::map(|v| (v, "Goodbye, world!"));
+        let (tx, rx) = Future::map(|v| (v, "Goodbye, world!"));
         tx.complete("Hello, world!");
         assert_eq!(("Hello, world!", "Goodbye, world!"), rx.take());
     }
 
     #[test]
     fn drop_receiver() {
-        let (rx, tx) = Future::new();
+        let (tx, rx) = Future::new();
         drop(rx);
         assert!(tx.is_cancelled());
         // Should not panic
@@ -294,7 +301,7 @@ mod test {
 
     #[test]
     fn take_blocking() {
-        let (rx, tx) = Future::new();
+        let (tx, rx) = Future::new();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
             tx.complete("Hello, world!");
