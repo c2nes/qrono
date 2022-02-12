@@ -3,7 +3,7 @@ use crate::ops::{
     EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp,
     RequeueReq, RequeueResp,
 };
-use crate::{promise, timer, working_set};
+use crate::{promise, timer};
 
 use std::fs::File;
 use std::hash::BuildHasherDefault;
@@ -22,7 +22,7 @@ use crate::id_generator::IdGenerator;
 use dashmap::DashMap;
 
 use crate::working_set::{WorkingItem, WorkingSet};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use log::{debug, error, info, trace};
 use rustc_hash::{FxHashSet, FxHasher};
 
@@ -197,7 +197,7 @@ impl Task for OpProcessor {
     type Error = ();
 
     fn run(&mut self, ctx: &TaskContext<Self>) -> result::Result<State<()>, ()> {
-        let mut batch = self.op_receiver.recv();
+        let batch = self.op_receiver.recv();
         let more_ready = !batch.is_empty();
 
         /*
@@ -1788,7 +1788,7 @@ mod blocked_dequeues {
     use crate::ops::DequeueResp;
     use crate::service::slab_deque::SlabDeque;
     use crate::service::Promise;
-    use slab::Slab;
+
     use std::collections::BTreeSet;
 
     #[derive(Default)]
@@ -1821,10 +1821,9 @@ mod blocked_dequeues {
         }
 
         pub fn front(&mut self) -> Option<(Timestamp, u64, &Promise<DequeueResp>)> {
-            match self.by_arrival.front() {
-                Some((_, (timeout, count, resp))) => Some((*timeout, *count, resp)),
-                None => None,
-            }
+            self.by_arrival
+                .front()
+                .map(|(_, (timeout, count, resp))| (*timeout, *count, resp))
         }
 
         pub fn expire(&mut self, now: Timestamp) -> Vec<(Timestamp, u64, Promise<DequeueResp>)> {
@@ -1964,19 +1963,19 @@ mod slab_deque {
 
     impl<T> Default for SlabDeque<T> {
         fn default() -> Self {
-            SlabDeque {
+            Self::new()
+        }
+    }
+
+    impl<T> SlabDeque<T> {
+        pub fn new() -> Self {
+            Self {
                 slots: vec![],
                 head: Pointer::none(),
                 tail: Pointer::none(),
                 free: Pointer::none(),
                 len: 0,
             }
-        }
-    }
-
-    impl<T> SlabDeque<T> {
-        pub fn new() -> Self {
-            Self::default()
         }
 
         pub fn push_back(&mut self, val: T) -> usize {
@@ -2012,11 +2011,9 @@ mod slab_deque {
         }
 
         pub fn front(&self) -> Option<(usize, &T)> {
-            if let Some(idx) = self.head.get() {
-                Some((idx, &self.slots[idx].unwrap_occupied_ref().val))
-            } else {
-                None
-            }
+            self.head
+                .get()
+                .map(|idx| (idx, &self.slots[idx].unwrap_occupied_ref().val))
         }
 
         pub fn pop_front(&mut self) -> Option<(usize, T)> {

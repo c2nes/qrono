@@ -1,33 +1,7 @@
 use slab::Slab;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
-
-struct Timer {
-    deadline: Instant,
-    callback: Box<dyn FnOnce()>,
-}
-
-impl Eq for Timer {}
-
-impl PartialEq<Self> for Timer {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl PartialOrd<Self> for Timer {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Timer {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.deadline.cmp(&other.deadline)
-    }
-}
 
 pub type ID = usize;
 pub type Deadline = Instant;
@@ -96,6 +70,11 @@ impl Scheduler {
                 }
 
                 let now = Instant::now();
+
+                // We use collect() here to terminate the iterator chain and
+                // drop the immutable borrow of `locked` so we can borrow it
+                // mutably below.
+                #[allow(clippy::needless_collect)]
                 let ready_keys = locked
                     .callbacks
                     .keys()
@@ -119,7 +98,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use crate::timer::Scheduler;
-    use log::{debug, info, LevelFilter};
+    use log::{info, LevelFilter};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -135,16 +114,19 @@ mod tests {
         let handle1 = sched.schedule(Instant::now() + Duration::from_millis(250), || {
             info!("hi 1");
         });
-        let handle2 = {
+
+        {
             let sched2 = sched.clone();
             sched.schedule(Instant::now() + Duration::from_millis(150), move || {
                 info!("hi 2");
                 sched2.cancel(handle1);
             })
         };
-        let handle3 = sched.schedule(Instant::now() + Duration::from_millis(350), || {
+
+        sched.schedule(Instant::now() + Duration::from_millis(350), || {
             info!("hi 3");
         });
+
         std::thread::sleep(Duration::from_millis(500));
     }
 }

@@ -2,13 +2,13 @@ use std::io::{ErrorKind, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 
 use std::path::PathBuf;
-use std::str::Utf8Error;
+
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::{fs, io, str, thread};
 
 use bytes::{Buf, Bytes, BytesMut};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use qrono::data::{Item, Timestamp};
 use qrono::id_generator::IdGenerator;
 use qrono::io::ReadBufUninitialized;
@@ -190,12 +190,7 @@ fn parse_dequeue_req(args: &[Bytes]) -> Result<(&str, DequeueReq), Response> {
     };
 
     let mut rest = args[1..].iter();
-    loop {
-        let keyword = match rest.next() {
-            Some(keyword) => keyword,
-            None => break,
-        };
-
+    while let Some(keyword) = rest.next() {
         let arg = rest.next().unwrap();
         if keyword.eq_ignore_ascii_case(b"TIMEOUT") {
             match qrono::redis::parse_unsigned(arg) {
@@ -328,9 +323,10 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
             if let Err(err) = &res {
                 warn!("Closing connection. Error writing data to client: {}", err);
                 shutdown_connection(&conn);
+                return false;
             }
 
-            res
+            true
         };
 
         let (handle, _) = scheduler.register_fn(move || {
@@ -342,7 +338,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                     if future.is_ready() {
                         let val = resp_head.take().unwrap().take();
                         buf.put_value(&val);
-                        if handle_io_result(writer.write_all(&buf[..])).is_err() {
+                        if !handle_io_result(writer.write_all(&buf[..])) {
                             return false;
                         }
                         buf.clear();
@@ -367,11 +363,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                 };
             }
 
-            if handle_io_result(writer.flush()).is_err() {
-                return false;
-            }
-
-            true
+            handle_io_result(writer.flush())
         });
 
         Arc::new(handle)
@@ -410,10 +402,8 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             // ENQUEUE <queue> <value> [DEADLINE <deadline>]
                             let (queue, req) = match args.len() {
                                 2 => {
-                                    let mut args = args.into_iter();
-                                    let queue = args.next().unwrap().to_vec(); // TODO: Avoid copy
-                                    let queue = String::from_utf8(queue).unwrap();
-                                    let value = args.next().unwrap();
+                                    let queue = str::from_utf8(&args[0]).unwrap();
+                                    let value = args[1].clone();
                                     let req = EnqueueReq {
                                         value,
                                         deadline: DeadlineReq::Now,
@@ -421,16 +411,14 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     (queue, req)
                                 }
                                 4 => {
-                                    let mut args = args.into_iter();
-                                    let queue = args.next().unwrap().to_vec(); // TODO: Avoid copy
-                                    let queue = String::from_utf8(queue).unwrap();
-                                    let value = args.next().unwrap();
+                                    let queue = str::from_utf8(&args[0]).unwrap();
+                                    let value = args[1].clone();
 
                                     let deadline = {
-                                        let keyword = args.next().unwrap();
-                                        let value = args.next().unwrap();
+                                        let keyword = &args[2];
+                                        let value = &args[3];
 
-                                        match parse_deadline_req(&keyword, &value) {
+                                        match parse_deadline_req(keyword, value) {
                                             Ok(deadline) => deadline,
                                             Err(resp) => {
                                                 resp_tx.send(resp).unwrap();
@@ -457,7 +445,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Enqueue(resp)).unwrap();
-                            qrono.enqueue(&queue, req, promise);
+                            qrono.enqueue(queue, req, promise);
                         }
                         Command::Dequeue => {
                             // DEQUEUE <queue> [TIMEOUT <milliseconds>] [COUNT <count>]
@@ -479,11 +467,9 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             // REQUEUE <queue> <id> [DEADLINE <deadline>]
                             let (queue, req) = match args.len() {
                                 2 => {
-                                    let mut args = args.into_iter();
-                                    let queue = args.next().unwrap().to_vec(); // TODO: Avoid copy
-                                    let queue = String::from_utf8(queue).unwrap();
-                                    let id = args.next().unwrap();
-                                    let id = match qrono::redis::parse_unsigned(&id) {
+                                    let queue = str::from_utf8(&args[0]).unwrap();
+                                    let id = &args[1];
+                                    let id = match qrono::redis::parse_unsigned(id) {
                                         Ok(id) => IdPattern::Id(id),
                                         Err(err) => {
                                             if id.eq_ignore_ascii_case(b"ANY") {
@@ -499,11 +485,9 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                     (queue, req)
                                 }
                                 4 => {
-                                    let mut args = args.into_iter();
-                                    let queue = args.next().unwrap().to_vec(); // TODO: Avoid copy
-                                    let queue = String::from_utf8(queue).unwrap();
-                                    let id = args.next().unwrap();
-                                    let id = match qrono::redis::parse_unsigned(&id) {
+                                    let queue = str::from_utf8(&args[0]).unwrap();
+                                    let id = &args[1];
+                                    let id = match qrono::redis::parse_unsigned(id) {
                                         Ok(id) => IdPattern::Id(id),
                                         Err(err) => {
                                             if id.eq_ignore_ascii_case(b"ANY") {
@@ -515,7 +499,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                             }
                                         }
                                     };
-                                    let keyword = args.next().unwrap();
+                                    let keyword = &args[2];
                                     if !keyword.eq_ignore_ascii_case(b"DEADLINE") {
                                         resp_tx
                                             .send(Response::Error(
@@ -526,8 +510,8 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                                         schedule.schedule();
                                         continue;
                                     }
-                                    let deadline = args.next().unwrap();
-                                    let deadline = match qrono::redis::parse_signed(&deadline) {
+                                    let deadline = &args[3];
+                                    let deadline = match qrono::redis::parse_signed(deadline) {
                                         Ok(deadline) => deadline,
                                         Err(err) => {
                                             resp_tx.send(Response::Value(err.into())).unwrap();
@@ -556,17 +540,15 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Requeue(resp)).unwrap();
-                            qrono.requeue(&queue, req, promise);
+                            qrono.requeue(queue, req, promise);
                         }
                         Command::Release => {
                             // RELEASE <queue> <id>
                             let (queue, req) = match args.len() {
                                 2 => {
-                                    let mut args = args.into_iter();
-                                    let queue = args.next().unwrap().to_vec(); // TODO: Avoid copy
-                                    let queue = String::from_utf8(queue).unwrap();
-                                    let id = args.next().unwrap();
-                                    let id = match qrono::redis::parse_unsigned(&id) {
+                                    let queue = str::from_utf8(&args[0]).unwrap();
+                                    let id = &args[1];
+                                    let id = match qrono::redis::parse_unsigned(id) {
                                         Ok(id) => IdPattern::Id(id),
                                         Err(err) => {
                                             if id.eq_ignore_ascii_case(b"ANY") {
@@ -596,7 +578,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Release(resp)).unwrap();
-                            qrono.release(&queue, req, promise);
+                            qrono.release(queue, req, promise);
                         }
                         Command::Peek => {
                             if args.len() != 1 {
@@ -614,7 +596,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Peek(resp)).unwrap();
-                            qrono.peek(&queue, PeekReq, promise);
+                            qrono.peek(queue, PeekReq, promise);
                         }
                         Command::Ping => {
                             resp_tx
@@ -638,7 +620,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Info(resp)).unwrap();
-                            qrono.info(&queue, InfoReq, promise);
+                            qrono.info(queue, InfoReq, promise);
                         }
                         Command::Delete => {
                             if args.len() != 1 {
@@ -656,7 +638,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Delete(resp)).unwrap();
-                            qrono.delete(&queue, DeleteReq, promise);
+                            qrono.delete(queue, DeleteReq, promise);
                         }
                         Command::Compact => {
                             if args.len() != 1 {
@@ -674,7 +656,7 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Compact(resp)).unwrap();
-                            qrono.compact(&queue, CompactReq, promise);
+                            qrono.compact(queue, CompactReq, promise);
                         }
                     }
                 }

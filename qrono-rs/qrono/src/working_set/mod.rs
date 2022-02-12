@@ -1,4 +1,4 @@
-use crate::data::{Item, Key, SegmentID, Stats, Timestamp, ID};
+use crate::data::{Item, Stats, ID};
 use crate::encoding;
 use bytes::{Buf, Bytes, BytesMut};
 use memmap::{MmapMut, MmapOptions};
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::HashMap;
+
 use std::sync::{Arc, Mutex};
 use std::{fs, io, mem};
 
@@ -84,7 +84,7 @@ impl Shared {
                 let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
                 entry.insert(WorkingSetFile {
-                    path: path.clone(),
+                    path,
                     index: Default::default(),
                     mmap,
                     pos: 0,
@@ -132,7 +132,6 @@ impl Shared {
 
 struct Compactor {
     shared: Arc<Mutex<Shared>>,
-    directory: PathBuf,
 }
 
 impl Task for Compactor {
@@ -180,7 +179,7 @@ impl Task for Compactor {
                         .map(|id| file.get(*id))
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or(vec![]);
+                .unwrap_or_else(Vec::new);
 
             for item in items {
                 let item = item?;
@@ -254,7 +253,6 @@ impl<'a> ItemData for &'a Item {
 
 pub struct ItemRef<'a> {
     id: ID,
-    len: u32,
     stripe: &'a Stripe,
 }
 
@@ -282,7 +280,7 @@ impl<'a> Transaction<'a> {
         self.stripe(id).1.push(Op::Release(id));
     }
 
-    pub fn commit(mut self) -> io::Result<()> {
+    pub fn commit(self) -> io::Result<()> {
         let mut batch = self.stripes;
         let mut next = Vec::with_capacity(batch.len());
         let mut block = false;
@@ -342,13 +340,12 @@ impl WorkingSet {
             .map(|(stripe_idx, (directory, scheduler))| {
                 let shared = Arc::new(Mutex::new(Shared {
                     stripe_idx,
-                    directory: directory.clone(),
+                    directory,
                     ..Default::default()
                 }));
 
                 let (compactor, _) = scheduler.register(Compactor {
                     shared: Arc::clone(&shared),
-                    directory: directory.clone(),
                 });
                 Stripe { shared, compactor }
             })
@@ -381,12 +378,8 @@ impl WorkingSet {
     pub fn get(&self, id: ID) -> io::Result<Option<ItemRef>> {
         let stripe = self.stripe(id);
         let mut shared = stripe.shared.lock().unwrap();
-        if let Some(IndexEntry { len, .. }) = shared.get(id) {
-            Ok(Some(ItemRef {
-                id,
-                len: *len,
-                stripe,
-            }))
+        if shared.get(id).is_some() {
+            Ok(Some(ItemRef { id, stripe }))
         } else {
             Ok(None)
         }

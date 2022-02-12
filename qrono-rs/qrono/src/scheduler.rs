@@ -71,6 +71,7 @@ pub struct TaskHandle<T: Task + 'static> {
 
 pub struct TaskContext<T: Task + 'static> {
     pool: Arc<dyn Spawn>,
+    #[allow(clippy::type_complexity)]
     f: Arc<Mutex<Option<(T, TaskPromise<T>)>>>,
     state: Arc<AtomicScheduleState>,
 }
@@ -181,7 +182,7 @@ impl<T: Task + 'static> TaskContext<T> {
     #[inline]
     pub fn schedule(&self) {
         match self.state.load() {
-            Scheduled | Rescheduled => return,
+            Scheduled | Rescheduled => {}
             _ => self.schedule_slow(),
         }
     }

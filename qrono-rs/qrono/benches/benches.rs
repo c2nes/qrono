@@ -2,9 +2,8 @@ use std::io::Cursor;
 use std::iter;
 use std::time::Instant;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use log::error;
 
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
@@ -25,11 +24,9 @@ pub fn parse_command(c: &mut Criterion) {
     let input = b"*3\r\n$7\r\nENQUEUE\r\n$1\r\nq\r\n$8\r\nAAAAAAAA\r\n";
     let input_bytes = Bytes::copy_from_slice(input);
 
-    c.bench_function("copy/bytes", |b| {
-        b.iter(|| Bytes::copy_from_slice(input).clone().clone())
-    });
+    c.bench_function("copy/bytes", |b| b.iter(|| Bytes::copy_from_slice(input)));
 
-    c.bench_function("copy/vec", |b| b.iter(|| input.to_vec().clone().clone()));
+    c.bench_function("copy/vec", |b| b.iter(|| input.to_vec()));
 
     c.bench_function("Value::from_bytes", |b| {
         b.iter(|| Value::from_bytes(input).unwrap())

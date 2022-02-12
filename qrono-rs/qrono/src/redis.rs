@@ -1,10 +1,9 @@
-use std::fmt::Write;
 use std::num::ParseIntError;
 use std::ops::{Range, RangeInclusive};
+use std::str;
 use std::str::FromStr;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
-use std::{ptr, str};
 
 use crate::redis::Error::{Incomplete, ProtocolError};
 use crate::redis::Value::{Integer, SimpleString};
@@ -382,6 +381,7 @@ pub fn i64_len(n: i64) -> usize {
 
 // Take from stdlib unstable method
 #[inline]
+#[allow(clippy::unusual_byte_groupings)]
 const fn less_than_5(val: u32) -> u32 {
     // Similar to u8, when adding one of these constants to val,
     // we get two possible bit patterns above the low 17 bits,
@@ -448,7 +448,7 @@ macro_rules! digits_fn {
                     let mut n = i;
                     while n >= 10 {
                         digits[off] = b'0' + (n % 10) as u8;
-                        n = n / 10;
+                        n /= 10;
                         off -= 1;
                     }
                     digits[off] = b'0' + (n as u8);
@@ -614,7 +614,6 @@ pub fn parse_unsigned(src: &[u8]) -> Result<u64, Error> {
 #[cfg(test)]
 mod tests {
     use crate::redis::{put_i64, put_u32, put_u64, Error, Value};
-    use bytes::BytesMut;
 
     fn buf() -> Vec<u8> {
         Vec::new()
@@ -683,7 +682,7 @@ mod tests {
         let test = |n: i64| {
             let expected = format!(":{}\r\n", n);
             let mut buf = buf();
-            &Value::Integer(n).put(&mut buf);
+            Value::Integer(n).put(&mut buf);
             let actual = &buf[..];
             assert_eq!(expected.as_str(), std::str::from_utf8(actual).unwrap());
         };

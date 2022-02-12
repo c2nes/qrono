@@ -15,15 +15,15 @@ use redis::{
 
 #[derive(Debug)]
 struct EnqueueResult {
-    id: i64,
-    deadline: i64,
+    _id: i64,
+    _deadline: i64,
 }
 
 impl FromRedisValue for EnqueueResult {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
         FromRedisValue::from_redis_value(v).map(|x: (i64, i64)| EnqueueResult {
-            id: x.0,
-            deadline: x.1,
+            _id: x.0,
+            _deadline: x.1,
         })
     }
 }
@@ -31,10 +31,10 @@ impl FromRedisValue for EnqueueResult {
 #[derive(Debug)]
 struct DequeueResult {
     id: i64,
-    deadline: i64,
-    enqueue_time: i64,
-    requeue_time: i64,
-    dequeue_count: i64,
+    _deadline: i64,
+    _enqueue_time: i64,
+    _requeue_time: i64,
+    _dequeue_count: i64,
     data: Vec<u8>,
 }
 
@@ -43,10 +43,10 @@ impl FromRedisValue for DequeueResult {
         FromRedisValue::from_redis_value(v).map(|x: (i64, i64, i64, i64, i64, Vec<u8>)| {
             DequeueResult {
                 id: x.0,
-                deadline: x.1,
-                enqueue_time: x.2,
-                requeue_time: x.3,
-                dequeue_count: x.4,
+                _deadline: x.1,
+                _enqueue_time: x.2,
+                _requeue_time: x.3,
+                _dequeue_count: x.4,
                 data: x.5,
             }
         })

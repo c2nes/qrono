@@ -8,9 +8,9 @@ use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-use std::io::SeekFrom;
 
 /*
 Segment    := Block* Footer
@@ -47,7 +47,6 @@ pub struct ImmutableSegment {
     segment_id: SegmentID,
     path: PathBuf,
     metadata: Metadata,
-    kind: Kind,
 }
 
 #[derive(Debug)]
@@ -231,14 +230,13 @@ impl ImmutableSegment {
         let Footer {
             metadata,
             segment_id,
-            kind,
+            ..
         } = ImmutableSegmentReader::read_footer(&mut src)?;
         let path = path.as_ref().into();
         Ok(ImmutableSegment {
             path,
             metadata,
             segment_id,
-            kind,
         })
     }
 
@@ -367,7 +365,6 @@ impl ImmutableSegment {
             path,
             metadata,
             segment_id,
-            kind,
         })
     }
 
