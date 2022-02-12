@@ -272,7 +272,7 @@ mod tests {
     use bytes::Bytes;
     use std::collections::HashSet;
 
-    use tokio::time::Instant;
+    use std::time::Instant;
 
     fn pending(id: ID, millis: i64) -> Entry {
         Entry::Pending(Item {

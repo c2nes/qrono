@@ -1,0 +1,12 @@
+[package]
+name = "qrono-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "2"
+crossbeam = "0.8"
+hdrhistogram = "7"
+num = "0.4"
+rand = "0.8"
+redis = "0.19"

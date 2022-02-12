@@ -1,4 +1,3 @@
-use core::panic;
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};

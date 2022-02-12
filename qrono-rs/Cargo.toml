@@ -4,6 +4,7 @@ members = [
   "qrono",
   "qrono-promise",
   "qrono-channel",
+  "qrono-bench",
 ]
 
 [profile.release]

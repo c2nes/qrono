@@ -10,7 +10,7 @@ use std::io::{BufReader, Cursor, Read, Seek, Write};
 
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-use tokio::io::SeekFrom;
+use std::io::SeekFrom;
 
 /*
 Segment    := Block* Footer

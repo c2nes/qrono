@@ -9,7 +9,6 @@ use std::{fs, io, str, thread};
 
 use bytes::{Buf, Bytes, BytesMut};
 use log::{debug, error, info, warn};
-use num::ToPrimitive;
 use qrono::data::{Item, Timestamp};
 use qrono::id_generator::IdGenerator;
 use qrono::io::ReadBufUninitialized;

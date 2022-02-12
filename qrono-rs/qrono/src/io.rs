@@ -21,7 +21,7 @@ pub trait ReadBufUninitialized: Read {
     }
 }
 
-impl ReadBufUninitialized for mio::net::TcpStream {}
+// impl ReadBufUninitialized for mio::net::TcpStream {}
 impl ReadBufUninitialized for TcpStream {}
 impl ReadBufUninitialized for File {}
 impl ReadBufUninitialized for BufReader<File> {}

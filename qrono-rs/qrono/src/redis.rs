@@ -9,7 +9,6 @@ use std::{ptr, str};
 use crate::redis::Error::{Incomplete, ProtocolError};
 use crate::redis::Value::{Integer, SimpleString};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use num::integer::div_rem;
 
 #[derive(Debug, Clone)]
 pub enum Value {
