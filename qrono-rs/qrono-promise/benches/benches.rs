@@ -8,7 +8,7 @@ pub fn promise(c: &mut Criterion) {
     let mut group = c.benchmark_group("promise");
     group.bench_with_input("take", &0, |b, val| {
         b.iter(|| {
-            let (rx, tx) = Future::new();
+            let (tx, rx) = Future::new();
             tx.complete(*val);
             rx.take()
         })
@@ -25,7 +25,7 @@ pub fn promise(c: &mut Criterion) {
 
     group.bench_with_input("callback", &0, |b, val| {
         b.iter(|| {
-            let (rx, mut tx) = Future::new();
+            let (mut tx, rx) = Future::new();
             tx.on_complete(|| {});
             tx.complete(*val);
             rx.take()
@@ -34,7 +34,7 @@ pub fn promise(c: &mut Criterion) {
 
     group.bench_with_input("map", &1, |b, val| {
         b.iter(|| {
-            let (rx, tx) = Future::map(|v| v + 1);
+            let (tx, rx) = Future::map(|v| v + 1);
             tx.complete(*val);
             rx.take()
         })

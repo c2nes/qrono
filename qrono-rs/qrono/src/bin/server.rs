@@ -35,6 +35,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 // TODO:
 //  - Error handling (audit unwrap calls)
+//  - Working item timeouts and TTLs
 
 // Done
 //  - Compact working set
