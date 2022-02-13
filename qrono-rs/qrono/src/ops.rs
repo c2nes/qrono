@@ -1,6 +1,11 @@
 use crate::data::{Item, Timestamp, ID};
+
 use bytes::Bytes;
 use std::time::Duration;
+
+trait Request {
+    type Response;
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DeadlineReq {

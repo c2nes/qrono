@@ -5,8 +5,9 @@ use std::str::FromStr;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 
-use crate::redis::Error::{Incomplete, ProtocolError};
-use crate::redis::Value::{Integer, SimpleString};
+use crate::redis::int_log10;
+use crate::redis::protocol::Error::{Incomplete, ProtocolError};
+use crate::redis::protocol::Value::{Integer, SimpleString};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone)]
@@ -379,60 +380,14 @@ pub fn i64_len(n: i64) -> usize {
     }
 }
 
-// Take from stdlib unstable method
-#[inline]
-#[allow(clippy::unusual_byte_groupings)]
-const fn less_than_5(val: u32) -> u32 {
-    // Similar to u8, when adding one of these constants to val,
-    // we get two possible bit patterns above the low 17 bits,
-    // depending on whether val is below or above the threshold.
-    const C1: u32 = 0b011_00000000000000000 - 10; // 393206
-    const C2: u32 = 0b100_00000000000000000 - 100; // 524188
-    const C3: u32 = 0b111_00000000000000000 - 1000; // 916504
-    const C4: u32 = 0b100_00000000000000000 - 10000; // 514288
-
-    // Value of top bits:
-    //                +c1  +c2  1&2  +c3  +c4  3&4   ^
-    //         0..=9  010  011  010  110  011  010  000 = 0
-    //       10..=99  011  011  011  110  011  010  001 = 1
-    //     100..=999  011  100  000  110  011  010  010 = 2
-    //   1000..=9999  011  100  000  111  011  011  011 = 3
-    // 10000..=99999  011  100  000  111  100  100  100 = 4
-    (((val + C1) & (val + C2)) ^ ((val + C3) & (val + C4))) >> 17
-}
-
-#[inline]
-pub const fn log10_u64(mut val: u64) -> u32 {
-    let mut log = 0;
-    if val >= 10_000_000_000 {
-        val /= 10_000_000_000;
-        log += 10;
-    }
-    if val >= 100_000 {
-        val /= 100_000;
-        log += 5;
-    }
-    log + less_than_5(val as u32)
-}
-
-#[inline]
-pub const fn log10_u32(mut val: u32) -> u32 {
-    let mut log = 0;
-    if val >= 100_000 {
-        val /= 100_000;
-        log += 5;
-    }
-    log + less_than_5(val)
-}
-
 #[inline]
 pub const fn u64_len(val: u64) -> usize {
-    (log10_u64(val) + 1) as usize
+    (int_log10::u64(val) + 1) as usize
 }
 
 #[inline]
 pub const fn u32_len(val: u32) -> usize {
-    (log10_u32(val) + 1) as usize
+    (int_log10::u32(val) + 1) as usize
 }
 
 macro_rules! digits_fn {
@@ -613,7 +568,7 @@ pub fn parse_unsigned(src: &[u8]) -> Result<u64, Error> {
 
 #[cfg(test)]
 mod tests {
-    use crate::redis::{put_i64, put_u32, put_u64, Error, Value};
+    use crate::redis::protocol::{put_i64, put_u32, put_u64, Error, Value};
 
     fn buf() -> Vec<u8> {
         Vec::new()

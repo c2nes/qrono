@@ -8,7 +8,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
 use qrono::id_generator::IdGenerator;
-use qrono::redis::Value;
+use qrono::redis::protocol::Value;
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::segment::mock::{MockSegment, MockSegmentReader};
 use qrono::segment::{
@@ -358,21 +358,21 @@ pub fn redis_serde(c: &mut Criterion) {
     group.bench_with_input("encode/u32/5", &5, |b, x| {
         b.iter(|| {
             buf.clear();
-            qrono::redis::put_u32(&mut buf, *x);
+            qrono::redis::protocol::put_u32(&mut buf, *x);
         });
     });
 
     group.bench_with_input("encode/u32/1643041326", &1643041326, |b, x| {
         b.iter(|| {
             buf.clear();
-            qrono::redis::put_u32(&mut buf, *x);
+            qrono::redis::protocol::put_u32(&mut buf, *x);
         });
     });
 
     group.bench_with_input("encode/u64/1643041326432", &1643041326432, |b, x| {
         b.iter(|| {
             buf.clear();
-            qrono::redis::put_i64(&mut buf, *x);
+            qrono::redis::protocol::put_i64(&mut buf, *x);
         });
     });
 
@@ -381,11 +381,11 @@ pub fn redis_serde(c: &mut Criterion) {
     });
 
     group.bench_with_input("i64_len/4", &4, |b, x| {
-        b.iter(|| qrono::redis::i64_len(*x));
+        b.iter(|| qrono::redis::protocol::i64_len(*x));
     });
 
     group.bench_with_input("i64_len/1642893604833", &1642893604833, |b, x| {
-        b.iter(|| qrono::redis::i64_len(*x));
+        b.iter(|| qrono::redis::protocol::i64_len(*x));
     });
 
     group.bench_with_input("put_slice/bytes", b"0124", |b, x| {
