@@ -285,7 +285,7 @@ impl Task for OpProcessor {
                             segment_id,
                         });
 
-                        let deadline = adjust_deadline(id, req.deadline.unwrap_or(now));
+                        let deadline = adjust_deadline(id, req.deadline.resolve(now));
                         let item_ref = self
                             .working_set
                             .get(id)

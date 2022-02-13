@@ -42,7 +42,7 @@ pub type DequeueResp = Vec<Item>;
 #[derive(Debug)]
 pub struct RequeueReq {
     pub id: IdPattern,
-    pub deadline: Option<Timestamp>,
+    pub deadline: DeadlineReq,
 }
 
 #[derive(Debug)]

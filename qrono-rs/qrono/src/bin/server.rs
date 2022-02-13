@@ -3,6 +3,8 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 
 use std::path::PathBuf;
 
+use std::slice::Iter;
+use std::str::Utf8Error;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::{fs, io, str, thread};
@@ -49,82 +51,274 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 // All pending items are > LAST. All released items are < LAST.
 // All working items are < LAST.
 
-enum Command {
-    Enqueue,
-    Dequeue,
-    Requeue,
-    Release,
-    Info,
-    Peek,
-    Ping,
-    Delete,
-    Compact,
+struct RawRequest<'a>(Iter<'a, Value>);
+
+impl<'a> RawRequest<'a> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn next(&mut self) -> Result<&'a Bytes, Response> {
+        match &self.0.next().unwrap() {
+            Value::BulkString(value) => Ok(value),
+            _ => Err(Response::Error(
+                "ERR Protocol error: bulk string expected".to_string(),
+            )),
+        }
+    }
 }
 
-impl Command {
-    fn parse(value: Value) -> Result<(Command, Vec<Bytes>), qrono::redis::Error> {
-        let args = match value {
-            Value::Array(args) => args,
-            _ => {
-                return Err(qrono::redis::Error::ProtocolError(
-                    "expected command array".to_string(),
-                ))
-            }
-        };
+impl<'a> TryFrom<&'a Value> for RawRequest<'a> {
+    type Error = Response;
 
-        if args.is_empty() {
-            return Err(qrono::redis::Error::ProtocolError(
-                "empty command array".to_string(),
+    fn try_from(value: &'a Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Array(args) => Ok(RawRequest(args.iter())),
+            _ => Err(Response::Error(
+                "ERR Protocol error: array expected".to_string(),
+            )),
+        }
+    }
+}
+
+enum Request<'a> {
+    Enqueue(&'a str, EnqueueReq),
+    Dequeue(&'a str, DequeueReq),
+    Requeue(&'a str, RequeueReq),
+    Release(&'a str, ReleaseReq),
+    Info(&'a str, InfoReq),
+    Peek(&'a str, PeekReq),
+    Delete(&'a str, DeleteReq),
+    Compact(&'a str, CompactReq),
+    Ping(Option<Bytes>),
+}
+
+impl<'a> Request<'a> {
+    fn parse(value: &Value) -> Result<Request, Response> {
+        let mut args = RawRequest::try_from(value)?;
+
+        if args.len() == 0 {
+            return Err(Response::Error(
+                "ERR Protocol error: empty command array".to_string(),
             ));
         }
 
-        let nargs = args.len() - 1;
-        let mut args = args.into_iter();
-        let cmd = match args.next().unwrap() {
-            Value::BulkString(cmd) => cmd,
-            _ => {
-                return Err(qrono::redis::Error::ProtocolError(
-                    "command array should contain bulk strings".to_string(),
-                ));
-            }
-        };
+        let cmd = args.next()?;
 
         if cmd.is_empty() {
-            return Err(qrono::redis::Error::ProtocolError(
-                "command name empty".to_string(),
+            return Err(Response::Error(
+                "ERR Protocol error: command name empty".to_string(),
             ));
         }
 
-        let cmd = match cmd[0] {
-            b'e' | b'E' if cmd.eq_ignore_ascii_case(b"ENQUEUE") => Command::Enqueue,
-            b'd' | b'D' if cmd.eq_ignore_ascii_case(b"DEQUEUE") => Command::Dequeue,
-            b'r' | b'R' if cmd.eq_ignore_ascii_case(b"REQUEUE") => Command::Requeue,
-            b'r' | b'R' if cmd.eq_ignore_ascii_case(b"RELEASE") => Command::Release,
-            b'i' | b'I' if cmd.eq_ignore_ascii_case(b"INFO") => Command::Info,
-            b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PEEK") => Command::Peek,
-            b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PING") => Command::Ping,
-            b'd' | b'D' if cmd.eq_ignore_ascii_case(b"DELETE") => Command::Delete,
-            b'c' | b'C' if cmd.eq_ignore_ascii_case(b"COMPACT") => Command::Compact,
-            _ => {
-                return Err(qrono::redis::Error::ProtocolError(
-                    "ERR command not supported".to_string(),
-                ))
+        match cmd[0] {
+            b'e' | b'E' if cmd.eq_ignore_ascii_case(b"ENQUEUE") => Self::parse_enqueue_req(args),
+            b'd' | b'D' if cmd.eq_ignore_ascii_case(b"DEQUEUE") => Self::parse_dequeue_req(args),
+            b'r' | b'R' if cmd.eq_ignore_ascii_case(b"REQUEUE") => Self::parse_requeue_req(args),
+            b'r' | b'R' if cmd.eq_ignore_ascii_case(b"RELEASE") => Self::parse_release_req(args),
+            b'i' | b'I' if cmd.eq_ignore_ascii_case(b"INFO") => Self::parse_info_req(args),
+            b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PEEK") => Self::parse_peek_req(args),
+            b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PING") => Self::parse_ping_req(args),
+            b'd' | b'D' if cmd.eq_ignore_ascii_case(b"DELETE") => Self::parse_delete_req(args),
+            b'c' | b'C' if cmd.eq_ignore_ascii_case(b"COMPACT") => Self::parse_compact_req(args),
+            _ => Err(Response::Error("ERR command not supported".to_string())),
+        }
+    }
+
+    fn parse_queue_name(name: &[u8]) -> Result<&str, Response> {
+        str::from_utf8(name)
+            .map_err(|_| Response::Error("ERR queue name must be valid UTF8".to_string()))
+    }
+
+    fn parse_deadline_req(args: &mut RawRequest) -> Result<DeadlineReq, Response> {
+        if args.len() < 2 {
+            return Ok(DeadlineReq::Now);
+        }
+
+        let keyword = args.next()?;
+        let value = args.next()?;
+
+        let value = match qrono::redis::parse_signed(value) {
+            Ok(value) => value,
+            Err(_) => {
+                let msg = format!("ERR invalid deadline value, {:?}", value);
+                return Err(Response::Error(msg));
             }
         };
 
-        let mut byte_args = Vec::with_capacity(nargs);
-        for arg in args {
-            byte_args.push(match arg {
-                Value::BulkString(cmd) => cmd,
-                _ => {
-                    return Err(qrono::redis::Error::ProtocolError(
-                        "command array should contain bulk strings".to_string(),
-                    ));
+        if keyword.eq_ignore_ascii_case(b"DEADLINE") {
+            Ok(DeadlineReq::Absolute(Timestamp::from_millis(value)))
+        } else if keyword.eq_ignore_ascii_case(b"DELAY") {
+            if value >= 0 {
+                Ok(DeadlineReq::Relative(Duration::from_millis(value as u64)))
+            } else {
+                Err(Response::Error(
+                    "ERR delay must be non-negative".to_string(),
+                ))
+            }
+        } else {
+            Err(Response::Error(format!(
+                "ERR unexpected keyword {:?}, expected \"DEADLINE\" or \"DELAY\"",
+                keyword
+            )))
+        }
+    }
+
+    fn parse_id_pattern(id: &Bytes) -> Result<IdPattern, Response> {
+        match qrono::redis::parse_unsigned(id) {
+            Ok(id) => Ok(IdPattern::Id(id)),
+            Err(_) => {
+                if id.eq_ignore_ascii_case(b"ANY") {
+                    Ok(IdPattern::Any)
+                } else {
+                    Err(Response::Error("ERR expected ID or \"ANY\"".to_string()))
                 }
-            });
+            }
+        }
+    }
+
+    fn err_invalid_argument_count(n: usize) -> Response {
+        Response::Error(format!("ERR invalid number of arguments, {}", n))
+    }
+
+    // ENQUEUE <queue> <value> [DEADLINE <deadline>]
+    fn parse_enqueue_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            2 | 4 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+        let value = args.next()?.clone();
+        let deadline = Self::parse_deadline_req(&mut args)?;
+
+        Ok(Request::Enqueue(queue, EnqueueReq { value, deadline }))
+    }
+
+    // DEQUEUE <queue> [TIMEOUT <milliseconds>] [COUNT <count>]
+    fn parse_dequeue_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            1 | 3 | 5 => {} // Ok
+            n => {
+                return Err(Self::err_invalid_argument_count(n));
+            }
         }
 
-        Ok((cmd, byte_args))
+        let queue = Self::parse_queue_name(args.next()?)?;
+        let mut req = DequeueReq {
+            timeout: Default::default(),
+            count: 1,
+        };
+
+        while args.len() > 0 {
+            let keyword = args.next()?;
+            let arg = args.next()?;
+
+            if keyword.eq_ignore_ascii_case(b"TIMEOUT") {
+                match qrono::redis::parse_unsigned(arg) {
+                    Ok(millis) => req.timeout = Duration::from_millis(millis),
+                    Err(_) => {
+                        return Err(Response::Error(format!("ERR invalid timeout, {:?}", arg)))
+                    }
+                }
+            } else if keyword.eq_ignore_ascii_case(b"COUNT") {
+                match qrono::redis::parse_unsigned(arg) {
+                    Ok(count) if count > 0 => req.count = count,
+                    _ => return Err(Response::Error(format!("ERR invalid count, {:?}", arg))),
+                }
+            } else {
+                return Err(Response::Error(format!(
+                    "ERR invalid argument, {:?}",
+                    keyword
+                )));
+            }
+        }
+
+        Ok(Request::Dequeue(queue, req))
+    }
+
+    // REQUEUE <queue> <id> [DEADLINE <deadline>]
+    fn parse_requeue_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            2 | 4 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+        let id = Self::parse_id_pattern(args.next()?)?;
+        let deadline = Self::parse_deadline_req(&mut args)?;
+
+        Ok(Request::Requeue(queue, RequeueReq { id, deadline }))
+    }
+
+    // RELEASE <queue> <id>
+    fn parse_release_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            2 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+        let id = Self::parse_id_pattern(args.next()?)?;
+
+        Ok(Request::Release(queue, ReleaseReq { id }))
+    }
+
+    // PEEK <queue>
+    fn parse_peek_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            1 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+
+        Ok(Request::Peek(queue, PeekReq))
+    }
+
+    // INFO <queue>
+    fn parse_info_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            1 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+
+        Ok(Request::Info(queue, InfoReq))
+    }
+
+    // DELETE <queue>
+    fn parse_delete_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            1 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+
+        Ok(Request::Delete(queue, DeleteReq))
+    }
+
+    // COMPACT <queue>
+    fn parse_compact_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            1 => {}
+            n => return Err(Self::err_invalid_argument_count(n)),
+        };
+
+        let queue = str::from_utf8(args.next()?)?;
+
+        Ok(Request::Compact(queue, CompactReq))
+    }
+
+    // PING [<msg>]
+    fn parse_ping_req(mut args: RawRequest) -> Result<Request, Response> {
+        match args.len() {
+            0 => Ok(Request::Ping(None)),
+            1 => Ok(Request::Ping(Some(args.next()?.clone()))),
+            n => Err(Self::err_invalid_argument_count(n)),
+        }
     }
 }
 
@@ -139,78 +333,6 @@ enum Response {
     Compact(Future<QronoResult<CompactResp>>),
     Error(String),
     Value(Value),
-}
-
-fn parse_deadline_req(keyword: &[u8], value: &[u8]) -> Result<DeadlineReq, Response> {
-    let value = match qrono::redis::parse_signed(value) {
-        Ok(value) => value,
-        Err(_) => {
-            let msg = format!("ERR invalid deadline value, {:?}", value);
-            return Err(Response::Error(msg));
-        }
-    };
-
-    if keyword.eq_ignore_ascii_case(b"DEADLINE") {
-        Ok(DeadlineReq::Absolute(Timestamp::from_millis(value)))
-    } else if keyword.eq_ignore_ascii_case(b"DELAY") {
-        if value >= 0 {
-            Ok(DeadlineReq::Relative(Duration::from_millis(value as u64)))
-        } else {
-            Err(Response::Error(
-                "ERR delay must be non-negative".to_string(),
-            ))
-        }
-    } else {
-        Err(Response::Error(format!(
-            "ERR unexpected keyword {:?}, expected \"DEADLINE\" or \"DELAY\"",
-            keyword
-        )))
-    }
-}
-
-fn parse_queue_name(name: &[u8]) -> Result<&str, Response> {
-    str::from_utf8(name)
-        .map_err(|_| Response::Error("ERR queue name must be valid UTF8".to_string()))
-}
-
-fn parse_dequeue_req(args: &[Bytes]) -> Result<(&str, DequeueReq), Response> {
-    match args.len() {
-        1 | 3 | 5 => {} // Ok
-        _ => {
-            return Err(Response::Error(
-                "ERR invalid number of arguments".to_string(),
-            ));
-        }
-    }
-
-    let queue = parse_queue_name(&args[0])?;
-    let mut req = DequeueReq {
-        timeout: Default::default(),
-        count: 1,
-    };
-
-    let mut rest = args[1..].iter();
-    while let Some(keyword) = rest.next() {
-        let arg = rest.next().unwrap();
-        if keyword.eq_ignore_ascii_case(b"TIMEOUT") {
-            match qrono::redis::parse_unsigned(arg) {
-                Ok(millis) => req.timeout = Duration::from_millis(millis),
-                Err(_) => return Err(Response::Error(format!("ERR invalid timeout, {:?}", arg))),
-            }
-        } else if keyword.eq_ignore_ascii_case(b"COUNT") {
-            match qrono::redis::parse_unsigned(arg) {
-                Ok(count) if count > 0 => req.count = count,
-                _ => return Err(Response::Error(format!("ERR invalid count, {:?}", arg))),
-            }
-        } else {
-            return Err(Response::Error(format!(
-                "ERR invalid argument, {:?}",
-                keyword
-            )));
-        }
-    }
-
-    Ok((queue, req))
 }
 
 impl Response {
@@ -296,6 +418,12 @@ impl Response {
             Response::Value(_) => true,
             Response::Error(_) => true,
         }
+    }
+}
+
+impl From<Utf8Error> for Response {
+    fn from(_: Utf8Error) -> Self {
+        Self::Error("ERR Protocol error: invalid UTF8".to_string())
     }
 }
 
@@ -385,278 +513,74 @@ fn handle_client(qrono: Qrono, scheduler: Scheduler, mut conn: TcpStream) -> io:
                 Ok((value, n)) => {
                     frame.advance(n);
 
-                    let (cmd, args) = match Command::parse(value) {
-                        Ok(v) => v,
-                        Err(err) => match err {
-                            Incomplete => panic!("BUG"),
-                            ProtocolError(msg) => {
-                                resp_tx.send(Response::Error(msg)).unwrap();
-                                schedule.schedule();
-                                continue;
-                            }
-                        },
+                    let req = match Request::parse(&value) {
+                        Ok(req) => req,
+                        Err(resp) => {
+                            resp_tx.send(resp).unwrap();
+                            schedule.schedule();
+                            continue;
+                        }
                     };
 
-                    match cmd {
-                        Command::Enqueue => {
-                            // ENQUEUE <queue> <value> [DEADLINE <deadline>]
-                            let (queue, req) = match args.len() {
-                                2 => {
-                                    let queue = str::from_utf8(&args[0]).unwrap();
-                                    let value = args[1].clone();
-                                    let req = EnqueueReq {
-                                        value,
-                                        deadline: DeadlineReq::Now,
-                                    };
-                                    (queue, req)
-                                }
-                                4 => {
-                                    let queue = str::from_utf8(&args[0]).unwrap();
-                                    let value = args[1].clone();
+                    let schedule = Arc::clone(&schedule);
 
-                                    let deadline = {
-                                        let keyword = &args[2];
-                                        let value = &args[3];
-
-                                        match parse_deadline_req(keyword, value) {
-                                            Ok(deadline) => deadline,
-                                            Err(resp) => {
-                                                resp_tx.send(resp).unwrap();
-                                                schedule.schedule();
-                                                continue;
-                                            }
-                                        }
-                                    };
-                                    let req = EnqueueReq { value, deadline };
-                                    (queue, req)
-                                }
-                                _ => {
-                                    resp_tx
-                                        .send(Response::Error(
-                                            "incorrect number of arguments to ENQUEUE".to_string(),
-                                        ))
-                                        .unwrap();
-                                    schedule.schedule();
-                                    continue;
-                                }
-                            };
-
-                            let schedule = Arc::clone(&schedule);
+                    match req {
+                        Request::Enqueue(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Enqueue(resp)).unwrap();
                             qrono.enqueue(queue, req, promise);
                         }
-                        Command::Dequeue => {
-                            // DEQUEUE <queue> [TIMEOUT <milliseconds>] [COUNT <count>]
-                            let (queue, req) = match parse_dequeue_req(&args) {
-                                Ok(val) => val,
-                                Err(resp) => {
-                                    resp_tx.send(resp).unwrap();
-                                    schedule.schedule();
-                                    continue;
-                                }
-                            };
-                            let schedule = Arc::clone(&schedule);
+                        Request::Dequeue(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Dequeue(resp)).unwrap();
                             qrono.dequeue(queue, req, promise);
                         }
-                        Command::Requeue => {
-                            // REQUEUE <queue> <id> [DEADLINE <deadline>]
-                            let (queue, req) = match args.len() {
-                                2 => {
-                                    let queue = str::from_utf8(&args[0]).unwrap();
-                                    let id = &args[1];
-                                    let id = match qrono::redis::parse_unsigned(id) {
-                                        Ok(id) => IdPattern::Id(id),
-                                        Err(err) => {
-                                            if id.eq_ignore_ascii_case(b"ANY") {
-                                                IdPattern::Any
-                                            } else {
-                                                resp_tx.send(Response::Value(err.into())).unwrap();
-                                                schedule.schedule();
-                                                continue;
-                                            }
-                                        }
-                                    };
-                                    let req = RequeueReq { id, deadline: None };
-                                    (queue, req)
-                                }
-                                4 => {
-                                    let queue = str::from_utf8(&args[0]).unwrap();
-                                    let id = &args[1];
-                                    let id = match qrono::redis::parse_unsigned(id) {
-                                        Ok(id) => IdPattern::Id(id),
-                                        Err(err) => {
-                                            if id.eq_ignore_ascii_case(b"ANY") {
-                                                IdPattern::Any
-                                            } else {
-                                                resp_tx.send(Response::Value(err.into())).unwrap();
-                                                schedule.schedule();
-                                                continue;
-                                            }
-                                        }
-                                    };
-                                    let keyword = &args[2];
-                                    if !keyword.eq_ignore_ascii_case(b"DEADLINE") {
-                                        resp_tx
-                                            .send(Response::Error(
-                                                "ERR unexpected keyword, expected \"DEADLINE\""
-                                                    .into(),
-                                            ))
-                                            .unwrap();
-                                        schedule.schedule();
-                                        continue;
-                                    }
-                                    let deadline = &args[3];
-                                    let deadline = match qrono::redis::parse_signed(deadline) {
-                                        Ok(deadline) => deadline,
-                                        Err(err) => {
-                                            resp_tx.send(Response::Value(err.into())).unwrap();
-                                            schedule.schedule();
-                                            continue;
-                                        }
-                                    };
-                                    let req = RequeueReq {
-                                        id,
-                                        deadline: Some(Timestamp::from_millis(deadline)),
-                                    };
-                                    (queue, req)
-                                }
-                                _ => {
-                                    resp_tx
-                                        .send(Response::Error(
-                                            "incorrect number of arguments".to_string(),
-                                        ))
-                                        .unwrap();
-                                    schedule.schedule();
-                                    continue;
-                                }
-                            };
-
-                            let schedule = Arc::clone(&schedule);
+                        Request::Requeue(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Requeue(resp)).unwrap();
                             qrono.requeue(queue, req, promise);
                         }
-                        Command::Release => {
-                            // RELEASE <queue> <id>
-                            let (queue, req) = match args.len() {
-                                2 => {
-                                    let queue = str::from_utf8(&args[0]).unwrap();
-                                    let id = &args[1];
-                                    let id = match qrono::redis::parse_unsigned(id) {
-                                        Ok(id) => IdPattern::Id(id),
-                                        Err(err) => {
-                                            if id.eq_ignore_ascii_case(b"ANY") {
-                                                IdPattern::Any
-                                            } else {
-                                                resp_tx.send(Response::Value(err.into())).unwrap();
-                                                schedule.schedule();
-                                                continue;
-                                            }
-                                        }
-                                    };
-                                    let req = ReleaseReq { id };
-                                    (queue, req)
-                                }
-                                _ => {
-                                    resp_tx
-                                        .send(Response::Error(
-                                            "incorrect number of arguments".to_string(),
-                                        ))
-                                        .unwrap();
-                                    schedule.schedule();
-                                    continue;
-                                }
-                            };
-
-                            let schedule = Arc::clone(&schedule);
+                        Request::Release(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Release(resp)).unwrap();
                             qrono.release(queue, req, promise);
                         }
-                        Command::Peek => {
-                            if args.len() != 1 {
-                                resp_tx
-                                    .send(Response::Error(
-                                        "incorrect number of arguments to ENQUEUE".to_string(),
-                                    ))
-                                    .unwrap();
-                                schedule.schedule();
-                                continue;
-                            }
-
-                            let queue = str::from_utf8(&args[0]).unwrap();
-                            let schedule = Arc::clone(&schedule);
-                            let (mut promise, resp) = Future::new();
-                            promise.on_complete(move || schedule.schedule());
-                            resp_tx.send(Response::Peek(resp)).unwrap();
-                            qrono.peek(queue, PeekReq, promise);
-                        }
-                        Command::Ping => {
-                            resp_tx
-                                .send(Response::Value(Value::SimpleString("PONG".to_string())))
-                                .unwrap();
-                            schedule.schedule();
-                        }
-                        Command::Info => {
-                            if args.len() != 1 {
-                                resp_tx
-                                    .send(Response::Error(
-                                        "incorrect number of arguments".to_string(),
-                                    ))
-                                    .unwrap();
-                                schedule.schedule();
-                                continue;
-                            }
-
-                            let queue = str::from_utf8(&args[0]).unwrap();
-                            let schedule = Arc::clone(&schedule);
+                        Request::Info(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Info(resp)).unwrap();
-                            qrono.info(queue, InfoReq, promise);
+                            qrono.info(queue, req, promise);
                         }
-                        Command::Delete => {
-                            if args.len() != 1 {
-                                resp_tx
-                                    .send(Response::Error(
-                                        "incorrect number of arguments".to_string(),
-                                    ))
-                                    .unwrap();
-                                schedule.schedule();
-                                continue;
-                            }
-
-                            let queue = str::from_utf8(&args[0]).unwrap();
-                            let schedule = Arc::clone(&schedule);
+                        Request::Peek(queue, req) => {
+                            let (mut promise, resp) = Future::new();
+                            promise.on_complete(move || schedule.schedule());
+                            resp_tx.send(Response::Peek(resp)).unwrap();
+                            qrono.peek(queue, req, promise);
+                        }
+                        Request::Delete(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Delete(resp)).unwrap();
-                            qrono.delete(queue, DeleteReq, promise);
+                            qrono.delete(queue, req, promise);
                         }
-                        Command::Compact => {
-                            if args.len() != 1 {
-                                resp_tx
-                                    .send(Response::Error(
-                                        "incorrect number of arguments".to_string(),
-                                    ))
-                                    .unwrap();
-                                schedule.schedule();
-                                continue;
-                            }
-
-                            let queue = str::from_utf8(&args[0]).unwrap();
-                            let schedule = Arc::clone(&schedule);
+                        Request::Compact(queue, req) => {
                             let (mut promise, resp) = Future::new();
                             promise.on_complete(move || schedule.schedule());
                             resp_tx.send(Response::Compact(resp)).unwrap();
-                            qrono.compact(queue, CompactReq, promise);
+                            qrono.compact(queue, req, promise);
+                        }
+                        Request::Ping(msg) => {
+                            resp_tx
+                                .send(Response::Value(match msg {
+                                    Some(msg) => Value::BulkString(msg),
+                                    None => Value::SimpleString("PING".to_string()),
+                                }))
+                                .unwrap();
+                            schedule.schedule();
                         }
                     }
                 }
