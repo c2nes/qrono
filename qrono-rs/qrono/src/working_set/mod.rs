@@ -12,6 +12,7 @@ use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::result::IgnoreErr;
 use std::sync::{Arc, Mutex};
 use std::{fs, io, mem};
 
@@ -311,7 +312,7 @@ impl<'a> Transaction<'a> {
                         }
                     }
                     if schedule_compaction {
-                        stripe.compactor.schedule();
+                        stripe.compactor.schedule().ignore_err();
                     }
                 } else {
                     next.push((stripe, ops));
@@ -400,7 +401,7 @@ impl<'a> ItemRef<'a> {
     pub fn release(self) {
         let mut shared = self.stripe.shared.lock().unwrap();
         if shared.release(self.id) {
-            self.stripe.compactor.schedule();
+            self.stripe.compactor.schedule().ignore_err();
         }
     }
 }

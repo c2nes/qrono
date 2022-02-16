@@ -6,7 +6,7 @@ use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 
 use crate::redis::int_log10;
-use crate::redis::protocol::Error::{Incomplete, ProtocolError};
+use crate::redis::protocol::Error::{ProtocolError, UnexpectedEof};
 use crate::redis::protocol::Value::{Integer, SimpleString};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -23,15 +23,15 @@ pub enum Value {
 
 #[derive(Debug)]
 pub enum Error {
-    Incomplete,
     ProtocolError(String),
+    UnexpectedEof,
 }
 
 impl From<Error> for Value {
     fn from(err: Error) -> Self {
         match err {
             ProtocolError(s) => Value::Error(s),
-            Incomplete => panic!("Error::Incomplete is an internal-only error"),
+            UnexpectedEof => panic!("Error::Incomplete is an internal-only error"),
         }
     }
 }
@@ -76,7 +76,7 @@ impl<'a> Buf for ValueParser<'a> {
 impl<'a> ValueParser<'a> {
     fn read_value(&mut self) -> Result<Value, Error> {
         if self.remaining() == 0 {
-            return Err(Incomplete);
+            return Err(UnexpectedEof);
         }
 
         match self.get_u8() as char {
@@ -111,7 +111,7 @@ impl<'a> ValueParser<'a> {
         }
         let len = len as usize;
         if self.remaining() < len + 2 {
-            return Err(Incomplete);
+            return Err(UnexpectedEof);
         }
         let range = self.read_slice(len);
         let value = Bytes::copy_from_slice(&self.buf[range]);
@@ -144,7 +144,7 @@ impl<'a> ValueParser<'a> {
                 return Ok(str::from_utf8(&self.buf[range])?);
             }
         }
-        Err(Incomplete)
+        Err(UnexpectedEof)
     }
 
     fn read_length(&mut self) -> Result<i64, Error> {
@@ -158,7 +158,7 @@ impl<'a> ValueParser<'a> {
                 return parse_signed(&self.buf[start..end]);
             }
         }
-        Err(Incomplete)
+        Err(UnexpectedEof)
     }
 
     #[inline(always)]
@@ -179,128 +179,7 @@ impl<'a> ValueParser<'a> {
     }
 }
 
-struct ValueChecker<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Buf for ValueChecker<'a> {
-    fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
-    }
-
-    fn chunk(&self) -> &[u8] {
-        &self.buf[self.pos..]
-    }
-
-    fn advance(&mut self, cnt: usize) {
-        self.pos += cnt;
-    }
-}
-
-impl<'a> ValueChecker<'a> {
-    fn read_value(&mut self) -> Result<(), Error> {
-        if self.remaining() == 0 {
-            return Err(Incomplete);
-        }
-
-        match self.get_u8() as char {
-            '+' => self.read_simple_string(),
-            '-' => self.read_error(),
-            ':' => self.read_integer(),
-            '$' => self.read_bulk_string(),
-            '*' => self.read_array(),
-            c => Err(ProtocolError(format!("unexpected character, {:?}", c))),
-        }
-    }
-
-    fn read_simple_string(&mut self) -> Result<(), Error> {
-        self.read_line()?;
-        Ok(())
-    }
-
-    fn read_error(&mut self) -> Result<(), Error> {
-        self.read_line()?;
-        Ok(())
-    }
-
-    fn read_integer(&mut self) -> Result<(), Error> {
-        let line = self.read_line()?;
-        i64::from_str(line)?;
-        Ok(())
-    }
-
-    fn read_bulk_string(&mut self) -> Result<(), Error> {
-        let len = self.read_length()?;
-        if len < 0 {
-            return Ok(());
-        }
-        let len = len as usize;
-        if self.remaining() < len + 2 {
-            return Err(Incomplete);
-        }
-        self.advance(len);
-        self.read_crlf()?;
-        Ok(())
-    }
-
-    fn read_array(&mut self) -> Result<(), Error> {
-        let len = self.read_length()?;
-        if len < 0 {
-            return Ok(());
-        }
-        let len = len as usize;
-        for _ in 0..len {
-            self.read_value()?
-        }
-        Ok(())
-    }
-
-    fn read_line(&mut self) -> Result<&str, Error> {
-        for idx in 0..self.remaining() {
-            if self.buf[self.pos + idx] == b'\n' {
-                let len = idx - 1;
-                let start = self.pos;
-                let end = start + len;
-                self.advance(len);
-                self.read_crlf()?;
-                return Ok(str::from_utf8(&self.buf[start..end])?);
-            }
-        }
-        Err(Incomplete)
-    }
-
-    fn read_length(&mut self) -> Result<i64, Error> {
-        for idx in 0..self.remaining() {
-            if self.buf[self.pos + idx] == b'\n' {
-                let len = idx - 1;
-                let start = self.pos;
-                let end = start + len;
-                self.advance(len);
-                self.read_crlf()?;
-                return parse_signed(&self.buf[start..end]);
-            }
-        }
-        Err(Incomplete)
-    }
-
-    #[inline(always)]
-    fn read_crlf(&mut self) -> Result<(), Error> {
-        if self.get_u8() != b'\r' || self.get_u8() != b'\n' {
-            return Err(ProtocolError(String::from("missing line terminator")));
-        }
-
-        Ok(())
-    }
-}
-
 impl Value {
-    pub fn check(buf: &[u8]) -> Result<usize, Error> {
-        let mut checker = ValueChecker { buf, pos: 0 };
-        checker.read_value()?;
-        Ok(checker.pos)
-    }
-
     pub fn from_bytes(buf: &[u8]) -> Result<(Value, usize), Error> {
         let mut parser = ValueParser { buf, pos: 0 };
         let value = parser.read_value()?;
@@ -311,6 +190,14 @@ impl Value {
         let mut parser = ValueParser { buf: &buf, pos: 0 };
         let value = parser.read_value()?;
         Ok((value, parser.pos))
+    }
+
+    pub fn from_bytes_mut(buf: &mut BytesMut) -> Result<Value, Error> {
+        let mut parser = ValueParser { buf, pos: 0 };
+        let value = parser.read_value()?;
+        let pos = parser.pos;
+        buf.advance(pos);
+        Ok(value)
     }
 
     pub fn put<B: RedisBuf>(&self, buf: &mut B) {
@@ -704,7 +591,7 @@ mod tests {
         let input = input.as_bytes();
         for i in 0..input.len() - 1 {
             let res = Value::from_bytes(&input[..i]);
-            if let Err(Error::Incomplete) = &res {
+            if let Err(Error::UnexpectedEof) = &res {
                 // Okay
                 continue;
             }

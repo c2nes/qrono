@@ -29,6 +29,7 @@ use rustc_hash::{FxHashSet, FxHasher};
 use std::path::{Path, PathBuf};
 
 use crate::channel::batch::{Receiver, Sender};
+use crate::result::IgnoreErr;
 use crate::service::blocked_dequeues::BlockedDequeues;
 use backtrace::Backtrace;
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -381,7 +382,7 @@ impl Task for OpProcessor {
                 }
                 Op::Compact(_, resp) => {
                     locked.force_flush = true;
-                    self.segment_flusher.schedule();
+                    self.segment_flusher.schedule().ignore_err();
                     responses.push(Response::Compact(resp, Ok(())));
                 }
             };
@@ -393,7 +394,7 @@ impl Task for OpProcessor {
         //   have a size limit on the WAL itself to ensure it does not
         //   grow too large regardless of in-memory size.
         if current.size() > SEGMENT_FLUSH_THRESHOLD {
-            self.segment_flusher.schedule();
+            self.segment_flusher.schedule().ignore_err();
         }
 
         // Dequeue all of the items we need
@@ -516,7 +517,9 @@ impl Task for OpProcessor {
             let deadline = Instant::now() + (deadline - now);
             self.timer_id = {
                 let ctx = ctx.clone();
-                Some(self.timer.schedule(deadline, move || ctx.schedule()))
+                Some(self.timer.schedule(deadline, move || {
+                    ctx.schedule().ignore_err();
+                }))
             };
         }
 
@@ -758,7 +761,7 @@ impl SimpleTask for MemorySegmentFlusher {
                     }
 
                     fs::remove_dir(temp_dir).unwrap();
-                    self.compactor.schedule();
+                    self.compactor.schedule().ignore_err();
                     debug!("Flush completed in {:?}", start.elapsed(),);
                 }
                 Err(err) => error!("Error writing segment: {}", err),
@@ -1430,32 +1433,32 @@ impl Queue {
 
     fn enqueue(&self, req: EnqueueReq, resp: Promise<EnqueueResp>) {
         self.op_sender.send(Op::Enqueue(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn dequeue(&self, req: DequeueReq, resp: Promise<DequeueResp>) {
         self.op_sender.send(Op::Dequeue(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn requeue(&self, req: RequeueReq, resp: Promise<RequeueResp>) {
         self.op_sender.send(Op::Requeue(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn release(&self, req: ReleaseReq, resp: Promise<ReleaseResp>) {
         self.op_sender.send(Op::Release(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn info(&self, req: InfoReq, resp: Promise<InfoResp>) {
         self.op_sender.send(Op::Info(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn peek(&self, req: PeekReq, resp: Promise<PeekResp>) {
         self.op_sender.send(Op::Peek(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn mark_deleted(&self) -> Result<()> {
@@ -1465,12 +1468,12 @@ impl Queue {
 
     fn delete(&self, req: DeleteReq, resp: Promise<DeleteResp>) {
         self.op_sender.send(Op::Delete(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 
     fn compact(&self, req: CompactReq, resp: Promise<CompactResp>) {
         self.op_sender.send(Op::Compact(req, resp));
-        self.op_processor.schedule();
+        self.op_processor.schedule().ignore_err();
     }
 }
 

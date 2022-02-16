@@ -1,5 +1,6 @@
 use crate::data::ID;
 use crate::path;
+use crate::result::IgnoreErr;
 use crate::scheduler::{FnTask, Scheduler, TaskHandle};
 use crossbeam::utils::Backoff;
 use std::fs::File;
@@ -26,7 +27,7 @@ impl IdGenerator {
             Arc::new(handle)
         };
         if inner.raise_ceiling() {
-            raise_ceiling.schedule();
+            raise_ceiling.schedule().ignore_err();
         }
         Ok(IdGenerator {
             inner,
@@ -91,7 +92,7 @@ impl Inner {
         let id = self.next.fetch_add(n, Ordering::Relaxed);
         let ceiling = self.ceiling.load(Ordering::Acquire);
         if ceiling < id + n + self.raise_ceiling_threshold {
-            raise_ceiling.schedule();
+            raise_ceiling.schedule().ignore_err();
         }
         if ceiling < id + n {
             self.wait_for_clearance(id + n)

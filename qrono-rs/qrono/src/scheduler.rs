@@ -1,5 +1,6 @@
 use rayon::ThreadPool;
-use std::fmt::{Debug, Formatter};
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 
 use crate::promise::{Future, Promise, TransferableFuture};
 use crate::scheduler::ScheduleState::{Complete, Failed};
@@ -86,11 +87,11 @@ impl<T: Task + 'static> Clone for TaskContext<T> {
 }
 
 impl<T: Task + 'static> TaskHandle<T> {
-    pub fn schedule(&self) {
+    pub fn schedule(&self) -> ScheduleResult {
         self.inner.schedule()
     }
 
-    pub fn cancel(self) {
+    pub fn cancel(&self) {
         self.inner.cancel();
         if let Ok(mut f) = self.inner.f.try_lock() {
             if let Some((task, promise)) = f.take() {
@@ -102,7 +103,7 @@ impl<T: Task + 'static> TaskHandle<T> {
 
 impl<T: Task + 'static> Drop for TaskHandle<T> {
     fn drop(&mut self) {
-        self.inner.state.store(Canceled)
+        self.cancel()
     }
 }
 
@@ -135,6 +136,8 @@ pub enum State<T> {
 }
 
 pub trait Task: Send + Sized {
+    const IDLE: Result<State<Self::Value>, Self::Error> = Ok(State::Idle);
+
     type Value: Send;
     type Error: Send;
 
@@ -180,33 +183,33 @@ impl<F: FnMut() -> bool + Send + 'static> From<F> for FnTask {
 
 impl<T: Task + 'static> TaskContext<T> {
     #[inline]
-    pub fn schedule(&self) {
+    pub fn schedule(&self) -> ScheduleResult {
         match self.state.load() {
-            Scheduled | Rescheduled => {}
+            Scheduled | Rescheduled => Ok(()),
             _ => self.schedule_slow(),
         }
     }
 
-    fn schedule_slow(&self) {
+    fn schedule_slow(&self) -> ScheduleResult {
         loop {
             match self.state.load() {
                 Idle => {
                     if self.state.compare_exchange(Idle, Scheduled).is_ok() {
                         self.submit();
-                        return;
+                        return Ok(());
                     }
                 }
                 Running => {
                     if self.state.compare_exchange(Running, Rescheduled).is_ok() {
-                        return;
+                        return Ok(());
                     }
                 }
                 Scheduled | Rescheduled => {
-                    return;
+                    return Ok(());
                 }
-                Canceled => panic!("canceled"),
-                Failed => panic!("failed"),
-                Complete => panic!("complete"),
+                Canceled => return Err(ScheduleError::Canceled),
+                Failed => return Err(ScheduleError::Failed),
+                Complete => return Err(ScheduleError::Complete),
             }
         }
     }
@@ -293,6 +296,23 @@ impl<T: Task + 'static> TaskContext<T> {
         }));
     }
 }
+
+#[derive(Debug, Copy, Clone)]
+pub enum ScheduleError {
+    Canceled,
+    Failed,
+    Complete,
+}
+
+impl Display for ScheduleError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Error for ScheduleError {}
+
+pub type ScheduleResult = Result<(), ScheduleError>;
 
 #[repr(usize)]
 #[derive(Copy, Clone, Debug)]

@@ -14,6 +14,7 @@ pub mod wal;
 
 pub mod id_generator;
 pub mod io;
+pub mod result;
 pub mod timer;
 pub mod working_set;
 
