@@ -46,7 +46,7 @@ pub const fn u8(val: u8) -> u32 {
 
     // Adding c1 to val gives 10 in the top bits for val < 10, 11 for val >= 10
     const C1: u32 = 0b11_00000000 - 10; // 758
-                                        // Adding c2 to val gives 01 in the top bits for val < 100, 10 for val >= 100
+    // Adding c2 to val gives 01 in the top bits for val < 100, 10 for val >= 100
     const C2: u32 = 0b10_00000000 - 100; // 412
 
     // Value of top bits:
