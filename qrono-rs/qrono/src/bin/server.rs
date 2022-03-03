@@ -1,19 +1,14 @@
-use std::path::PathBuf;
-
-use std::time::Instant;
-use std::{fs, io};
-
 use log::info;
-
 use qrono::id_generator::IdGenerator;
-
-use qrono::scheduler::{Scheduler, StaticPool};
-
 use qrono::redis::server::RedisServer;
+use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
 use rayon::ThreadPoolBuilder;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use std::{fs, io};
 use structopt::StructOpt;
 
 #[global_allocator]
@@ -22,6 +17,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 // TODO:
 //  - Error handling (audit unwrap calls)
 //  - Working item timeouts and TTLs
+//  - Metrics & instrumentation
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "qrono")]
@@ -45,10 +41,14 @@ struct Opts {
     /// Number of working set stripes.
     #[structopt(long, default_value = "1")]
     working_set_stripes: usize,
+
+    /// Period between WAL syncs in milliseconds (-1 to disable).
+    #[structopt(long, default_value = "1000")]
+    wal_sync_period: i64,
 }
 
 fn main() -> io::Result<()> {
-    env_logger::init();
+    env_logger::builder().format_timestamp_micros().init();
 
     let opts: Opts = Opts::from_args();
 
@@ -83,6 +83,11 @@ fn main() -> io::Result<()> {
         .map(|_| (working_set_dir.clone(), working_set_scheduler.clone()))
         .collect::<Vec<_>>();
     let working_set = WorkingSet::new(working_set_stripes).unwrap();
+    let wal_sync_period = if opts.wal_sync_period < 0 {
+        None
+    } else {
+        Some(Duration::from_millis(opts.wal_sync_period as u64))
+    };
     let qrono = Qrono::new(
         scheduler.clone(),
         timer,
@@ -90,6 +95,7 @@ fn main() -> io::Result<()> {
         working_set,
         opts.data.join("queues"),
         deletion_scheduler,
+        wal_sync_period,
     );
 
     info!("Start up completed in {:?}.", start.elapsed());

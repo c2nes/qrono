@@ -8,6 +8,7 @@ use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 
+use std::fmt::{Display, Formatter};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -26,19 +27,28 @@ IndexEntry := Key Pos:u64
 Footer     := (empty)
 */
 
-#[derive(Copy, Clone)]
-enum Kind {
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Kind {
     Pending,
     Tombstone,
 }
 
 impl Kind {
-    fn is_pending(self) -> bool {
+    pub fn is_pending(self) -> bool {
         matches!(self, Self::Pending)
     }
 
-    fn is_tombstone(self) -> bool {
+    pub fn is_tombstone(self) -> bool {
         matches!(self, Self::Tombstone)
+    }
+}
+
+impl Display for Kind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Kind::Pending => "pending",
+            Kind::Tombstone => "tombstone",
+        })
     }
 }
 
@@ -47,6 +57,7 @@ pub struct ImmutableSegment {
     segment_id: SegmentID,
     path: PathBuf,
     metadata: Metadata,
+    kind: Kind,
 }
 
 #[derive(Debug)]
@@ -230,13 +241,14 @@ impl ImmutableSegment {
         let Footer {
             metadata,
             segment_id,
-            ..
+            kind,
         } = ImmutableSegmentReader::read_footer(&mut src)?;
         let path = path.as_ref().into();
         Ok(ImmutableSegment {
             path,
             metadata,
             segment_id,
+            kind,
         })
     }
 
@@ -365,11 +377,16 @@ impl ImmutableSegment {
             path,
             metadata,
             segment_id,
+            kind,
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     pub fn rename<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
@@ -516,5 +533,140 @@ impl SegmentReader for ImmutableSegmentReader {
             Some(entry) => Some(entry.key()),
             None => self.peeked_key,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::{Entry, Key, Timestamp, ID};
+    use crate::segment::mock::MockSegmentReader;
+    use crate::segment::{ImmutableSegment, Segment, SegmentReader};
+    use std::io;
+    use tempfile::{tempdir, TempDir};
+
+    fn tombstone_segment() -> io::Result<(TempDir, ImmutableSegment)> {
+        let dir = tempdir()?;
+        let src = MockSegmentReader::new(|i| {
+            if i < 100 {
+                Some(Entry::Tombstone {
+                    id: (i + 100) as ID,
+                    deadline: Timestamp::ZERO,
+                    segment_id: 0,
+                })
+            } else {
+                None
+            }
+        });
+
+        let path = dir.path().join("segment");
+        let segment = ImmutableSegment::write_tombstone(path, src, 0)?;
+        Ok((dir, segment))
+    }
+
+    #[test]
+    fn open_before_start() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let reader = segment.open_reader(Key::Tombstone {
+            id: 98,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(
+            Some(Key::Tombstone {
+                id: 100,
+                deadline: Timestamp::ZERO
+            }),
+            reader.peek_key()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_at_start() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let reader = segment.open_reader(Key::Tombstone {
+            id: 99,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(
+            Some(Key::Tombstone {
+                id: 100,
+                deadline: Timestamp::ZERO
+            }),
+            reader.peek_key()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_after_start() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let reader = segment.open_reader(Key::Tombstone {
+            id: 100,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(
+            Some(Key::Tombstone {
+                id: 101,
+                deadline: Timestamp::ZERO
+            }),
+            reader.peek_key()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_before_end() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let mut reader = segment.open_reader(Key::Tombstone {
+            id: 198,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(
+            Some(Key::Tombstone {
+                id: 199,
+                deadline: Timestamp::ZERO
+            }),
+            reader.peek_key()
+        );
+
+        assert!(reader.next()?.is_some());
+        assert!(reader.next()?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_at_end() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let mut reader = segment.open_reader(Key::Tombstone {
+            id: 199,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(None, reader.peek_key());
+        assert_eq!(None, reader.peek()?);
+        assert_eq!(None, reader.next()?);
+        Ok(())
+    }
+
+    #[test]
+    fn open_after_end() -> io::Result<()> {
+        let (_dir, segment) = tombstone_segment()?;
+        let mut reader = segment.open_reader(Key::Tombstone {
+            id: 200,
+            deadline: Timestamp::ZERO,
+        })?;
+
+        assert_eq!(None, reader.peek_key());
+        assert_eq!(None, reader.peek()?);
+        assert_eq!(None, reader.next()?);
+        Ok(())
     }
 }

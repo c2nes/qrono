@@ -59,6 +59,7 @@ impl Callbacks {
     }
 }
 
+#[must_use = "dropping in incomplete Promise<T> will cause the corresponding Future<T> to panic"]
 pub struct Promise<T> {
     completable: Completable<T>,
     callbacks: Callbacks,

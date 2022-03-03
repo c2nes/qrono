@@ -122,12 +122,29 @@ where
         S: Segment + Send + 'static,
         <S as Segment>::R: Send,
     {
+        let mut dirty = false;
+
+        // Remove existing segment with same key if one exists.
+        if self.segments.remove(&key).is_some() {
+            self.readers = self
+                .readers
+                .drain()
+                .chain(self.head.take())
+                .filter(|r| r.key != key)
+                .collect();
+            dirty = true;
+        }
+
         let segment = SegmentWrapper(segment, key);
         let reader = segment.open_reader(pos)?;
         self.segments.insert(key, Box::new(segment));
 
         if reader.peek_key().is_some() {
             self.readers.push(reader);
+            dirty = true;
+        }
+
+        if dirty {
             self.check_head();
             self.advance_to_next_unpaired_entry()?;
         }
@@ -135,9 +152,17 @@ where
         Ok(())
     }
 
-    pub fn remove<S: BuildHasher>(&mut self, keys: &HashSet<K, S>) -> io::Result<()> {
+    // TODO: Make the return type opaque? "DeferredDrop"?
+    pub fn remove<S: BuildHasher>(
+        &mut self,
+        keys: &HashSet<K, S>,
+    ) -> io::Result<Vec<Box<dyn Segment<R = ReaderWrapper<K>> + Send>>> {
+        let mut removed = Vec::with_capacity(keys.len());
+
         for key in keys {
-            self.segments.remove(key);
+            if let Some(segment) = self.segments.remove(key) {
+                removed.push(segment);
+            }
         }
 
         self.readers = self
@@ -148,7 +173,8 @@ where
             .collect();
 
         self.check_head();
-        self.advance_to_next_unpaired_entry()
+        self.advance_to_next_unpaired_entry()?;
+        Ok(removed)
     }
 
     fn check_head(&mut self) {
@@ -227,8 +253,8 @@ where
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &(dyn Segment<R = ReaderWrapper<K>> + Send)> {
-        self.segments.values().map(|v| v.as_ref())
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &(dyn Segment<R = ReaderWrapper<K>> + Send))> {
+        self.segments.iter().map(|(k, v)| (k, v.as_ref()))
     }
 }
 
@@ -265,11 +291,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::bytes::Bytes;
     use crate::data::{Entry, Item, Key, Timestamp, ID};
     use crate::segment::merged::MergedSegmentReader;
     use crate::segment::mock::MockSegmentReader;
     use crate::segment::{MemorySegment, Segment, SegmentReader};
-    use bytes::Bytes;
     use std::collections::HashSet;
 
     use std::time::Instant;

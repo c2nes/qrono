@@ -1,6 +1,6 @@
 use crate::data::{Item, Stats, ID};
 use crate::encoding;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use memmap::{MmapMut, MmapOptions};
 use slab::Slab;
 
@@ -12,8 +12,10 @@ use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::bytes::Bytes;
 use crate::result::IgnoreErr;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::{fs, io, mem};
 
 pub type FileId = u32;
@@ -141,7 +143,7 @@ impl Task for Compactor {
 
     fn run(&mut self, _: &TaskContext<Compactor>) -> Result<State<()>, io::Error> {
         let empty_files = {
-            let mut shared = self.shared.lock().unwrap();
+            let mut shared = self.shared.lock();
             mem::take(&mut shared.empty_files)
                 .into_iter()
                 .map(|file_id| {
@@ -157,7 +159,7 @@ impl Task for Compactor {
             fs::remove_file(path)?;
         }
 
-        let mut shared = self.shared.lock().unwrap();
+        let mut shared = self.shared.lock();
         for (file_id, _) in &empty_files {
             shared.files.remove(*file_id);
         }
@@ -293,9 +295,9 @@ impl<'a> Transaction<'a> {
                     continue;
                 }
 
-                if let Ok(mut locked) = if block {
+                if let Some(mut locked) = if block {
                     block = false;
-                    Ok(stripe.shared.lock().unwrap())
+                    Some(stripe.shared.lock())
                 } else {
                     stripe.shared.try_lock()
                 } {
@@ -371,14 +373,14 @@ impl WorkingSet {
     }
 
     pub fn add(&self, item: &Item) -> io::Result<()> {
-        self.stripe(item.id).shared.lock().unwrap().add(item)
+        self.stripe(item.id).shared.lock().add(item)
     }
 
     // Added -> [Moved ...] -> Removed -> [Added ...]
 
     pub fn get(&self, id: ID) -> io::Result<Option<ItemRef>> {
         let stripe = self.stripe(id);
-        let mut shared = stripe.shared.lock().unwrap();
+        let mut shared = stripe.shared.lock();
         if shared.get(id).is_some() {
             Ok(Some(ItemRef { id, stripe }))
         } else {
@@ -389,7 +391,7 @@ impl WorkingSet {
 
 impl<'a> ItemRef<'a> {
     pub fn load(&self) -> io::Result<WorkingItem> {
-        let shared = self.stripe.shared.lock().unwrap();
+        let shared = self.stripe.shared.lock();
         let file_id = match shared.items.get(&self.id) {
             Some(file_id) => *file_id,
             None => return Err(io::Error::new(ErrorKind::Other, "Item released")),
@@ -399,7 +401,7 @@ impl<'a> ItemRef<'a> {
     }
 
     pub fn release(self) {
-        let mut shared = self.stripe.shared.lock().unwrap();
+        let mut shared = self.stripe.shared.lock();
         if shared.release(self.id) {
             self.stripe.compactor.schedule().ignore_err();
         }
@@ -460,7 +462,7 @@ impl WorkingSetFile {
         let len = buf.get_u32() as usize;
         let offset = offset + encoding::STATS_SIZE + 4;
         let value = &self.mmap[offset..offset + len];
-        let value = Bytes::copy_from_slice(value);
+        let value = Bytes::from(value);
         Ok(WorkingItem { id, stats, value })
     }
 

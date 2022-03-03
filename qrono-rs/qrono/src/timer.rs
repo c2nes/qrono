@@ -1,6 +1,7 @@
+use parking_lot::{Condvar, Mutex};
 use slab::Slab;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub type ID = usize;
@@ -38,16 +39,18 @@ impl Scheduler {
     }
 
     pub fn schedule<F: FnOnce() + Send + 'static>(&self, deadline: Instant, callback: F) -> ID {
-        let mut locked = self.inner.lock().unwrap();
+        let mut locked = self.inner.lock();
         match locked.callbacks.keys().next() {
             Some((head, _)) if deadline > *head => {}
-            _ => self.notify.notify_one(),
+            _ => {
+                self.notify.notify_one();
+            }
         }
         locked.schedule(deadline, Box::new(callback))
     }
 
     pub fn cancel(&self, id: ID) {
-        self.inner.lock().unwrap().cancel(id)
+        self.inner.lock().cancel(id)
     }
 
     pub fn start(&self) {
@@ -56,16 +59,13 @@ impl Scheduler {
 
         std::thread::spawn(move || loop {
             let ready_callbacks = {
-                let mut locked = inner.lock().unwrap();
-                let now = Instant::now();
+                let mut locked = inner.lock();
                 match locked.callbacks.keys().next().cloned() {
                     Some((deadline, _)) => {
-                        if deadline > now {
-                            locked = notify.wait_timeout(locked, deadline - now).unwrap().0;
-                        }
+                        notify.wait_until(&mut locked, deadline);
                     }
                     None => {
-                        locked = notify.wait(locked).unwrap();
+                        notify.wait(&mut locked);
                     }
                 }
 

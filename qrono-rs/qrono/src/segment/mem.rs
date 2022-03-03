@@ -8,7 +8,8 @@ use crate::wal::WriteAheadLog;
 use crate::segment::{FrozenSegment, Metadata};
 use std::ops::Bound;
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use Bound::{Excluded, Unbounded};
 
 pub struct MemorySegment {
@@ -91,11 +92,14 @@ impl MemorySegment {
         self.add_all(vec![entry])
     }
 
-    pub fn add_all(&mut self, entries: Vec<Entry>) -> io::Result<()> {
+    pub fn add_all<E>(&mut self, entries: E) -> io::Result<()>
+    where
+        E: IntoIterator<Item = Entry> + AsRef<[Entry]>,
+    {
         if let Some(wal) = &mut self.wal {
-            wal.append(&entries)?;
+            wal.append(entries.as_ref())?;
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         for entry in entries {
             inner.add(entry);
         }
@@ -103,7 +107,7 @@ impl MemorySegment {
     }
 
     pub fn size(&self) -> usize {
-        self.inner.lock().unwrap().size
+        self.inner.lock().size
     }
 
     pub fn open_pending_reader(&self, pos: Key) -> MemorySegmentReader {
@@ -127,7 +131,7 @@ impl Segment for MemorySegment {
     }
 
     fn metadata(&self) -> Metadata {
-        self.inner.lock().unwrap().metadata()
+        self.inner.lock().metadata()
     }
 }
 
@@ -138,7 +142,7 @@ pub struct FrozenMemorySegment {
 
 impl FrozenMemorySegment {
     pub fn to_frozen_segment(&self) -> FrozenSegment {
-        FrozenSegment::from_sorted_map(&self.inner.lock().unwrap().entries)
+        FrozenSegment::from_sorted_map(&self.inner.lock().entries)
     }
 }
 
@@ -150,7 +154,7 @@ impl Segment for FrozenMemorySegment {
     }
 
     fn metadata(&self) -> Metadata {
-        self.inner.lock().unwrap().metadata()
+        self.inner.lock().metadata()
     }
 }
 
@@ -172,7 +176,7 @@ impl MemorySegmentReader {
 
 impl SegmentReader for MemorySegmentReader {
     fn next(&mut self) -> io::Result<Option<Entry>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         let pos = self.pos(&inner);
         match inner.next_after(pos) {
             None => Ok(None),
@@ -184,7 +188,7 @@ impl SegmentReader for MemorySegmentReader {
     }
 
     fn peek(&mut self) -> io::Result<Option<Entry>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         let pos = self.pos(&inner);
         match inner.next_after(pos) {
             None => Ok(None),
@@ -193,7 +197,7 @@ impl SegmentReader for MemorySegmentReader {
     }
 
     fn peek_key(&self) -> Option<Key> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         let pos = self.pos(&inner);
         inner.next_after(pos).map(|(key, _)| *key)
     }
@@ -202,7 +206,7 @@ impl SegmentReader for MemorySegmentReader {
 fn cost_estimate(entry: &Entry) -> usize {
     // This estimate is empirically derived by measuring RSS
     // with various value sizes and number of entries.
-    const ENTRY_OVERHEAD: usize = 256;
+    const ENTRY_OVERHEAD: usize = 200;
 
     let value_size = match entry {
         Entry::Pending(item) => item.value.len(),
@@ -216,8 +220,11 @@ fn cost_estimate(entry: &Entry) -> usize {
 mod tests {
     use super::super::{Segment, SegmentReader};
     use super::MemorySegment;
-    use crate::data::{Entry, Key, Timestamp};
+    use crate::bytes::Bytes;
+    use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp, ID};
     use crate::segment::mem::cost_estimate;
+    use std::mem;
+    use std::sync::Arc;
 
     #[test]
     fn test() {
@@ -258,5 +265,96 @@ mod tests {
             deadline: Timestamp::now(),
             segment_id: 0,
         }));
+
+        // 88 bytes
+        dbg!(mem::size_of::<Entry>());
+
+        // 32 bytes
+        dbg!(mem::size_of::<Bytes>());
+
+        // 32 bytes
+        dbg!(mem::size_of::<ID>());
+        dbg!(mem::size_of::<Timestamp>());
+        dbg!(mem::size_of::<Stats>());
+        dbg!(mem::size_of::<SegmentID>());
+        dbg!(mem::size_of::<Item>());
+        dbg!(mem::size_of::<Entry>());
+
+        // "Bytes" overhead is ~32 bytes
+        // Cloned "Bytes" overhead is ~64 bytes
+        // Vec<u8> overhead is ~24 bytes
+        // Box<[u8]> overhead is ~24 bytes
+        // String overhead is ~24 bytes
+        // Entry overhead is ~88/120 bytes depending on whether value is a clone
+
+        // Arc<[u8]> overhead is ~32 bytes
+        for m in [1, 10, 100, 1_000, 1_000_000] {
+            for n in [0, 16, 64, 256, 1024] {
+                let expected_size = m * n;
+                let v = (0..m)
+                    .map(|_| Arc::<[u8]>::from("A".repeat(n).into_bytes().into_boxed_slice()))
+                    .collect::<Vec<_>>();
+                let actual_size = size_of(v);
+                let overhead = (actual_size - expected_size) / m;
+                println!("Arc<[u8]> || m={:7}, n={:5}, overhead={:4}", m, n, overhead);
+            }
+        }
+    }
+
+    fn size_of<V>(v: V) -> usize {
+        let boxed = Box::new(v);
+        let start = crate::test_alloc::allocated();
+        drop(boxed);
+        start - crate::test_alloc::allocated()
+    }
+
+    #[test]
+    fn estimate_overhead() {
+        for m in [1, 10, 100, 1_000, 1_000_000] {
+            let mut segment = MemorySegment::new(None);
+            let start = crate::test_alloc::allocated();
+            for i in 0..m {
+                segment
+                    .add(Entry::Tombstone {
+                        id: i,
+                        deadline: Default::default(),
+                        segment_id: 0,
+                    })
+                    .unwrap();
+            }
+            let end = crate::test_alloc::allocated();
+            let overhead = (end - start) as f64 / (m as f64);
+            println!("M={:7}, tombstone, overhead={:.2}", m, overhead);
+        }
+
+        for m in [1, 10, 100, 1_000, 1_000_000] {
+            for n in [0, 16, 64, 256, 1024] {
+                let mut segment = MemorySegment::new(None);
+                let start = crate::test_alloc::allocated();
+                for i in 0..m {
+                    segment
+                        .add(Entry::Pending(Item {
+                            id: i as ID,
+                            deadline: Default::default(),
+                            stats: Default::default(),
+                            value: Bytes::from("A".repeat(n)),
+                            segment_id: 0,
+                        }))
+                        .unwrap();
+                }
+
+                let end = crate::test_alloc::allocated();
+                let overhead = ((end - start) - (n * m)) as f64 / (m as f64);
+                println!("M={:7}, size={:4}, overhead={:.2}", m, n, overhead);
+
+                let frozen = segment.freeze().0.to_frozen_segment();
+                let size = size_of(frozen);
+                let overhead = (size - (n * m)) as f64 / (m as f64);
+                println!(
+                    "M={:7}, size={:4}, overhead={:6.1} (frozen)",
+                    m, n, overhead
+                );
+            }
+        }
     }
 }

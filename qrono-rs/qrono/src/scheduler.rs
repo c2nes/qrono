@@ -5,10 +5,11 @@ use std::fmt::{Debug, Display, Formatter};
 use crate::promise::{Future, Promise, TransferableFuture};
 use crate::scheduler::ScheduleState::{Complete, Failed};
 use crossbeam::channel::Sender;
+use parking_lot::Mutex;
 use std::panic::AssertUnwindSafe;
 use std::process::abort;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use ScheduleState::{Canceled, Idle, Rescheduled, Running, Scheduled};
 
@@ -93,7 +94,7 @@ impl<T: Task + 'static> TaskHandle<T> {
 
     pub fn cancel(&self) {
         self.inner.cancel();
-        if let Ok(mut f) = self.inner.f.try_lock() {
+        if let Some(mut f) = self.inner.f.try_lock() {
             if let Some((task, promise)) = f.take() {
                 promise.complete((task, Err(TaskError::Canceled)));
             }
@@ -238,7 +239,7 @@ impl<T: Task + 'static> TaskContext<T> {
                 }
             }
 
-            let task_state = match context.f.lock().unwrap().as_mut() {
+            let task_state = match context.f.lock().as_mut() {
                 Some((task, _)) => task.run(&context),
                 None => return,
             };
@@ -247,7 +248,7 @@ impl<T: Task + 'static> TaskContext<T> {
                 Ok(State::Idle) => false,
                 Ok(State::Runnable) => true,
                 Ok(State::Complete(value)) => {
-                    if let Some((task, promise)) = context.f.lock().unwrap().take() {
+                    if let Some((task, promise)) = context.f.lock().take() {
                         promise.complete((task, Ok(value)));
                         context.state.store(Complete);
                     }
@@ -255,7 +256,7 @@ impl<T: Task + 'static> TaskContext<T> {
                     return;
                 }
                 Err(err) => {
-                    if let Some((task, promise)) = context.f.lock().unwrap().take() {
+                    if let Some((task, promise)) = context.f.lock().take() {
                         promise.complete((task, Err(TaskError::Failed(err))));
                         context.state.store(Failed);
                     }
@@ -276,7 +277,7 @@ impl<T: Task + 'static> TaskContext<T> {
                         }
                     }
                     Canceled => {
-                        if let Some((task, promise)) = context.f.lock().unwrap().take() {
+                        if let Some((task, promise)) = context.f.lock().take() {
                             promise.complete((task, Err(TaskError::Canceled)));
                         }
                         return;

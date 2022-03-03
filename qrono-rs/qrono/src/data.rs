@@ -1,13 +1,13 @@
-use bytes::Bytes;
 use std::cmp::Ordering;
 
+use crate::bytes::Bytes;
 use std::ops::{Add, AddAssign, Sub};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub type ID = u64;
+
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Default)]
 pub struct Timestamp(i64);
-
-pub type ID = u64;
 
 impl Timestamp {
     pub const ZERO: Timestamp = Timestamp(0);

@@ -1,6 +1,5 @@
+use crate::bytes::Bytes;
 use crate::data::{Item, Timestamp, ID};
-
-use bytes::Bytes;
 use std::time::Duration;
 
 trait Request {

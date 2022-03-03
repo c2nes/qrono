@@ -1,9 +1,9 @@
+use crate::bytes::Bytes;
 use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp};
-use crate::io::ReadBufUninitialized;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-
+use crate::io::ReadVecUninitialized;
+use bytes::{Buf, BufMut, BytesMut};
 use std::io;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 // [48:millis]
 const TIMESTAMP_SIZE: usize = 6;
@@ -11,22 +11,8 @@ const TIMESTAMP_SIZE: usize = 6;
 // [48:enqueue_time][48:requeue_time][32:dequeue_count]
 pub const STATS_SIZE: usize = TIMESTAMP_SIZE + TIMESTAMP_SIZE + 4;
 
-// [14:reserved][48:deadline][64:id][2:type]
-pub const KEY_SIZE: usize = 16;
-
 const PENDING: u8 = 0b00;
 const TOMBSTONE: u8 = 0b11;
-
-pub fn encode_key(buf: &mut [u8], key: Key) {
-    let deadline = key.deadline().millis() as u128;
-    let id = key.id() as u128;
-    let entry_type = match key {
-        Key::Pending { .. } => PENDING,
-        Key::Tombstone { .. } => TOMBSTONE,
-    };
-    let packed: u128 = deadline << 66 | id << 2 | entry_type as u128;
-    buf[..16].copy_from_slice(&packed.to_be_bytes())
-}
 
 pub fn put_key(buf: &mut BytesMut, key: Key) {
     let deadline = key.deadline().millis() as u128;
@@ -94,12 +80,15 @@ pub fn get_stats<B: Buf>(buf: &mut B) -> Stats {
     }
 }
 
-pub fn get_value<B: Buf>(buf: &mut B) -> Bytes {
+pub fn get_value(buf: &mut Cursor<&[u8]>) -> Bytes {
     let len = buf.get_u32() as usize;
-    buf.copy_to_bytes(len)
+    let pos = buf.position() as usize;
+    let res = Bytes::from(&buf.get_ref()[pos..pos + len]);
+    buf.advance(len);
+    res
 }
 
-pub fn get_entry<B: Buf>(buf: &mut B) -> Entry {
+pub fn get_entry(buf: &mut Cursor<&[u8]>) -> Entry {
     let key = get_key(buf);
     let segment_id = buf.get_u64() as SegmentID;
     match key {
@@ -122,19 +111,7 @@ pub fn get_entry<B: Buf>(buf: &mut B) -> Entry {
     }
 }
 
-pub fn read_key<R: Read>(src: &mut R) -> io::Result<Option<Key>> {
-    let mut buf = [0; 16];
-    if let Err(err) = src.read_exact(&mut buf) {
-        match err.kind() {
-            io::ErrorKind::UnexpectedEof => return Ok(None),
-            _ => return Err(err),
-        }
-    }
-    let mut cursor = Cursor::new(&buf[..]);
-    Ok(Some(get_key(&mut cursor)))
-}
-
-pub fn read_entry_rest<R: ReadBufUninitialized>(
+pub fn read_entry_rest<R: ReadVecUninitialized>(
     src: &mut R,
     key: Key,
     segment_id: SegmentID,
@@ -151,16 +128,16 @@ pub fn read_entry_rest<R: ReadBufUninitialized>(
             let mut buf = Cursor::new(&buf);
             let stats = get_stats(&mut buf);
             let mut len = buf.get_u32() as usize;
-            let mut value = BytesMut::with_capacity(len);
+            let mut value = Vec::with_capacity(len);
             while len > 0 {
-                len -= src.read_buf(&mut value)?;
+                len -= src.read_bytes(&mut value)?;
             }
-            let value = value.freeze();
+
             Ok(Entry::Pending(Item {
                 id,
                 deadline,
                 stats,
-                value,
+                value: Bytes::from(value),
                 segment_id,
             }))
         }
@@ -188,7 +165,7 @@ pub trait GetEntry: Buf {
     fn get_entry(&mut self) -> Entry;
 }
 
-impl<B: Buf> GetEntry for B {
+impl GetEntry for Cursor<&[u8]> {
     fn get_entry(&mut self) -> Entry {
         get_entry(self)
     }
@@ -196,9 +173,11 @@ impl<B: Buf> GetEntry for B {
 
 #[cfg(test)]
 mod tests {
+    use crate::bytes::Bytes;
     use crate::data::{Entry, Item, Key, Stats, Timestamp};
     use crate::encoding::{GetEntry, PutEntry};
-    use bytes::{Bytes, BytesMut};
+    use bytes::BytesMut;
+    use std::io::Cursor;
     use std::mem::size_of;
 
     fn item() -> Item {
@@ -220,7 +199,7 @@ mod tests {
         let mut buf = BytesMut::new();
         let entry = Entry::Pending(item());
         buf.put_entry(&entry);
-        let actual = buf.freeze().get_entry();
+        let actual = Cursor::new(&buf[..]).get_entry();
         assert_eq!(entry, actual);
         assert_eq!(13, actual.item().unwrap().value.len());
     }
@@ -235,7 +214,7 @@ mod tests {
             segment_id: 0,
         };
         buf.put_entry(&entry);
-        let actual = buf.freeze().get_entry();
+        let actual = Cursor::new(&buf[..]).get_entry();
         assert_eq!(entry, actual);
         assert!(actual.item().is_none());
     }
@@ -244,11 +223,11 @@ mod tests {
     fn round_trip_empty_value() {
         let mut buf = BytesMut::new();
         let mut item = item();
-        item.value = Bytes::new();
+        item.value = Bytes::empty();
         let entry = Entry::Pending(item);
 
         buf.put_entry(&entry);
-        let actual = buf.freeze().get_entry();
+        let actual = Cursor::new(&buf[..]).get_entry();
 
         assert_eq!(entry, actual);
         assert_eq!(0, actual.item().unwrap().value.len());

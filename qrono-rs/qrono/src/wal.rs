@@ -5,6 +5,8 @@ use crate::hash::murmur3;
 use crate::segment::MemorySegment;
 use bytes::{Buf, BufMut, BytesMut};
 use io::ErrorKind::UnexpectedEof;
+use log::trace;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Error, Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,30 +15,16 @@ use std::{fs, io};
 
 pub struct WriteAheadLog {
     file: File,
-    last_sync: Instant,
     path: PathBuf,
+    last_sync: Instant,
+    sync_period: Option<Duration>,
 }
-
-#[derive(Debug)]
-pub enum ReadError {
-    Truncated,
-    Checksum,
-    IO(io::Error),
-}
-
-impl From<io::Error> for ReadError {
-    fn from(err: Error) -> Self {
-        match err.kind() {
-            UnexpectedEof => ReadError::Truncated,
-            _ => ReadError::IO(err),
-        }
-    }
-}
-
-const SYNC_PERIOD: Duration = Duration::from_secs(1);
 
 impl WriteAheadLog {
-    pub fn new<P: AsRef<Path>>(path: P) -> io::Result<WriteAheadLog> {
+    pub fn new<P: AsRef<Path>>(
+        path: P,
+        sync_period: Option<Duration>,
+    ) -> io::Result<WriteAheadLog> {
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -45,8 +33,9 @@ impl WriteAheadLog {
         let path = path.as_ref().to_path_buf();
         Ok(WriteAheadLog {
             file,
-            last_sync,
             path,
+            last_sync,
+            sync_period,
         })
     }
 
@@ -106,11 +95,26 @@ impl WriteAheadLog {
             buf.put_entry(entry);
         }
         buf.put_u32(murmur3(&buf[4..], 0));
+
         self.file.write_all(&buf)?;
-        if self.last_sync.elapsed() > SYNC_PERIOD {
-            self.file.sync_all()?;
-            self.last_sync = Instant::now();
+
+        if let Some(sync_period) = self.sync_period {
+            if sync_period == Duration::ZERO || self.last_sync.elapsed() > sync_period {
+                self.sync()?;
+            }
         }
+        Ok(())
+    }
+
+    pub fn sync(&mut self) -> io::Result<()> {
+        if self.sync_period.is_some() {
+            let start = Instant::now();
+            self.file.sync_all()?;
+            let end = Instant::now();
+            trace!("sync_all completed in {:?}", end - start);
+            self.last_sync = end;
+        }
+
         Ok(())
     }
 
@@ -119,3 +123,27 @@ impl WriteAheadLog {
         fs::remove_file(&self.path)
     }
 }
+
+#[derive(Debug)]
+pub enum ReadError {
+    Truncated,
+    Checksum,
+    IO(io::Error),
+}
+
+impl From<io::Error> for ReadError {
+    fn from(err: Error) -> Self {
+        match err.kind() {
+            UnexpectedEof => ReadError::Truncated,
+            _ => ReadError::IO(err),
+        }
+    }
+}
+
+impl Display for ReadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
+    }
+}
+
+impl std::error::Error for ReadError {}

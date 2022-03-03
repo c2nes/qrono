@@ -1,3 +1,5 @@
+use crate::error::QronoError;
+
 /// ResultIgnoreErr provides the `ignore_err` method which can be used to explicitly
 /// ignore errors from a `Result<T, E>`.
 pub trait IgnoreErr: Sized {
@@ -6,3 +8,5 @@ pub trait IgnoreErr: Sized {
 }
 
 impl<T, E> IgnoreErr for Result<T, E> {}
+
+pub type QronoResult<T> = Result<T, QronoError>;

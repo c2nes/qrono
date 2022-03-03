@@ -5,10 +5,11 @@ use std::str::FromStr;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 
+use crate::bytes::Bytes;
 use crate::redis::int_log10;
 use crate::redis::protocol::Error::{ProtocolError, UnexpectedEof};
 use crate::redis::protocol::Value::{Integer, SimpleString};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -114,7 +115,7 @@ impl<'a> ValueParser<'a> {
             return Err(UnexpectedEof);
         }
         let range = self.read_slice(len);
-        let value = Bytes::copy_from_slice(&self.buf[range]);
+        let value = Bytes::from(&self.buf[range]);
         self.read_crlf()?;
         Ok(Value::BulkString(value))
     }

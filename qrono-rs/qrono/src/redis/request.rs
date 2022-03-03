@@ -1,27 +1,27 @@
+use crate::bytes::Bytes;
 use crate::data::{Item, Timestamp};
+use crate::error::QronoError;
 use crate::ops::{
     CompactReq, CompactResp, DeadlineReq, DeleteReq, DeleteResp, DequeueReq, DequeueResp,
     EnqueueReq, EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq,
     ReleaseResp, RequeueReq, RequeueResp,
 };
 use crate::redis::protocol::Value;
-use crate::service::{Error, Result as QronoResult};
-use bytes::Bytes;
+use crate::result::QronoResult;
 use qrono_promise::Future;
-use std::slice::Iter;
-use std::str;
-use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use std::time::Duration;
+use std::vec::IntoIter;
 
-struct RawRequest<'a>(Iter<'a, Value>);
+struct RawRequest(IntoIter<Value>);
 
-impl<'a> RawRequest<'a> {
+impl RawRequest {
     fn len(&self) -> usize {
         self.0.len()
     }
 
-    fn next(&mut self) -> Result<&'a Bytes, Response> {
-        match &self.0.next().unwrap() {
+    fn next(&mut self) -> Result<Bytes, Response> {
+        match self.0.next().unwrap() {
             Value::BulkString(value) => Ok(value),
             _ => Err(Response::Error(
                 "ERR Protocol error: bulk string expected".to_string(),
@@ -30,12 +30,12 @@ impl<'a> RawRequest<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a Value> for RawRequest<'a> {
+impl TryFrom<Value> for RawRequest {
     type Error = Response;
 
-    fn try_from(value: &'a Value) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Array(args) => Ok(RawRequest(args.iter())),
+            Value::Array(args) => Ok(RawRequest(args.into_iter())),
             _ => Err(Response::Error(
                 "ERR Protocol error: array expected".to_string(),
             )),
@@ -43,20 +43,20 @@ impl<'a> TryFrom<&'a Value> for RawRequest<'a> {
     }
 }
 
-pub enum Request<'a> {
-    Enqueue(&'a str, EnqueueReq),
-    Dequeue(&'a str, DequeueReq),
-    Requeue(&'a str, RequeueReq),
-    Release(&'a str, ReleaseReq),
-    Info(&'a str, InfoReq),
-    Peek(&'a str, PeekReq),
-    Delete(&'a str, DeleteReq),
-    Compact(&'a str, CompactReq),
+pub enum Request {
+    Enqueue(String, EnqueueReq),
+    Dequeue(String, DequeueReq),
+    Requeue(String, RequeueReq),
+    Release(String, ReleaseReq),
+    Info(String, InfoReq),
+    Peek(String, PeekReq),
+    Delete(String, DeleteReq),
+    Compact(String, CompactReq),
     Ping(Option<Bytes>),
 }
 
-impl<'a> Request<'a> {
-    pub fn parse(value: &Value) -> Result<Request, Response> {
+impl Request {
+    pub fn parse(value: Value) -> Result<Request, Response> {
         let mut args = RawRequest::try_from(value)?;
 
         if args.len() == 0 {
@@ -87,8 +87,8 @@ impl<'a> Request<'a> {
         }
     }
 
-    fn parse_queue_name(name: &[u8]) -> Result<&str, Response> {
-        str::from_utf8(name)
+    fn parse_queue_name(name: Bytes) -> Result<String, Response> {
+        String::from_utf8(Vec::from(&name[..]))
             .map_err(|_| Response::Error("ERR queue name must be valid UTF8".to_string()))
     }
 
@@ -100,7 +100,7 @@ impl<'a> Request<'a> {
         let keyword = args.next()?;
         let value = args.next()?;
 
-        let value = match crate::redis::protocol::parse_signed(value) {
+        let value = match crate::redis::protocol::parse_signed(&value) {
             Ok(value) => value,
             Err(_) => {
                 let msg = format!("ERR invalid deadline value, {:?}", value);
@@ -126,8 +126,8 @@ impl<'a> Request<'a> {
         }
     }
 
-    fn parse_id_pattern(id: &Bytes) -> Result<IdPattern, Response> {
-        match crate::redis::protocol::parse_unsigned(id) {
+    fn parse_id_pattern(id: Bytes) -> Result<IdPattern, Response> {
+        match crate::redis::protocol::parse_unsigned(&id) {
             Ok(id) => Ok(IdPattern::Id(id)),
             Err(_) => {
                 if id.eq_ignore_ascii_case(b"ANY") {
@@ -150,8 +150,8 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
-        let value = args.next()?.clone();
+        let queue = Self::parse_queue_name(args.next()?)?;
+        let value = args.next()?;
         let deadline = Self::parse_deadline_req(&mut args)?;
 
         Ok(Request::Enqueue(queue, EnqueueReq { value, deadline }))
@@ -177,14 +177,14 @@ impl<'a> Request<'a> {
             let arg = args.next()?;
 
             if keyword.eq_ignore_ascii_case(b"TIMEOUT") {
-                match crate::redis::protocol::parse_unsigned(arg) {
+                match crate::redis::protocol::parse_unsigned(&arg) {
                     Ok(millis) => req.timeout = Duration::from_millis(millis),
                     Err(_) => {
                         return Err(Response::Error(format!("ERR invalid timeout, {:?}", arg)))
                     }
                 }
             } else if keyword.eq_ignore_ascii_case(b"COUNT") {
-                match crate::redis::protocol::parse_unsigned(arg) {
+                match crate::redis::protocol::parse_unsigned(&arg) {
                     Ok(count) if count > 0 => req.count = count,
                     _ => return Err(Response::Error(format!("ERR invalid count, {:?}", arg))),
                 }
@@ -206,7 +206,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
         let id = Self::parse_id_pattern(args.next()?)?;
         let deadline = Self::parse_deadline_req(&mut args)?;
 
@@ -220,7 +220,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
         let id = Self::parse_id_pattern(args.next()?)?;
 
         Ok(Request::Release(queue, ReleaseReq { id }))
@@ -233,7 +233,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
 
         Ok(Request::Peek(queue, PeekReq))
     }
@@ -245,7 +245,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
 
         Ok(Request::Info(queue, InfoReq))
     }
@@ -257,7 +257,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
 
         Ok(Request::Delete(queue, DeleteReq))
     }
@@ -269,7 +269,7 @@ impl<'a> Request<'a> {
             n => return Err(Self::err_invalid_argument_count(n)),
         };
 
-        let queue = str::from_utf8(args.next()?)?;
+        let queue = Self::parse_queue_name(args.next()?)?;
 
         Ok(Request::Compact(queue, CompactReq))
     }
@@ -305,10 +305,10 @@ impl Response {
         match result {
             Ok(resp) => converter(resp),
             Err(err) => match err {
-                Error::NoSuchQueue => Value::Error("ERR no such queue".into()),
-                Error::NoItemReady => Value::NullArray,
-                Error::ItemNotDequeued => Value::Error("ERR item not dequeued".into()),
-                Error::Internal(_) | Error::IOError(_, _) => Value::Error("ERR internal".into()),
+                QronoError::NoSuchQueue => Value::Error("ERR no such queue".into()),
+                QronoError::NoItemReady => Value::NullArray,
+                QronoError::ItemNotDequeued => Value::Error("ERR item not dequeued".into()),
+                QronoError::Internal => Value::Error("ERR internal error, see logs".into()),
             },
         }
     }
@@ -334,7 +334,7 @@ impl Response {
             }),
             Response::Dequeue(future) => {
                 let res = future.take();
-                if let Err(Error::NoSuchQueue) = res {
+                if let Err(QronoError::NoSuchQueue) = res {
                     return Value::NullArray;
                 }
 
@@ -344,7 +344,7 @@ impl Response {
             }
             Response::Peek(future) => {
                 let res = future.take();
-                if let Err(Error::NoSuchQueue) = res {
+                if let Err(QronoError::NoSuchQueue) = res {
                     return Value::NullArray;
                 }
 
@@ -383,8 +383,8 @@ impl Response {
     }
 }
 
-impl From<Utf8Error> for Response {
-    fn from(_: Utf8Error) -> Self {
+impl From<FromUtf8Error> for Response {
+    fn from(_: FromUtf8Error) -> Self {
         Self::Error("ERR Protocol error: invalid UTF8".to_string())
     }
 }

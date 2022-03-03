@@ -1,11 +1,12 @@
-use crate::io::ReadBufUninitialized;
+use crate::io::ReadBytesMutUninitialized;
 use crate::redis::protocol;
 
+use crate::promise::{QronoFuture, QronoPromise};
 use crate::redis::protocol::Value;
 use crate::redis::request::{Request, Response};
 use crate::result::IgnoreErr;
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskError, TaskFuture, TaskHandle};
-use crate::service::{Future, Promise, Qrono};
+use crate::service::Qrono;
 use bytes::{Buf, BytesMut};
 use log::{error, info, warn};
 use protocol::Error;
@@ -51,12 +52,12 @@ impl Client {
         self.response_writer.schedule().ignore_err();
     }
 
-    fn respond_later<Resp, F: FnOnce(Future<Resp>) -> Response>(
+    fn respond_later<Resp, F: FnOnce(QronoFuture<Resp>) -> Response>(
         &self,
         factory: F,
-    ) -> Promise<Resp> {
+    ) -> QronoPromise<Resp> {
         let response_writer = Arc::clone(&self.response_writer);
-        let (mut resp_promise, resp_future) = Future::new();
+        let (mut resp_promise, resp_future) = QronoFuture::new();
         resp_promise.on_complete(move || response_writer.schedule().ignore_err());
         self.responses.send(factory(resp_future)).unwrap();
         resp_promise
@@ -66,35 +67,35 @@ impl Client {
         match request {
             Request::Enqueue(queue, req) => {
                 let resp = self.respond_later(Response::Enqueue);
-                self.qrono.enqueue(queue, req, resp);
+                self.qrono.enqueue(&queue, req, resp);
             }
             Request::Dequeue(queue, req) => {
                 let resp = self.respond_later(Response::Dequeue);
-                self.qrono.dequeue(queue, req, resp);
+                self.qrono.dequeue(&queue, req, resp);
             }
             Request::Requeue(queue, req) => {
                 let resp = self.respond_later(Response::Requeue);
-                self.qrono.requeue(queue, req, resp);
+                self.qrono.requeue(&queue, req, resp);
             }
             Request::Release(queue, req) => {
                 let resp = self.respond_later(Response::Release);
-                self.qrono.release(queue, req, resp);
+                self.qrono.release(&queue, req, resp);
             }
             Request::Info(queue, req) => {
                 let resp = self.respond_later(Response::Info);
-                self.qrono.info(queue, req, resp);
+                self.qrono.info(&queue, req, resp);
             }
             Request::Peek(queue, req) => {
                 let resp = self.respond_later(Response::Peek);
-                self.qrono.peek(queue, req, resp);
+                self.qrono.peek(&queue, req, resp);
             }
             Request::Delete(queue, req) => {
                 let resp = self.respond_later(Response::Delete);
-                self.qrono.delete(queue, req, resp);
+                self.qrono.delete(&queue, req, resp);
             }
             Request::Compact(queue, req) => {
                 let resp = self.respond_later(Response::Compact);
-                self.qrono.compact(queue, req, resp);
+                self.qrono.compact(&queue, req, resp);
             }
             Request::Ping(msg) => {
                 self.respond_now(Response::Value(match msg {
@@ -115,7 +116,7 @@ impl Client {
             // Ensure we have space for more data, growing the buffer if necessary.
             buf.reserve(1024);
 
-            let n = self.conn.read_buf(&mut buf)?;
+            let n = self.conn.read_bytes_mut(&mut buf)?;
             if n == 0 {
                 break;
             }
@@ -123,7 +124,7 @@ impl Client {
             while buf.has_remaining() {
                 match Value::from_bytes_mut(&mut buf) {
                     Ok(value) => {
-                        let req = match Request::parse(&value) {
+                        let req = match Request::parse(value) {
                             Ok(req) => req,
                             Err(resp) => {
                                 self.respond_now(resp);
@@ -256,11 +257,10 @@ impl Task for ResponseWriter {
     type Error = io::Error;
 
     fn run(&mut self, _ctx: &TaskContext<Self>) -> Result<State<()>, io::Error> {
-        if self.write_responses(128).is_ok() {
-            if let Some(resp) = self.next() {
-                if resp.is_ready() {
-                    return Ok(State::Runnable);
-                }
+        self.write_responses(128)?;
+        if let Some(resp) = self.next() {
+            if resp.is_ready() {
+                return Ok(State::Runnable);
             }
         }
         Ok(State::Idle)

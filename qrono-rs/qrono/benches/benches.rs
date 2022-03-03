@@ -1,14 +1,10 @@
-use std::io::Cursor;
-use std::iter;
-use std::time::Instant;
-
-use bytes::{BufMut, Bytes};
+use bytes::{Bytes, BytesMut};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-
+use qrono::bytes::Bytes as QronoBytes;
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
 use qrono::id_generator::IdGenerator;
-use qrono::redis::protocol::Value;
+use qrono::redis::protocol::{RedisBuf, Value};
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::segment::mock::{MockSegment, MockSegmentReader};
 use qrono::segment::{
@@ -16,13 +12,16 @@ use qrono::segment::{
 };
 use qrono::wal::WriteAheadLog;
 use rand::Rng;
+use std::io::Cursor;
+use std::iter;
+use std::time::Instant;
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub fn parse_command(c: &mut Criterion) {
     let input = b"*3\r\n$7\r\nENQUEUE\r\n$1\r\nq\r\n$8\r\nAAAAAAAA\r\n";
-    let input_bytes = Bytes::copy_from_slice(input);
+    let input_bytes = QronoBytes::from(&input[..]);
 
     c.bench_function("copy/bytes", |b| b.iter(|| Bytes::copy_from_slice(input)));
 
@@ -69,9 +68,9 @@ pub fn mem_segment(c: &mut Criterion) {
         c.bench_with_input(id, &batch, |b, m| {
             b.iter_custom(move |iters| {
                 let wal_path = "/tmp/qrono.log";
-                let wal = WriteAheadLog::new(wal_path).unwrap();
+                let wal = WriteAheadLog::new(wal_path, None).unwrap();
                 let mut s = MemorySegment::new(Some(wal));
-                let value = Bytes::from(vec![0; 64]);
+                let value = QronoBytes::from(vec![0; 64]);
                 let start = Instant::now();
                 for i in 0..(iters / m) {
                     let mut batch = Vec::with_capacity(10);
@@ -181,7 +180,7 @@ pub fn indexed_segment(c: &mut Criterion) {
         dbg!(p)
     };
 
-    let value = Bytes::from("A".repeat(64));
+    let value = QronoBytes::from("A".repeat(64));
     let n = 10_000_000;
     let reader = MockSegmentReader::new(|i| {
         if i < n {
@@ -249,7 +248,7 @@ fn merged_segment(c: &mut Criterion) {
             id,
             deadline: Timestamp::from_millis(id as i64 + 100000),
             stats: Default::default(),
-            value: Bytes::from("AAAAAAAA"),
+            value: QronoBytes::from("AAAAAAAA").clone(),
             segment_id: 0,
         }))
     }
@@ -311,7 +310,7 @@ pub fn redis_serde(c: &mut Criterion) {
         Value::Integer(millis),
         Value::Integer(millis),
         Value::Integer(1),
-        Value::BulkString(Bytes::from(&b"01234567"[..])),
+        Value::BulkString(QronoBytes::from(&b"01234567"[..])),
     ]);
     let resp = Value::Array(vec![resp_one.clone()]);
     let resp_multi = Value::Array(iter::repeat(resp_one.clone()).take(5).collect());
@@ -406,6 +405,56 @@ pub fn redis_serde(c: &mut Criterion) {
     });
 }
 
+pub fn bytes(c: &mut Criterion) {
+    let data = "Hello, world".to_string().into_bytes();
+    let src = &data[..];
+
+    let mut group = c.benchmark_group("Bytes");
+    group.bench_with_input("create", src, |b, src| {
+        b.iter(|| {
+            let mut buf = BytesMut::with_capacity(16);
+            buf.put_slice(src);
+            buf.freeze()
+        })
+    });
+
+    group.bench_with_input("copy", src, |b, src| b.iter(|| Bytes::copy_from_slice(src)));
+
+    group.bench_with_input("copy_clone", src, |b, src| {
+        b.iter(|| Bytes::copy_from_slice(src).clone())
+    });
+
+    group.bench_with_input("clone", src, |b, src| {
+        let bytes = Bytes::copy_from_slice(src);
+        b.iter(|| bytes.clone())
+    });
+}
+
+pub fn qrono_bytes(c: &mut Criterion) {
+    let data = "Hello, world".to_string().into_bytes();
+    let src = &data[..];
+
+    let mut group = c.benchmark_group("QronoBytes");
+    group.bench_with_input("create", src, |b, src| {
+        b.iter(|| {
+            let mut buf = Vec::with_capacity(16);
+            buf.extend_from_slice(src);
+            QronoBytes::from(buf)
+        })
+    });
+
+    group.bench_with_input("copy", src, |b, src| b.iter(|| QronoBytes::from(src)));
+
+    group.bench_with_input("copy_clone", src, |b, src| {
+        b.iter(|| QronoBytes::from(src).clone())
+    });
+
+    group.bench_with_input("clone", src, |b, src| {
+        let bytes = QronoBytes::from(src);
+        b.iter(|| bytes.clone())
+    });
+}
+
 criterion_group!(
     benches,
     parse_command,
@@ -416,6 +465,8 @@ criterion_group!(
     indexed_segment,
     merged_segment,
     redis_serde,
+    bytes,
+    qrono_bytes,
 );
 
 criterion_main!(benches);
