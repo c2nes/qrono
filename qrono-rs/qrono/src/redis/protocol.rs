@@ -1,3 +1,4 @@
+use bytes::{Buf, BytesMut};
 use std::num::ParseIntError;
 use std::ops::{Range, RangeInclusive};
 use std::str;
@@ -9,7 +10,6 @@ use crate::bytes::Bytes;
 use crate::redis::int_log10;
 use crate::redis::protocol::Error::{ProtocolError, UnexpectedEof};
 use crate::redis::protocol::Value::{Integer, SimpleString};
-use bytes::{Buf, BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -180,27 +180,27 @@ impl<'a> ValueParser<'a> {
     }
 }
 
-impl Value {
-    pub fn from_bytes(buf: &[u8]) -> Result<(Value, usize), Error> {
-        let mut parser = ValueParser { buf, pos: 0 };
-        let value = parser.read_value()?;
-        Ok((value, parser.pos))
-    }
+impl TryFrom<&[u8]> for Value {
+    type Error = Error;
 
-    pub fn from_buf(buf: Bytes) -> Result<(Value, usize), Error> {
-        let mut parser = ValueParser { buf: &buf, pos: 0 };
-        let value = parser.read_value()?;
-        Ok((value, parser.pos))
+    fn try_from(buf: &[u8]) -> Result<Self, Error> {
+        ValueParser { buf, pos: 0 }.read_value()
     }
+}
 
-    pub fn from_bytes_mut(buf: &mut BytesMut) -> Result<Value, Error> {
+impl TryFrom<&mut BytesMut> for Value {
+    type Error = Error;
+
+    fn try_from(buf: &mut BytesMut) -> Result<Self, Error> {
         let mut parser = ValueParser { buf, pos: 0 };
-        let value = parser.read_value()?;
+        let res = parser.read_value()?;
         let pos = parser.pos;
         buf.advance(pos);
-        Ok(value)
+        Ok(res)
     }
+}
 
+impl Value {
     pub fn put<B: RedisBuf>(&self, buf: &mut B) {
         match self {
             Value::SimpleString(s) => {
@@ -318,21 +318,6 @@ pub trait RedisBuf: Sized {
 
     fn put_value(&mut self, val: &Value) {
         val.put(self)
-    }
-}
-
-impl RedisBuf for BytesMut {
-    fn put_u8(&mut self, val: u8) {
-        BufMut::put_u8(self, val)
-    }
-
-    fn put_slice(&mut self, val: &[u8]) {
-        BufMut::put_slice(self, val)
-    }
-
-    fn put_value(&mut self, val: &Value) {
-        self.reserve(val.encoded_length());
-        val.put(self);
     }
 }
 
@@ -591,13 +576,13 @@ mod tests {
         let input = format!("$100\r\n{}\r\n", "0".repeat(100));
         let input = input.as_bytes();
         for i in 0..input.len() - 1 {
-            let res = Value::from_bytes(&input[..i]);
+            let res = Value::try_from(&input[..i]);
             if let Err(Error::UnexpectedEof) = &res {
                 // Okay
                 continue;
             }
             panic!("Error::Incomplete expected, found {:?}", res);
         }
-        assert!(Value::from_bytes(input).is_ok());
+        assert!(Value::try_from(input).is_ok());
     }
 }

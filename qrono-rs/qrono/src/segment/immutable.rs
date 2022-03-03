@@ -2,12 +2,12 @@ use crate::data::{Entry, Key, SegmentID};
 use crate::encoding;
 
 use crate::segment::{Metadata, Segment, SegmentReader};
-use bytes::{Buf, BufMut, BytesMut};
 
 use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 
+use bytes::{Buf, BufMut};
 use std::fmt::{Display, Formatter};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -94,7 +94,7 @@ impl BlockHeader {
         Ok(BlockHeader::decode(buf))
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> usize {
+    fn encode(&self, buf: &mut Vec<u8>) -> usize {
         match self {
             BlockHeader::Entry(key) => encoding::put_key(buf, *key),
             BlockHeader::IndexBlock(len) => {
@@ -125,7 +125,7 @@ impl IndexEntry {
         IndexEntry { key, pos }
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> usize {
+    fn encode(&self, buf: &mut Vec<u8>) -> usize {
         encoding::put_key(buf, self.key);
         buf.put_u64(self.pos);
         Self::SIZE
@@ -177,7 +177,7 @@ impl IndexBlock {
         BlockHeader::IndexBlock(self.len() as u64)
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> usize {
+    fn encode(&self, buf: &mut Vec<u8>) -> usize {
         let mut len = self.header().encode(buf);
         for entry in &self.0 {
             len += entry.encode(buf);
@@ -222,7 +222,7 @@ impl Footer {
         }
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> usize {
+    fn encode(&self, buf: &mut Vec<u8>) -> usize {
         BlockHeader::Footer.encode(buf);
         buf.put_u64(self.segment_id);
         buf.put_u64(self.metadata.pending_count);
@@ -283,7 +283,7 @@ impl ImmutableSegment {
                 .write(true)
                 .open(&temp_path)?;
 
-            let mut buf = BytesMut::with_capacity(1024 * 1024);
+            let mut buf = Vec::with_capacity(1024 * 1024);
             let mut pos = 0;
 
             let mut index = Vec::with_capacity(8);

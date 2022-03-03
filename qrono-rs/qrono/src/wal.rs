@@ -3,7 +3,7 @@ use crate::encoding;
 use crate::encoding::{GetEntry, PutEntry};
 use crate::hash::murmur3;
 use crate::segment::MemorySegment;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use io::ErrorKind::UnexpectedEof;
 use log::trace;
 use std::fmt::{Debug, Display, Formatter};
@@ -89,7 +89,7 @@ impl WriteAheadLog {
         // <entries...>                    N bytes
         // <block checksum>                4 bytes
         let size: usize = entries.iter().map(encoding::len).sum();
-        let mut buf = BytesMut::with_capacity(size + 8);
+        let mut buf = Vec::with_capacity(size + 8);
         buf.put_u32(size as u32);
         for entry in entries {
             buf.put_entry(entry);

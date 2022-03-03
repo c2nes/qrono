@@ -1,12 +1,14 @@
 use bytes::{BufMut, BytesMut};
-use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read};
-use std::net::TcpStream;
+use std::io::Read;
 use std::ptr::slice_from_raw_parts_mut;
 
-pub trait ReadBytesMutUninitialized: Read {
-    fn read_bytes_mut(&mut self, buf: &mut BytesMut) -> io::Result<usize> {
+pub trait ReadInto<T>: Read {
+    fn read_into(&mut self, dest: T) -> io::Result<usize>;
+}
+
+impl<R: Read> ReadInto<&mut BytesMut> for R {
+    fn read_into(&mut self, buf: &mut BytesMut) -> io::Result<usize> {
         let chunk = buf.chunk_mut();
         let slice = slice_from_raw_parts_mut(chunk.as_mut_ptr(), chunk.len());
         let ret = unsafe { self.read(&mut *slice) };
@@ -21,8 +23,8 @@ pub trait ReadBytesMutUninitialized: Read {
     }
 }
 
-pub trait ReadVecUninitialized: Read {
-    fn read_bytes(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+impl<R: Read> ReadInto<&mut Vec<u8>> for R {
+    fn read_into(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         let pos = buf.len();
         let cap = buf.capacity();
         let ptr = buf.as_mut_ptr();
@@ -37,12 +39,3 @@ pub trait ReadVecUninitialized: Read {
         }
     }
 }
-
-// impl ReadBufUninitialized for mio::net::TcpStream {}
-impl ReadBytesMutUninitialized for TcpStream {}
-impl ReadBytesMutUninitialized for File {}
-impl ReadBytesMutUninitialized for BufReader<File> {}
-
-impl ReadVecUninitialized for TcpStream {}
-impl ReadVecUninitialized for File {}
-impl ReadVecUninitialized for BufReader<File> {}

@@ -1,9 +1,9 @@
 use crate::bytes::Bytes;
 use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp};
-use crate::io::ReadVecUninitialized;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::io::ReadInto;
+use bytes::{Buf, BufMut};
 use std::io;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 // [48:millis]
 const TIMESTAMP_SIZE: usize = 6;
@@ -14,7 +14,7 @@ pub const STATS_SIZE: usize = TIMESTAMP_SIZE + TIMESTAMP_SIZE + 4;
 const PENDING: u8 = 0b00;
 const TOMBSTONE: u8 = 0b11;
 
-pub fn put_key(buf: &mut BytesMut, key: Key) {
+pub fn put_key(buf: &mut Vec<u8>, key: Key) {
     let deadline = key.deadline().millis() as u128;
     let id = key.id() as u128;
     let entry_type = match key {
@@ -25,19 +25,19 @@ pub fn put_key(buf: &mut BytesMut, key: Key) {
     buf.put_u128(packed);
 }
 
-pub fn put_stats(buf: &mut BytesMut, stats: &Stats) {
+pub fn put_stats(buf: &mut Vec<u8>, stats: &Stats) {
     buf.put_int(stats.enqueue_time.millis(), 6);
     buf.put_int(stats.requeue_time.millis(), 6);
     buf.put_u32(stats.dequeue_count);
 }
 
-pub fn put_value(buf: &mut BytesMut, val: &[u8]) -> usize {
+pub fn put_value(buf: &mut Vec<u8>, val: &[u8]) -> usize {
     buf.put_u32(val.len() as u32);
     buf.put_slice(val);
     4 + val.len()
 }
 
-pub fn put_entry(buf: &mut BytesMut, entry: &Entry) -> usize {
+pub fn put_entry(buf: &mut Vec<u8>, entry: &Entry) -> usize {
     let len_before = buf.len();
     put_key(buf, entry.key());
     buf.put_u64(entry.segment_id());
@@ -111,11 +111,7 @@ pub fn get_entry(buf: &mut Cursor<&[u8]>) -> Entry {
     }
 }
 
-pub fn read_entry_rest<R: ReadVecUninitialized>(
-    src: &mut R,
-    key: Key,
-    segment_id: SegmentID,
-) -> io::Result<Entry> {
+pub fn read_entry_rest<R: Read>(src: &mut R, key: Key, segment_id: SegmentID) -> io::Result<Entry> {
     match key {
         Key::Tombstone { id, deadline } => Ok(Entry::Tombstone {
             id,
@@ -130,7 +126,7 @@ pub fn read_entry_rest<R: ReadVecUninitialized>(
             let mut len = buf.get_u32() as usize;
             let mut value = Vec::with_capacity(len);
             while len > 0 {
-                len -= src.read_bytes(&mut value)?;
+                len -= src.read_into(&mut value)?;
             }
 
             Ok(Entry::Pending(Item {
@@ -155,7 +151,7 @@ pub trait PutEntry: BufMut {
     fn put_entry(&mut self, entry: &Entry) -> usize;
 }
 
-impl PutEntry for BytesMut {
+impl PutEntry for Vec<u8> {
     fn put_entry(&mut self, entry: &Entry) -> usize {
         put_entry(self, entry)
     }
@@ -176,7 +172,6 @@ mod tests {
     use crate::bytes::Bytes;
     use crate::data::{Entry, Item, Key, Stats, Timestamp};
     use crate::encoding::{GetEntry, PutEntry};
-    use bytes::BytesMut;
     use std::io::Cursor;
     use std::mem::size_of;
 
@@ -196,7 +191,7 @@ mod tests {
 
     #[test]
     fn round_trip_pending() {
-        let mut buf = BytesMut::new();
+        let mut buf = vec![];
         let entry = Entry::Pending(item());
         buf.put_entry(&entry);
         let actual = Cursor::new(&buf[..]).get_entry();
@@ -206,7 +201,7 @@ mod tests {
 
     #[test]
     fn round_trip_tombstone() {
-        let mut buf = BytesMut::new();
+        let mut buf = vec![];
         let item = item();
         let entry = Entry::Tombstone {
             id: item.id,
@@ -221,7 +216,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_value() {
-        let mut buf = BytesMut::new();
+        let mut buf = vec![];
         let mut item = item();
         item.value = Bytes::empty();
         let entry = Entry::Pending(item);

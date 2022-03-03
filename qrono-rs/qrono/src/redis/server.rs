@@ -1,6 +1,6 @@
-use crate::io::ReadBytesMutUninitialized;
 use crate::redis::protocol;
 
+use crate::io::ReadInto;
 use crate::promise::{QronoFuture, QronoPromise};
 use crate::redis::protocol::Value;
 use crate::redis::request::{Request, Response};
@@ -116,13 +116,13 @@ impl Client {
             // Ensure we have space for more data, growing the buffer if necessary.
             buf.reserve(1024);
 
-            let n = self.conn.read_bytes_mut(&mut buf)?;
+            let n = self.conn.read_into(&mut buf)?;
             if n == 0 {
                 break;
             }
 
             while buf.has_remaining() {
-                match Value::from_bytes_mut(&mut buf) {
+                match Value::try_from(&mut buf) {
                     Ok(value) => {
                         let req = match Request::parse(value) {
                             Ok(req) => req,

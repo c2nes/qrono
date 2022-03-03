@@ -1,10 +1,10 @@
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use qrono::bytes::Bytes as QronoBytes;
 use qrono::data::{Entry, Item, Key, Stats, Timestamp, ID};
 use qrono::hash;
 use qrono::id_generator::IdGenerator;
-use qrono::redis::protocol::{RedisBuf, Value};
+use qrono::redis::protocol::Value;
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::segment::mock::{MockSegment, MockSegmentReader};
 use qrono::segment::{
@@ -21,18 +21,9 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub fn parse_command(c: &mut Criterion) {
     let input = b"*3\r\n$7\r\nENQUEUE\r\n$1\r\nq\r\n$8\r\nAAAAAAAA\r\n";
-    let input_bytes = QronoBytes::from(&input[..]);
 
-    c.bench_function("copy/bytes", |b| b.iter(|| Bytes::copy_from_slice(input)));
-
-    c.bench_function("copy/vec", |b| b.iter(|| input.to_vec()));
-
-    c.bench_function("Value::from_bytes", |b| {
-        b.iter(|| Value::from_bytes(input).unwrap())
-    });
-
-    c.bench_function("Value::from_buf", |b| {
-        b.iter(|| Value::from_buf(input_bytes.clone()).unwrap())
+    c.bench_function("Value::try_from", |b| {
+        b.iter(|| Value::try_from(&input[..]).unwrap())
     });
 
     c.bench_function("redis::parse_redis_value", |b| {
@@ -248,7 +239,7 @@ fn merged_segment(c: &mut Criterion) {
             id,
             deadline: Timestamp::from_millis(id as i64 + 100000),
             stats: Default::default(),
-            value: QronoBytes::from("AAAAAAAA").clone(),
+            value: QronoBytes::from("AAAAAAAA"),
             segment_id: 0,
         }))
     }
@@ -292,7 +283,7 @@ pub fn redis_serde(c: &mut Criterion) {
     1000\r\n";
 
     group.bench_with_input("decode/dequeue", &deqeue[..], |b, x| {
-        b.iter(|| Value::from_bytes(x).unwrap());
+        b.iter(|| Value::try_from(x).unwrap());
     });
 
     let ping = b"*1\r\n\
@@ -300,7 +291,7 @@ pub fn redis_serde(c: &mut Criterion) {
     PING\r\n";
 
     group.bench_with_input("decode/ping", &ping[..], |b, x| {
-        b.iter(|| Value::from_bytes(x).unwrap());
+        b.iter(|| Value::try_from(x).unwrap());
     });
 
     let millis = Timestamp::now().millis();
@@ -405,6 +396,7 @@ pub fn redis_serde(c: &mut Criterion) {
     });
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn bytes(c: &mut Criterion) {
     let data = "Hello, world".to_string().into_bytes();
     let src = &data[..];
@@ -430,6 +422,7 @@ pub fn bytes(c: &mut Criterion) {
     });
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn qrono_bytes(c: &mut Criterion) {
     let data = "Hello, world".to_string().into_bytes();
     let src = &data[..];

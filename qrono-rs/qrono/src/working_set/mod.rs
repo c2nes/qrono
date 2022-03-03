@@ -1,6 +1,5 @@
 use crate::data::{Item, Stats, ID};
 use crate::encoding;
-use bytes::{Buf, BytesMut};
 use memmap::{MmapMut, MmapOptions};
 use slab::Slab;
 
@@ -14,6 +13,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::bytes::Bytes;
 use crate::result::IgnoreErr;
+use bytes::Buf;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::{fs, io, mem};
@@ -435,7 +435,7 @@ impl WorkingSetFile {
 
     fn add<I: ItemData>(&mut self, item: &I) -> io::Result<usize> {
         let len = Self::encoded_len(item);
-        let mut buf = BytesMut::with_capacity(len);
+        let mut buf = Vec::with_capacity(len);
         // [ID][Stats][Value]
         // [
         encoding::put_stats(&mut buf, item.stats());

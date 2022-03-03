@@ -278,7 +278,7 @@ impl Request {
     fn parse_ping_req(mut args: RawRequest) -> Result<Request, Response> {
         match args.len() {
             0 => Ok(Request::Ping(None)),
-            1 => Ok(Request::Ping(Some(args.next()?.clone()))),
+            1 => Ok(Request::Ping(Some(args.next()?))),
             n => Err(Self::err_invalid_argument_count(n)),
         }
     }
