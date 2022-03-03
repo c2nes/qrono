@@ -2,5 +2,6 @@
 *.class
 *.iml
 .idea/
+.run/
 dependency-reduced-pom.xml
 *.jfr
