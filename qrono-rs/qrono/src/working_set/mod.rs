@@ -4,7 +4,7 @@ use memmap::{MmapMut, MmapOptions};
 use slab::Slab;
 
 use std::fs::OpenOptions;
-use std::io::{Cursor, ErrorKind};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskHandle};
@@ -12,8 +12,8 @@ use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::bytes::Bytes;
+use crate::encoding::{Decoder, Encoder};
 use crate::result::IgnoreErr;
-use bytes::Buf;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::{fs, io, mem};
@@ -436,10 +436,8 @@ impl WorkingSetFile {
     fn add<I: ItemData>(&mut self, item: &I) -> io::Result<usize> {
         let len = Self::encoded_len(item);
         let mut buf = Vec::with_capacity(len);
-        // [ID][Stats][Value]
-        // [
-        encoding::put_stats(&mut buf, item.stats());
-        encoding::put_value(&mut buf, item.value());
+        buf.put_stats(item.stats());
+        buf.put_value(item.value());
         self.mmap[self.pos..self.pos + len].copy_from_slice(&buf);
         let pos = self.pos;
         self.pos += len;
@@ -457,12 +455,9 @@ impl WorkingSetFile {
     fn get(&self, id: ID) -> io::Result<WorkingItem> {
         let entry = self.index[&id];
         let offset = entry.pos as usize;
-        let mut buf = Cursor::new(&self.mmap[offset..]);
-        let stats = encoding::get_stats(&mut buf);
-        let len = buf.get_u32() as usize;
-        let offset = offset + encoding::STATS_SIZE + 4;
-        let value = &self.mmap[offset..offset + len];
-        let value = Bytes::from(value);
+        let mut buf = &self.mmap[offset..];
+        let stats = buf.get_stats();
+        let value = buf.get_value();
         Ok(WorkingItem { id, stats, value })
     }
 

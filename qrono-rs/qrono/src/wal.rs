@@ -1,6 +1,6 @@
 use crate::data::Entry;
 use crate::encoding;
-use crate::encoding::{GetEntry, PutEntry};
+use crate::encoding::{Decoder, Encoder};
 use crate::hash::murmur3;
 use crate::segment::MemorySegment;
 use bytes::{Buf, BufMut};

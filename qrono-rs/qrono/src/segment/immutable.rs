@@ -1,13 +1,16 @@
-use crate::data::{Entry, Key, SegmentID};
+use crate::data::{Entry, Item, Key, SegmentID};
 use crate::encoding;
 
 use crate::segment::{Metadata, Segment, SegmentReader};
 
-use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 
+use crate::bytes::Bytes;
+use crate::encoding::{Decoder, Encoder};
+use crate::io::ReadInto;
 use bytes::{Buf, BufMut};
+use encoding::{STATS_SIZE, VALUE_LEN_SIZE};
 use std::fmt::{Display, Formatter};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -76,15 +79,9 @@ impl BlockHeader {
 
     fn decode(buf: [u8; Self::SIZE]) -> BlockHeader {
         match buf[15] {
-            Self::INDEX_BLOCK_TYPE => {
-                let len = u64::from_be_bytes(buf[..8].try_into().unwrap());
-                BlockHeader::IndexBlock(len)
-            }
+            Self::INDEX_BLOCK_TYPE => BlockHeader::IndexBlock(buf.as_ref().get_u64()),
             Self::FOOTER_BLOCK_TYPE => BlockHeader::Footer,
-            _ => {
-                let key = encoding::get_key(&mut &buf[..]);
-                BlockHeader::Entry(key)
-            }
+            _ => BlockHeader::Entry(buf.as_ref().get_key()),
         }
     }
 
@@ -96,7 +93,7 @@ impl BlockHeader {
 
     fn encode(&self, buf: &mut Vec<u8>) -> usize {
         match self {
-            BlockHeader::Entry(key) => encoding::put_key(buf, *key),
+            BlockHeader::Entry(key) => buf.put_key(*key),
             BlockHeader::IndexBlock(len) => {
                 buf.put_u64(*len);
                 buf.put_u64(Self::INDEX_BLOCK_TYPE as u64);
@@ -120,13 +117,14 @@ impl IndexEntry {
     const SIZE: usize = 24;
 
     fn decode(buf: [u8; Self::SIZE]) -> IndexEntry {
-        let key = encoding::decode_key(buf[..16].try_into().unwrap());
-        let pos = u64::from_be_bytes(buf[16..].try_into().unwrap());
+        let mut buf = &buf[..];
+        let key = buf.get_key();
+        let pos = buf.get_u64();
         IndexEntry { key, pos }
     }
 
     fn encode(&self, buf: &mut Vec<u8>) -> usize {
-        encoding::put_key(buf, self.key);
+        buf.put_key(self.key);
         buf.put_u64(self.pos);
         Self::SIZE
     }
@@ -317,15 +315,16 @@ impl ImmutableSegment {
                 index[0].add(IndexEntry { key, pos });
 
                 let len_before = buf.len();
-                encoding::put_key(&mut buf, entry.key());
+                buf.put_key(entry.key());
+
                 if let Entry::Pending(item) = &entry {
                     assert!(
                         kind.is_pending(),
                         "pending item added to tombstone segment: {:?}",
                         entry,
                     );
-                    encoding::put_stats(&mut buf, &item.stats);
-                    encoding::put_value(&mut buf, &item.value);
+                    buf.put_stats(&item.stats);
+                    buf.put_value(&item.value);
                 } else {
                     assert!(
                         kind.is_tombstone(),
@@ -450,7 +449,16 @@ impl ImmutableSegmentReader {
         loop {
             match BlockHeader::read(&mut self.src)? {
                 BlockHeader::Entry(key) => {
-                    encoding::read_entry_rest(&mut self.src, key, self.segment_id)?;
+                    if key.is_pending() {
+                        // Read stats and value length, then skip over value.
+                        let mut scratch = [0u8; STATS_SIZE + VALUE_LEN_SIZE];
+                        self.src.read_exact(&mut scratch[..])?;
+
+                        let mut buf = &scratch[..];
+                        let _ = buf.get_stats();
+                        let len = buf.get_value_len();
+                        self.src.seek(SeekFrom::Current(len as i64))?;
+                    }
                     return self.read_next_key();
                 }
                 BlockHeader::IndexBlock(len) => {
@@ -509,7 +517,35 @@ impl SegmentReader for ImmutableSegmentReader {
 
         Ok(match self.peeked_key.take() {
             Some(key) => {
-                let entry = encoding::read_entry_rest(&mut self.src, key, self.segment_id)?;
+                let segment_id = self.segment_id;
+                let entry = match key {
+                    Key::Pending { id, deadline } => {
+                        let mut scratch = [0u8; STATS_SIZE + VALUE_LEN_SIZE];
+                        self.src.read_exact(&mut scratch[..])?;
+
+                        let mut buf = &scratch[..];
+                        let stats = buf.get_stats();
+                        let len = buf.get_value_len();
+
+                        let mut value = Vec::with_capacity(len);
+                        self.src.read_exact_into(&mut value)?;
+                        let value = Bytes::from(value);
+
+                        Entry::Pending(Item {
+                            id,
+                            deadline,
+                            stats,
+                            value,
+                            segment_id,
+                        })
+                    }
+                    Key::Tombstone { id, deadline } => Entry::Tombstone {
+                        id,
+                        deadline,
+                        segment_id,
+                    },
+                };
+
                 self.read_next_key()?;
                 Some(entry)
             }

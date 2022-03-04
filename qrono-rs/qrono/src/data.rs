@@ -188,6 +188,14 @@ impl Key {
         }
     }
 
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending { .. })
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        matches!(self, Self::Tombstone { .. })
+    }
+
     fn ord_key(&self) -> (Timestamp, ID, usize) {
         match self {
             Key::Tombstone { id, deadline } => (*deadline, *id, 0),

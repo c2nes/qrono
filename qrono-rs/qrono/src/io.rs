@@ -5,6 +5,8 @@ use std::ptr::slice_from_raw_parts_mut;
 
 pub trait ReadInto<T>: Read {
     fn read_into(&mut self, dest: T) -> io::Result<usize>;
+
+    fn read_exact_into(&mut self, dest: T) -> io::Result<()>;
 }
 
 impl<R: Read> ReadInto<&mut BytesMut> for R {
@@ -20,6 +22,17 @@ impl<R: Read> ReadInto<&mut BytesMut> for R {
         }
 
         ret
+    }
+
+    fn read_exact_into(&mut self, buf: &mut BytesMut) -> io::Result<()> {
+        let chunk = buf.chunk_mut();
+        let len = chunk.len();
+        let slice = slice_from_raw_parts_mut(chunk.as_mut_ptr(), chunk.len());
+        unsafe {
+            self.read_exact(&mut *slice)?;
+            buf.advance_mut(len);
+        };
+        Ok(())
     }
 }
 
@@ -37,5 +50,20 @@ impl<R: Read> ReadInto<&mut Vec<u8>> for R {
             }
             res
         }
+    }
+
+    fn read_exact_into(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
+        let pos = buf.len();
+        let cap = buf.capacity();
+        let ptr = buf.as_mut_ptr();
+        let len = cap - pos;
+
+        unsafe {
+            let dst = slice_from_raw_parts_mut(ptr.add(pos), len);
+            self.read_exact(&mut *dst)?;
+            buf.set_len(pos + len);
+        }
+
+        Ok(())
     }
 }
