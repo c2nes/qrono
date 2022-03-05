@@ -5,7 +5,7 @@ use std::io;
 
 use crate::wal::WriteAheadLog;
 
-use crate::segment::{FrozenSegment, Metadata};
+use crate::segment::Metadata;
 use std::ops::Bound;
 
 use parking_lot::Mutex;
@@ -141,8 +141,8 @@ pub struct FrozenMemorySegment {
 }
 
 impl FrozenMemorySegment {
-    pub fn to_frozen_segment(&self) -> FrozenSegment {
-        FrozenSegment::from_sorted_map(&self.inner.lock().entries)
+    pub fn entries(&self) -> Vec<Entry> {
+        self.inner.lock().entries.values().cloned().collect()
     }
 }
 
@@ -347,7 +347,7 @@ mod tests {
                 let overhead = ((end - start) - (n * m)) as f64 / (m as f64);
                 println!("M={:7}, size={:4}, overhead={:.2}", m, n, overhead);
 
-                let frozen = segment.freeze().0.to_frozen_segment();
+                let frozen = segment.freeze().0.entries();
                 let size = size_of(frozen);
                 let overhead = (size - (n * m)) as f64 / (m as f64);
                 println!(

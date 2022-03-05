@@ -31,6 +31,20 @@ curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'
 tar -xzf redis-6.2.3.tar.gz
 (cd "$HOME/redis-6.2.3" && make && sudo make install)
 
+# Build perf from source
+(
+    cd /var/lib/qrono
+    mkdir tmp
+    cd tmp
+    sudo sed -i.backup -e 's/# deb-src/deb-src/' /etc/apt/sources.list
+    sudo apt-get update
+    apt-get source linux-image-$(uname -r)
+    cd linux-aws-*/tools/perf
+    sudo make install WERROR=0 prefix=/usr/local
+    cd /var/lib/qrono
+    rm -rf tmp
+)
+
 # Start server in tmux
 tmux new-window -d -c "$HOME/qrono" -n server
 tmux send-keys -l -t server $'RUST_LOG=debug RUST_BACKTRACE=full qrono --listen 0.0.0.0:16379 --data /var/lib/qrono\n'

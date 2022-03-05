@@ -2,17 +2,16 @@ use crate::data::{Entry, Key};
 use crate::queue::filenames::{SegmentKey, SequenceID};
 use crate::queue::segment_set::SegmentSet;
 use crate::queue::{segment_set, Shared};
-use crate::segment::{
-    FilteredSegmentReader, FrozenSegment, ImmutableSegment, Segment, SegmentReader,
-};
 
 use log::debug;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 
+use crate::segment::{FrozenMemorySegment, ImmutableSegment, SegmentReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use std::vec::IntoIter;
 use std::{fs, io};
 
 pub(super) struct SegmentCoordinator {
@@ -124,48 +123,52 @@ impl SegmentCoordinator {
         Ok(())
     }
 
-    pub(super) fn split(&self, input: FrozenSegment) -> Vec<(SegmentKey, impl SegmentReader)> {
-        let mut unique_ids = HashSet::new();
-        let mut reader = input.open_reader(Key::ZERO).unwrap();
-        while let Some(entry) = reader.next().unwrap() {
+    pub(super) fn split(
+        &self,
+        input: &FrozenMemorySegment,
+    ) -> Vec<(SegmentKey, impl SegmentReader)> {
+        let entries = input.entries();
+        let mut keys = HashMap::new();
+        let mut key_counts: HashMap<SegmentKey, usize> = HashMap::new();
+
+        for entry in entries.iter() {
             let pending = matches!(entry, Entry::Pending(_));
-            unique_ids.insert((pending, entry.segment_id()));
-        }
+            let id = entry.segment_id();
+            let key = keys.entry((pending, id)).or_insert_with(|| {
+                let range = self
+                    .segments
+                    .get_key(id)
+                    .map(|key| key.range())
+                    .unwrap_or_else(|| id..=id);
 
-        let mut key_filters = HashMap::new();
-        for (pending, id) in unique_ids {
-            let range = self
-                .segments
-                .get_key(id)
-                .map(|key| key.range())
-                .unwrap_or_else(|| id..=id);
+                let start = *range.start();
+                let end = *range.end();
 
-            let start = *range.start();
-            let end = *range.end();
-
-            let key = if pending {
-                SegmentKey::pending(start, end, 0)
-            } else {
-                SegmentKey::tombstone(start, end, 0)
-            };
-
-            let tombstone = !pending;
-            let filter = move |entry: &Entry| -> bool {
-                match entry {
-                    Entry::Pending(_) => pending && range.contains(&entry.segment_id()),
-                    Entry::Tombstone { .. } => tombstone && range.contains(&entry.segment_id()),
+                if pending {
+                    SegmentKey::pending(start, end, 0)
+                } else {
+                    SegmentKey::tombstone(start, end, 0)
                 }
-            };
+            });
 
-            key_filters.insert(key, filter);
+            *key_counts.entry(*key).or_default() += 1;
         }
 
-        key_filters
+        let mut key_to_entries = key_counts
             .into_iter()
-            .map(|(key, filter)| {
-                let reader = input.open_reader(Key::ZERO).unwrap();
-                (key, FilteredSegmentReader::new(reader, filter).unwrap())
-            })
+            .map(|(key, count)| (key, Vec::with_capacity(count)))
+            .collect::<HashMap<_, _>>();
+
+        for entry in entries {
+            let pending = matches!(entry, Entry::Pending(_));
+            let id = entry.segment_id();
+            let key = keys.get(&(pending, id)).unwrap();
+            key_to_entries.get_mut(key).unwrap().push(entry);
+        }
+
+        key_to_entries
+            .into_iter()
+            .map(|(key, entries)| (key, FastReader::new(entries)))
             .collect()
     }
 
@@ -230,4 +233,30 @@ impl Transaction {
 
 pub(super) fn tx() -> Transaction {
     Transaction::new()
+}
+
+struct FastReader {
+    entries: IntoIter<Entry>,
+}
+
+impl FastReader {
+    fn new(entries: Vec<Entry>) -> Self {
+        Self {
+            entries: entries.into_iter(),
+        }
+    }
+}
+
+impl SegmentReader for FastReader {
+    fn next(&mut self) -> std::io::Result<Option<Entry>> {
+        Ok(self.entries.next())
+    }
+
+    fn peek(&mut self) -> std::io::Result<Option<Entry>> {
+        Ok(self.entries.as_slice().first().cloned())
+    }
+
+    fn peek_key(&self) -> Option<Key> {
+        self.entries.as_slice().first().map(Entry::key)
+    }
 }

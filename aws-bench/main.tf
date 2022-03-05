@@ -219,9 +219,9 @@ resource "aws_instance" "server" {
   ebs_block_device {
     device_name           = "/dev/sdf"
     volume_type           = "io2"
-    iops                  = 16000
+    iops                  = 32000
     delete_on_termination = true
-    volume_size           = 50 # GB
+    volume_size           = 100 # GB
   }
 
   volume_tags = var.additional_tags

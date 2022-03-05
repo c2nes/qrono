@@ -43,15 +43,11 @@ pub trait SegmentReader {
 }
 
 mod empty;
-mod filtered;
-mod frozen;
 mod immutable;
 mod mem;
 mod merged;
 
 pub use empty::EmptySegment;
-pub use filtered::FilteredSegmentReader;
-pub use frozen::{FrozenSegment, FrozenSegmentReader};
 pub use immutable::Kind as ImmutableSegmentKind;
 pub use immutable::{ImmutableSegment, ImmutableSegmentReader};
 pub use mem::{FrozenMemorySegment, MemorySegment, MemorySegmentReader};

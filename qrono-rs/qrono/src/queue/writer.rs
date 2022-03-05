@@ -75,8 +75,7 @@ impl MemorySegmentWriter {
         id: SegmentID,
         segment: FrozenMemorySegment,
     ) -> io::Result<(PathBuf, Option<ImmutableSegment>, Vec<ImmutableSegment>)> {
-        let frozen = segment.to_frozen_segment();
-        let inputs = self.coordinator.lock().split(frozen);
+        let inputs = self.coordinator.lock().split(&segment);
         let segment_dir = QueueFile::TemporarySegmentDirectory(id).to_path(&self.directory);
         fs::create_dir(&segment_dir)?;
 
