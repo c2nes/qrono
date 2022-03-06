@@ -8,6 +8,7 @@ packages:
 - build-essential
 - git
 - tmux
+- redis-tools
 
 write_files:
 # The write-files module is configured to run before the users-groups modules so

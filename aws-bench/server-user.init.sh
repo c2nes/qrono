@@ -24,12 +24,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 git clone https://github.com/c2nes/qrono.git
 
 # Build and install Qrono
-cargo install --path qrono/qrono-rs/qrono --bin qrono
-
-# Build and install redis tools
-curl -fsLO 'https://download.redis.io/releases/redis-6.2.3.tar.gz'
-tar -xzf redis-6.2.3.tar.gz
-(cd "$HOME/redis-6.2.3" && make && sudo make install)
+cargo install --path qrono/qrono-rs/qrono --bin qrono &
 
 # Build perf from source
 (
@@ -42,12 +37,14 @@ tar -xzf redis-6.2.3.tar.gz
     cd linux-aws-*/tools/perf
     sudo make install WERROR=0 prefix=/usr/local
     cd /var/lib/qrono
-    rm -rf tmp
-)
+    sudo rm -rf tmp
+) &
+
+wait
 
 # Start server in tmux
 tmux new-window -d -c "$HOME/qrono" -n server
-tmux send-keys -l -t server $'RUST_LOG=debug RUST_BACKTRACE=full qrono --listen 0.0.0.0:16379 --data /var/lib/qrono\n'
+tmux send-keys -l -t server $'RUST_LOG=debug RUST_BACKTRACE=full qrono --listen 0.0.0.0:16379 --data /var/lib/qrono --rayon --working-set-stripes=4 --wal-sync-period=1000\n'
 
 # Start top and enable some colors
 tmux new-window -n top
@@ -55,13 +52,9 @@ tmux send-keys -l -t top $'top\n'
 sleep 0.5; tmux send-keys -l -t top z
 sleep 0.1; tmux send-keys -l -t top x
 sleep 0.1; tmux send-keys -l -t top W
-
-# Monitor "q" size
-tmux new-window -n q-size
-tmux send-keys -l -t q-size $'watch "redis-cli -p 16379 info q"\n'
-
-# Start a shell
-tmux new-window -n shell
+# Run iostat alongside top
+tmux split-window -h -t top.0
+tmux send-keys -l -t top.1 $'iostat -xdh /dev/nvme1n1 5\n'
 
 # Switch to watching server startup
 tmux select-window -t server

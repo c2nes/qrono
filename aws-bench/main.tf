@@ -32,9 +32,13 @@ variable "public_key_path" {
 # Instance type must be supported by Cluster Placement Group.
 # Burstable instance types (T2, T3, etc.) in particular are not supported.
 # See https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#concepts-placement-groups
-variable "instance_type" {
+variable "client_instance_type" {
   type    = string
-  default = "c5a.large"
+  default = "c6a.8xlarge"
+}
+variable "server_instance_type" {
+  type    = string
+  default = "im4gn.16xlarge"
 }
 
 variable "availability_zone" {
@@ -145,7 +149,15 @@ resource "aws_key_pair" "default" {
   tags            = var.additional_tags
 }
 
-data "aws_ami" "default" {
+data "aws_ec2_instance_type" "client" {
+  instance_type = var.client_instance_type
+}
+
+data "aws_ec2_instance_type" "server" {
+  instance_type = var.server_instance_type
+}
+
+data "aws_ami" "client" {
   owners      = ["099720109477"] # ubuntu
   most_recent = true
 
@@ -156,7 +168,7 @@ data "aws_ami" "default" {
 
   filter {
     name   = "architecture"
-    values = ["x86_64"]
+    values = data.aws_ec2_instance_type.client.supported_architectures
   }
 
   filter {
@@ -168,13 +180,31 @@ data "aws_ami" "default" {
     name   = "root-device-type"
     values = ["ebs"]
   }
+}
 
-  tags = merge(
-    var.additional_tags,
-    {
-      Name = "default"
-    }
-  )
+data "aws_ami" "server" {
+  owners      = ["099720109477"] # ubuntu
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-impish-21.10-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = data.aws_ec2_instance_type.server.supported_architectures
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "root-device-type"
+    values = ["ebs"]
+  }
 }
 
 resource "aws_placement_group" "benchmark" {
@@ -205,8 +235,8 @@ data "cloudinit_config" "server" {
 }
 
 resource "aws_instance" "server" {
-  ami                         = data.aws_ami.default.id
-  instance_type               = var.instance_type
+  ami                         = data.aws_ami.server.id
+  instance_type               = var.server_instance_type
   associate_public_ip_address = true
   subnet_id                   = aws_subnet.main.id
   key_name                    = aws_key_pair.default.id
@@ -216,13 +246,13 @@ resource "aws_instance" "server" {
 
   vpc_security_group_ids = [aws_security_group.default.id]
 
-  ebs_block_device {
-    device_name           = "/dev/sdf"
-    volume_type           = "io2"
-    iops                  = 32000
-    delete_on_termination = true
-    volume_size           = 100 # GB
-  }
+  # ebs_block_device {
+  #   device_name           = "/dev/sdf"
+  #   volume_type           = "io2"
+  #   iops                  = 32000
+  #   delete_on_termination = true
+  #   volume_size           = 100 # GB
+  # }
 
   volume_tags = var.additional_tags
   tags = merge(
@@ -257,8 +287,8 @@ data "cloudinit_config" "client" {
 }
 
 resource "aws_instance" "client" {
-  ami                         = data.aws_ami.default.id
-  instance_type               = var.instance_type
+  ami                         = data.aws_ami.client.id
+  instance_type               = var.client_instance_type
   associate_public_ip_address = true
   subnet_id                   = aws_subnet.main.id
   key_name                    = aws_key_pair.default.id
