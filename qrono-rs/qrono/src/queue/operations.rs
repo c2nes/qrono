@@ -150,7 +150,7 @@ impl Task for OpProcessor {
     type Error = ();
 
     fn run(&mut self, ctx: &TaskContext<Self>) -> result::Result<State<()>, ()> {
-        let batch = self.op_receiver.recv();
+        let batch = self.op_receiver.recv(256);
         let more_ready = !batch.is_empty();
 
         /*

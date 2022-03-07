@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use crossbeam::queue::SegQueue;
+use crossbeam_utils::Backoff;
 use std::sync::Barrier;
 use std::time::Instant;
 
@@ -26,7 +27,7 @@ pub fn batch_channel(c: &mut Criterion) {
                 let start = Instant::now();
                 let mut remaining = iters;
                 while remaining > 0 {
-                    let batch = rx.recv();
+                    let batch = rx.recv(256);
                     if batch.is_empty() {
                         std::thread::yield_now();
                     } else {
@@ -44,6 +45,7 @@ pub fn batch_channel(c: &mut Criterion) {
 
     group.bench_function("mpsc", |b| {
         b.iter_custom(|iters| {
+            let backoff = Backoff::new();
             let barrier = Barrier::new((THREADS + 1) as usize);
             let (tx, mut rx) = qrono_channel::batch::channel();
 
@@ -68,13 +70,17 @@ pub fn batch_channel(c: &mut Criterion) {
                 let start = Instant::now();
                 let mut remaining = iters;
                 while remaining > 0 {
-                    let batch = rx.recv();
+                    let batch = rx.recv(256);
                     if batch.is_empty() {
-                        std::thread::yield_now();
+                        backoff.spin();
                     } else {
+                        let cnt = batch.len();
                         for val in batch {
                             remaining -= 1;
                             black_box(val);
+                        }
+                        if remaining > 0 && cnt < 100 {
+                            backoff.spin();
                         }
                     }
                 }
@@ -94,7 +100,7 @@ pub fn batch_channel(c: &mut Criterion) {
             let start = Instant::now();
             let mut remaining = iters;
             while remaining > 0 {
-                let batch = rx.recv();
+                let batch = rx.recv(256);
                 if batch.is_empty() {
                     std::thread::yield_now();
                 } else {

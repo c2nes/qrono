@@ -16,7 +16,8 @@ pub enum Value {
     SimpleString(String),
     Error(String),
     Integer(i64),
-    BulkString(Bytes),
+    BulkString(Vec<u8>),
+    BulkStringBytes(Bytes),
     NullBulkString,
     Array(Vec<Value>),
     NullArray,
@@ -115,7 +116,7 @@ impl<'a> ValueParser<'a> {
             return Err(UnexpectedEof);
         }
         let range = self.read_slice(len);
-        let value = Bytes::from(&self.buf[range]);
+        let value = self.buf[range].to_vec();
         self.read_crlf()?;
         Ok(Value::BulkString(value))
     }
@@ -219,12 +220,10 @@ impl Value {
                 buf.put_slice(b"\r\n");
             }
             Value::BulkString(b) => {
-                buf.put_u8(b'$');
-                // TODO: Overflow check?
-                put_u32(buf, b.len() as u32);
-                buf.put_slice(b"\r\n");
-                buf.put_slice(b);
-                buf.put_slice(b"\r\n");
+                Self::put_bulk_string(buf, b);
+            }
+            Value::BulkStringBytes(b) => {
+                Self::put_bulk_string(buf, b);
             }
             Value::Array(vals) => {
                 buf.put_u8(b'*');
@@ -239,12 +238,21 @@ impl Value {
         }
     }
 
+    fn put_bulk_string<B: RedisBuf>(buf: &mut B, b: &[u8]) {
+        buf.put_u8(b'$');
+        put_u32(buf, b.len() as u32);
+        buf.put_slice(b"\r\n");
+        buf.put_slice(b);
+        buf.put_slice(b"\r\n");
+    }
+
     pub fn encoded_length(&self) -> usize {
         match self {
             Value::SimpleString(s) => s.len() + 3, // +<s>\r\n
             Value::Error(s) => s.len() + 3,        // -<s>\r\n
             Value::Integer(n) => i64_len(*n) + 3,  // :<n>\r\n
             Value::BulkString(b) => u32_len(b.len() as u32) + b.len() + 5, // $<len>\r\n<b>\r\n
+            Value::BulkStringBytes(b) => u32_len(b.len() as u32) + b.len() + 5, // $<len>\r\n<b>\r\n
             Value::Array(els) => {
                 let mut size = u32_len(els.len() as u32) + 3; // *<len>\r\n[elements...]
                 for el in els {

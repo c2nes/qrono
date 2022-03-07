@@ -301,7 +301,7 @@ pub fn redis_serde(c: &mut Criterion) {
         Value::Integer(millis),
         Value::Integer(millis),
         Value::Integer(1),
-        Value::BulkString(QronoBytes::from(&b"01234567"[..])),
+        Value::BulkStringBytes(QronoBytes::from(&b"01234567"[..])),
     ]);
     let resp = Value::Array(vec![resp_one.clone()]);
     let resp_multi = Value::Array(iter::repeat(resp_one.clone()).take(5).collect());

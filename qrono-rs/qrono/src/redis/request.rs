@@ -20,7 +20,7 @@ impl RawRequest {
         self.0.len()
     }
 
-    fn next(&mut self) -> Result<Bytes, Response> {
+    fn next(&mut self) -> Result<Vec<u8>, Response> {
         match self.0.next().unwrap() {
             Value::BulkString(value) => Ok(value),
             _ => Err(Response::Error(
@@ -52,7 +52,7 @@ pub enum Request {
     Peek(String, PeekReq),
     Delete(String, DeleteReq),
     Compact(String, CompactReq),
-    Ping(Option<Bytes>),
+    Ping(Option<Vec<u8>>),
 }
 
 impl Request {
@@ -87,8 +87,8 @@ impl Request {
         }
     }
 
-    fn parse_queue_name(name: Bytes) -> Result<String, Response> {
-        String::from_utf8(Vec::from(&name[..]))
+    fn parse_queue_name(name: Vec<u8>) -> Result<String, Response> {
+        String::from_utf8(name)
             .map_err(|_| Response::Error("ERR queue name must be valid UTF8".to_string()))
     }
 
@@ -126,7 +126,7 @@ impl Request {
         }
     }
 
-    fn parse_id_pattern(id: Bytes) -> Result<IdPattern, Response> {
+    fn parse_id_pattern(id: Vec<u8>) -> Result<IdPattern, Response> {
         match crate::redis::protocol::parse_unsigned(&id) {
             Ok(id) => Ok(IdPattern::Id(id)),
             Err(_) => {
@@ -151,7 +151,7 @@ impl Request {
         };
 
         let queue = Self::parse_queue_name(args.next()?)?;
-        let value = args.next()?;
+        let value = Bytes::from(args.next()?);
         let deadline = Self::parse_deadline_req(&mut args)?;
 
         Ok(Request::Enqueue(queue, EnqueueReq { value, deadline }))
@@ -320,7 +320,7 @@ impl Response {
             Value::Integer(item.stats.enqueue_time.millis()),
             Value::Integer(item.stats.requeue_time.millis()),
             Value::Integer(item.stats.dequeue_count as i64),
-            Value::BulkString(item.value),
+            Value::BulkStringBytes(item.value),
         ])
     }
 

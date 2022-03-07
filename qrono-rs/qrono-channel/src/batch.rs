@@ -3,13 +3,13 @@ use std::cell::UnsafeCell;
 
 use std::mem::MaybeUninit;
 
-use std::ptr;
 use std::ptr::NonNull;
+use std::{mem, ptr};
 
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 
-const LAP: usize = 1 << 8;
+const LAP: usize = 1 << 5;
 const SLOTS: usize = LAP - 1;
 
 struct Slot<T> {
@@ -87,11 +87,11 @@ impl<T> Shared<T> {
     /// Given the current `tail` and `index`, allocate and install a new tail block.
     unsafe fn push_new_tail(
         &self,
-        mut recycled: Option<Box<Block<T>>>,
+        block: Box<Block<T>>,
         tail: *mut Block<T>,
         index: usize,
     ) -> *mut Block<T> {
-        let new_tail = Box::into_raw(recycled.take().unwrap_or_else(|| Box::new(Block::new())));
+        let new_tail = Box::into_raw(block);
         (*tail).next.store(new_tail, Release);
         self.tail.block.store(new_tail, Release);
         self.tail.index.store(index + 1, Release);
@@ -102,6 +102,7 @@ impl<T> Shared<T> {
         let backoff = Backoff::new();
         let mut index = self.tail.index.load(Acquire);
         let mut tail = self.tail.block.load(Acquire);
+        let mut new_block = None;
 
         loop {
             if tail.is_null() {
@@ -120,6 +121,13 @@ impl<T> Shared<T> {
             let next_index = index + 1;
             let next_pos = next_index & SLOTS;
 
+            // Optimistically allocate the new block before performing the compare_exchange.
+            // This keeps the allocation out of the critical section during which other publishers
+            // and consumers are spinning.
+            if next_pos == SLOTS && new_block.is_none() {
+                new_block = Some(Box::new(Block::new()));
+            }
+
             match self
                 .tail
                 .index
@@ -127,7 +135,8 @@ impl<T> Shared<T> {
             {
                 Ok(_) => unsafe {
                     if next_pos == SLOTS {
-                        self.push_new_tail(None, tail, next_index);
+                        let new_block = new_block.take().unwrap_unchecked();
+                        self.push_new_tail(new_block, tail, next_index);
                     }
 
                     (*tail).slots.get_unchecked_mut(pos).write(value);
@@ -178,8 +187,11 @@ pub struct Receiver<T> {
 unsafe impl<T: Send> Send for Receiver<T> {}
 
 impl<T> Receiver<T> {
-    pub fn recv(&mut self) -> Batch<T> {
+    pub fn recv(&mut self, limit: usize) -> Batch<T> {
         let backoff = Backoff::new();
+        let mut batch_head = ptr::null_mut::<Block<T>>();
+        let mut batch_tail = batch_head;
+        let mut batch_len = 0;
 
         // We pop the block at `head` and then set `head` to `head.next`. We do not want
         // `head` to ever be null however, so if `head == tail` we first push a new block
@@ -207,18 +219,18 @@ impl<T> Receiver<T> {
                     // The block is empty, so we can just return an empty batch.
                     let pos = index & SLOTS;
                     if pos == 0 {
-                        return Batch {
-                            block: None,
-                            len: 0,
-                            pos: 0,
-                            free: &mut self.free,
-                        };
+                        break;
                     }
 
                     // A new block is being allocated as we speak. Spin until it completes.
                     if pos == SLOTS {
                         backoff.snooze();
                         continue;
+                    }
+
+                    // Ensure there is a free block available
+                    if self.free.is_none() {
+                        self.free = Some(Box::new(Block::new()));
                     }
 
                     let next_index = index | SLOTS;
@@ -233,24 +245,52 @@ impl<T> Receiver<T> {
                     }
 
                     // Install new tail so we can safely take head
-                    next = shared.push_new_tail(self.free.take(), tail, next_index);
+                    let new_block = self.free.take().unwrap_unchecked();
+                    next = shared.push_new_tail(new_block, tail, next_index);
                     len = pos
                 }
 
                 // Update head
                 self.head = NonNull::new_unchecked(next);
 
-                // Return the batch, ensuring the next pointer is cleared so the
-                // block can be safely recycled.
-                let mut block = Box::from_raw(head);
-                block.next = AtomicPtr::default();
+                if batch_head.is_null() {
+                    batch_head = head;
+                    batch_tail = head;
+                } else {
+                    (*batch_tail).next = AtomicPtr::new(head);
+                    batch_tail = head;
+                }
 
-                return Batch {
-                    block: Some(block),
-                    len,
-                    pos: 0,
-                    free: &mut self.free,
-                };
+                batch_len += len;
+
+                // Break once we get a partial batch, or are at risk of exceeding the limit.
+                if len < SLOTS || batch_len + SLOTS > limit {
+                    break;
+                }
+            }
+        }
+
+        if batch_head.is_null() {
+            Batch {
+                block: None,
+                len: 0,
+                pos: 0,
+                block_pos: 0,
+                free: &mut self.free,
+            }
+        } else {
+            let block = unsafe {
+                // Terminate the linked list
+                (*batch_tail).next = AtomicPtr::default();
+                Box::from_raw(batch_head)
+            };
+
+            Batch {
+                block: Some(block),
+                len: batch_len,
+                pos: 0,
+                block_pos: 0,
+                free: &mut self.free,
             }
         }
     }
@@ -307,6 +347,7 @@ pub struct Batch<'a, T> {
     block: Option<Box<Block<T>>>,
     len: usize,
     pos: usize,
+    block_pos: usize,
     free: &'a mut Option<Box<Block<T>>>,
 }
 
@@ -321,8 +362,10 @@ impl<'a, T> Batch<'a, T> {
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
-            batch: self,
+            block: self.block.as_ref().map(|b| b.as_ref()),
+            len: self.len,
             pos: self.pos,
+            block_pos: self.block_pos,
         }
     }
 }
@@ -331,13 +374,25 @@ impl<'a, T> Iterator for Batch<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.block_pos == SLOTS && self.pos < self.len {
+            unsafe {
+                let mut old = self.block.take().unwrap_unchecked();
+                let ptr = mem::replace(&mut old.next, AtomicPtr::default());
+                *self.free = Some(old);
+
+                self.block = Some(Box::from_raw(ptr.into_inner()));
+                self.block_pos = 0;
+            }
+        }
+
         match &mut self.block {
             None => None,
             Some(block) => {
                 if self.pos < self.len {
-                    let slot = &mut block.slots[self.pos];
+                    let slot = &mut block.slots[self.block_pos];
                     let val = slot.take();
                     self.pos += 1;
+                    self.block_pos += 1;
                     Some(val)
                 } else {
                     None
@@ -349,32 +404,45 @@ impl<'a, T> Iterator for Batch<'a, T> {
 
 impl<'a, T> Drop for Batch<'a, T> {
     fn drop(&mut self) {
-        if let Some(mut block) = self.block.take() {
-            for slot in &mut block.slots[self.pos..self.len] {
-                drop(slot.take())
-            }
+        // Consuming the rest of the iterator to ensure all values
+        // and intermediate blocks are dropped.
+        for _ in self.by_ref() {}
 
+        // Recycling the final block, if any.
+        if let Some(block) = self.block.take() {
+            assert!(block.next.load(Relaxed).is_null());
             *self.free = Some(block);
         }
     }
 }
 
 pub struct Iter<'a, T> {
-    batch: &'a Batch<'a, T>,
+    block: Option<&'a Block<T>>,
+    len: usize,
     pos: usize,
+    block_pos: usize,
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &self.batch.block {
+        if self.block_pos == SLOTS && self.pos < self.len {
+            unsafe {
+                let next = self.block.unwrap().next.load(Relaxed);
+                self.block = Some(&*next);
+                self.block_pos = 0;
+            }
+        }
+
+        match &mut self.block {
             None => None,
             Some(block) => {
-                if self.pos < self.batch.len {
-                    let slot = &block.slots[self.pos];
+                if self.pos < self.len {
+                    let slot = &block.slots[self.block_pos];
                     let val = slot.borrow();
                     self.pos += 1;
+                    self.block_pos += 1;
                     Some(val)
                 } else {
                     None
@@ -417,7 +485,7 @@ mod tests {
     #[test]
     fn recv_empty() {
         let (_, mut rx) = channel::<usize>();
-        let batch = rx.recv();
+        let batch = rx.recv(100);
         assert_eq!(0, batch.len());
         assert!(batch.is_empty());
     }
@@ -428,8 +496,8 @@ mod tests {
         tx.send(1);
         tx.send(2);
         tx.send(3);
-        assert_eq!(vec![1, 2, 3], rx.recv().collect::<Vec<_>>());
-        assert_eq!(0, rx.recv().len());
+        assert_eq!(vec![1, 2, 3], rx.recv(100).collect::<Vec<_>>());
+        assert_eq!(0, rx.recv(100).len());
     }
 
     #[test]
@@ -438,8 +506,46 @@ mod tests {
         for i in 0..SLOTS {
             tx.send(i);
         }
-        assert_eq!(SLOTS, rx.recv().len());
-        assert_eq!(0, rx.recv().len());
+        assert_eq!(SLOTS, rx.recv(100).len());
+        assert_eq!(0, rx.recv(100).len());
+    }
+
+    #[test]
+    fn recv_multiple() {
+        let (tx, mut rx) = channel::<usize>();
+        for i in 0..(5 * SLOTS) {
+            tx.send(i);
+        }
+
+        let mut batch = rx.recv(2 * SLOTS);
+        assert_eq!(2 * SLOTS, batch.len());
+        for expected in 0..(2 * SLOTS) {
+            assert_eq!(Some(expected), batch.next());
+        }
+        drop(batch);
+
+        assert_eq!(3 * SLOTS, rx.recv(10 * SLOTS).len());
+    }
+
+    #[test]
+    fn recv_multiple_iter() {
+        let (tx, mut rx) = channel::<usize>();
+        for i in 0..(5 * SLOTS) {
+            tx.send(i);
+        }
+
+        let mut batch = rx.recv(2 * SLOTS);
+        let mut batch_iter = batch.iter();
+        for expected in 0..(2 * SLOTS) {
+            assert_eq!(Some(&expected), batch_iter.next());
+        }
+        drop(batch_iter);
+        for expected in 0..(2 * SLOTS) {
+            assert_eq!(Some(expected), batch.next());
+        }
+        drop(batch);
+
+        assert_eq!(3 * SLOTS, rx.recv(10 * SLOTS).len());
     }
 
     #[test]
@@ -453,13 +559,13 @@ mod tests {
             }
             tx.send(0);
 
-            let mut batch = rx.recv();
+            let mut batch = rx.recv(SLOTS);
             for i in 0..SLOTS {
                 assert_eq!(Some(i), batch.next());
             }
             assert_eq!(None, batch.next());
         }
-        assert_eq!(1, rx.recv().len);
+        assert_eq!(1, rx.recv(100).len);
 
         for i in 0..SLOTS - 1 {
             tx.send(i);
@@ -470,15 +576,15 @@ mod tests {
                 tx.send(i);
             }
 
-            let mut batch = rx.recv();
+            let mut batch = rx.recv(SLOTS);
             for i in 0..SLOTS {
                 assert_eq!(Some(i), batch.next());
             }
             assert_eq!(None, batch.next());
         }
-        assert_eq!(SLOTS - 1, rx.recv().len);
+        assert_eq!(SLOTS - 1, rx.recv(SLOTS).len);
 
-        assert_eq!(0, rx.recv().len());
+        assert_eq!(0, rx.recv(SLOTS).len());
     }
 
     #[test]
@@ -511,7 +617,7 @@ mod tests {
             barrier.wait();
             let mut i = 0;
             while i < N {
-                for x in rx.recv() {
+                for x in rx.recv(100) {
                     assert_eq!(i, x);
                     i += 1;
                 }
@@ -530,7 +636,7 @@ mod tests {
 
         let mut i = 0;
         while i < N {
-            for x in rx.recv() {
+            for x in rx.recv(100) {
                 assert_eq!(i, x);
                 i += 1;
             }
@@ -559,7 +665,7 @@ mod tests {
             let mut remaining = N * M;
             let mut sum = 0;
             while remaining > 0 {
-                for x in rx.recv() {
+                for x in rx.recv(100) {
                     remaining -= 1;
                     sum += x;
                 }
