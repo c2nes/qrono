@@ -377,7 +377,7 @@ impl<'a, T> Iterator for Batch<'a, T> {
         if self.block_pos == SLOTS && self.pos < self.len {
             unsafe {
                 let mut old = self.block.take().unwrap_unchecked();
-                let ptr = mem::replace(&mut old.next, AtomicPtr::default());
+                let ptr = mem::take(&mut old.next);
                 *self.free = Some(old);
 
                 self.block = Some(Box::from_raw(ptr.into_inner()));
