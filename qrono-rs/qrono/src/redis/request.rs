@@ -4,7 +4,7 @@ use crate::error::QronoError;
 use crate::ops::{
     CompactReq, CompactResp, DeadlineReq, DeleteReq, DeleteResp, DequeueReq, DequeueResp,
     EnqueueReq, EnqueueResp, IdPattern, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq,
-    ReleaseResp, RequeueReq, RequeueResp,
+    ReleaseResp, RequeueReq, RequeueResp, ValueReq,
 };
 use crate::redis::protocol::Value;
 use crate::result::QronoResult;
@@ -151,7 +151,7 @@ impl Request {
         };
 
         let queue = Self::parse_queue_name(args.next()?)?;
-        let value = Bytes::from(args.next()?);
+        let value = ValueReq::Bytes(Bytes::from(args.next()?));
         let deadline = Self::parse_deadline_req(&mut args)?;
 
         Ok(Request::Enqueue(queue, EnqueueReq { value, deadline }))

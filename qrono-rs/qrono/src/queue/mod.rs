@@ -323,7 +323,7 @@ impl Shared {
 
     fn peek(&mut self) -> io::Result<Option<Item>> {
         if let Some((reader, _, head_name)) = self.head() {
-            match reader.next()?.unwrap() {
+            match reader.peek()?.unwrap() {
                 Entry::Pending(item) => Ok(Some(item)),
                 Entry::Tombstone { id, deadline, .. } => {
                     panic!(

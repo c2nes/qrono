@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::bytes::Bytes;
+use serde::Serialize;
 use std::ops::{Add, AddAssign, Sub};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -76,7 +77,7 @@ impl Sub for Timestamp {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Default)]
+#[derive(Debug, Eq, PartialEq, Clone, Default, Serialize)]
 pub struct Stats {
     pub enqueue_time: Timestamp,
     pub requeue_time: Timestamp,
@@ -85,12 +86,13 @@ pub struct Stats {
 
 pub type SegmentID = ID;
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct Item {
     pub id: ID,
     pub deadline: Timestamp,
     pub stats: Stats,
     pub value: Bytes,
+    #[serde(skip)]
     pub segment_id: SegmentID,
 }
 
@@ -213,5 +215,78 @@ impl Ord for Key {
 impl PartialOrd for Key {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+mod serde_impl {
+    use super::Timestamp;
+    use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
+    use serde::de::{Error, Unexpected, Visitor};
+    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+    use std::fmt::Formatter;
+
+    struct TimestampVisitor;
+
+    impl<'de> Visitor<'de> for TimestampVisitor {
+        type Value = Timestamp;
+
+        fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+            formatter.write_str("RFC3339 timestamp or unix millisecond timestamp")
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(Timestamp::from_millis(v))
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            self.visit_i64(
+                v.try_into()
+                    .map_err(|_| de::Error::custom("value out of range"))?,
+            )
+        }
+
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            self.visit_i64(v as i64)
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            let date_time = DateTime::parse_from_rfc3339(v)
+                .map_err(|_| de::Error::invalid_value(Unexpected::Str(v), &self))?;
+
+            Ok(Timestamp::from_millis(date_time.timestamp_millis()))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Timestamp {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(TimestampVisitor)
+        }
+    }
+
+    impl Serialize for Timestamp {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_str(
+                &Utc.timestamp_millis(self.millis())
+                    .to_rfc3339_opts(SecondsFormat::Millis, true),
+            )
+        }
     }
 }

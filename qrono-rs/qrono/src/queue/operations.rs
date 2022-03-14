@@ -207,7 +207,7 @@ impl Task for OpProcessor {
                     let val = Ok(EnqueueResp { id, deadline });
 
                     responses.push(Response::Enqueue(resp, val));
-                    tx.add_pending(id, deadline, stats, req.value);
+                    tx.add_pending(id, deadline, stats, req.value.into());
                 }
                 Op::Dequeue(mut req, resp) => {
                     // TODO: Make this configurable

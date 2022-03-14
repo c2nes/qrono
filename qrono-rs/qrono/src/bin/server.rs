@@ -47,7 +47,8 @@ struct Opts {
     wal_sync_period: i64,
 }
 
-fn main() -> io::Result<()> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     env_logger::builder().format_timestamp_micros().init();
 
     let opts: Opts = Opts::from_args();
@@ -97,6 +98,9 @@ fn main() -> io::Result<()> {
         deletion_scheduler,
         wal_sync_period,
     );
+
+    // Start HTTP server in background.
+    tokio::spawn(qrono::http::run(qrono.clone()));
 
     info!("Start up completed in {:?}.", start.elapsed());
     RedisServer::new(&qrono, &scheduler).run(opts.listen)

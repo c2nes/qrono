@@ -1,12 +1,18 @@
 use crate::transfer;
 use crate::transfer::{Receiver, Sender};
+use parking_lot::Mutex;
 use std::mem;
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 pub use transferable::Future as TransferableFuture;
 
 enum Completable<T> {
     Cell(Sender<T>),
     Handler(Box<dyn FnOnce(T) + Send>),
+    StdFuture(Sender<T>, Arc<Mutex<Option<Waker>>>),
 }
 
 impl<T> Completable<T> {
@@ -14,12 +20,18 @@ impl<T> Completable<T> {
         match self {
             Completable::Cell(sender) => sender.send(val),
             Completable::Handler(handler) => handler(val),
+            Completable::StdFuture(sender, waker) => {
+                sender.send(val);
+                if let Some(waker) = waker.lock().take() {
+                    waker.wake();
+                }
+            }
         }
     }
 
     fn is_cancelled(&self) -> bool {
         match self {
-            Completable::Cell(sender) => sender.is_orphaned(),
+            Completable::Cell(sender) | Completable::StdFuture(sender, _) => sender.is_orphaned(),
             Completable::Handler(_) => false,
         }
     }
@@ -97,6 +109,20 @@ impl<T> Future<T> {
         )
     }
 
+    pub fn new_std() -> (Promise<T>, impl std::future::Future<Output = T>) {
+        let (tx, rx) = transfer::pair();
+        let waker = Arc::new(Mutex::new(None));
+        let promise = Promise {
+            completable: Completable::StdFuture(tx, Arc::clone(&waker)),
+            callbacks: Callbacks::None,
+        };
+        let future = StdFuture {
+            cell: Some(rx),
+            waker,
+        };
+        (promise, future)
+    }
+
     pub fn completed(val: T) -> Future<T> {
         Future {
             cell: transfer::ready(val),
@@ -145,6 +171,38 @@ impl<T> Future<T> {
         match self.cell.try_receive() {
             Ok(val) => Ok(val),
             Err(cell) => Err(Future { cell }),
+        }
+    }
+}
+
+struct StdFuture<T> {
+    cell: Option<Receiver<T>>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl<T> Unpin for StdFuture<T> {}
+
+impl<T> std::future::Future for StdFuture<T> {
+    type Output = T;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let cell = self.cell.take();
+        match cell.expect("already polled").try_receive() {
+            Ok(value) => Poll::Ready(value),
+            Err(cell) => {
+                // Not ready
+                let mut locked = self.waker.lock();
+
+                // Double check for race condition
+                if cell.is_sent() {
+                    return Poll::Ready(cell.receive());
+                }
+
+                *locked = Some(cx.waker().clone());
+                drop(locked);
+                self.cell = Some(cell);
+                Poll::Pending
+            }
         }
     }
 }
