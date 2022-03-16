@@ -28,17 +28,27 @@ pub(crate) mod test_alloc {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
 
+    thread_local! {
+        static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+    }
+
     struct TrackingAlloc {
         a: jemallocator::Jemalloc,
-        n: AtomicUsize,
     }
 
     impl TrackingAlloc {
         const fn new() -> Self {
             Self {
                 a: jemallocator::Jemalloc,
-                n: AtomicUsize::new(0),
             }
+        }
+
+        fn add(&self, size: usize) {
+            ALLOCATED.with(|n| n.fetch_add(size, Relaxed));
+        }
+
+        fn sub(&self, size: usize) {
+            ALLOCATED.with(|n| n.fetch_sub(size, Relaxed));
         }
     }
 
@@ -47,13 +57,13 @@ pub(crate) mod test_alloc {
             let size = layout.size();
             let res = self.a.alloc(layout);
             if !res.is_null() {
-                self.n.fetch_add(size, Relaxed);
+                self.add(size);
             }
             res
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            self.n.fetch_sub(layout.size(), Relaxed);
+            self.sub(layout.size());
             self.a.dealloc(ptr, layout);
         }
 
@@ -61,7 +71,7 @@ pub(crate) mod test_alloc {
             let size = layout.size();
             let res = self.a.alloc_zeroed(layout);
             if !res.is_null() {
-                self.n.fetch_add(size, Relaxed);
+                self.add(size);
             }
             res
         }
@@ -70,8 +80,8 @@ pub(crate) mod test_alloc {
             let old_size = layout.size();
             let res = self.a.realloc(ptr, layout, new_size);
             if !res.is_null() {
-                self.n.fetch_add(new_size, Relaxed);
-                self.n.fetch_sub(old_size, Relaxed);
+                self.add(new_size);
+                self.sub(old_size);
             }
             res
         }
@@ -81,6 +91,6 @@ pub(crate) mod test_alloc {
     static GLOBAL: TrackingAlloc = TrackingAlloc::new();
 
     pub fn allocated() -> usize {
-        GLOBAL.n.load(Relaxed)
+        ALLOCATED.with(|n| n.load(Relaxed))
     }
 }
