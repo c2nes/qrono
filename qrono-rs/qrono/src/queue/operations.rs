@@ -10,7 +10,7 @@ use crate::promise::QronoPromise;
 use crate::queue::blocked_dequeues::BlockedDequeues;
 use crate::queue::writer::{MemorySegmentWriter, SEGMENT_FLUSH_THRESHOLD};
 use crate::queue::{DequeueError, Shared};
-use crate::result::IgnoreErr;
+use crate::result::{IgnoreErr, QronoResult};
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskFuture, TaskHandle};
 use crate::timer;
 use crate::working_set::{WorkingItem, WorkingSet};
@@ -37,32 +37,14 @@ pub(super) enum Op {
 }
 
 enum Response {
-    Enqueue(
-        QronoPromise<EnqueueResp>,
-        crate::result::QronoResult<EnqueueResp>,
-    ),
-    Dequeue(
-        QronoPromise<DequeueResp>,
-        crate::result::QronoResult<DequeueResp>,
-    ),
-    Requeue(
-        QronoPromise<RequeueResp>,
-        crate::result::QronoResult<RequeueResp>,
-    ),
-    Release(
-        QronoPromise<ReleaseResp>,
-        crate::result::QronoResult<ReleaseResp>,
-    ),
-    Info(QronoPromise<InfoResp>, crate::result::QronoResult<InfoResp>),
-    Peek(QronoPromise<PeekResp>, crate::result::QronoResult<PeekResp>),
-    Delete(
-        QronoPromise<DeleteResp>,
-        crate::result::QronoResult<DeleteResp>,
-    ),
-    Compact(
-        QronoPromise<CompactResp>,
-        crate::result::QronoResult<CompactResp>,
-    ),
+    Enqueue(QronoPromise<EnqueueResp>, QronoResult<EnqueueResp>),
+    Dequeue(QronoPromise<DequeueResp>, QronoResult<DequeueResp>),
+    Requeue(QronoPromise<RequeueResp>, QronoResult<RequeueResp>),
+    Release(QronoPromise<ReleaseResp>, QronoResult<ReleaseResp>),
+    Info(QronoPromise<InfoResp>, QronoResult<InfoResp>),
+    Peek(QronoPromise<PeekResp>, QronoResult<PeekResp>),
+    Delete(QronoPromise<DeleteResp>, QronoResult<DeleteResp>),
+    Compact(QronoPromise<CompactResp>, QronoResult<CompactResp>),
 }
 
 impl Response {
@@ -81,7 +63,7 @@ impl Response {
 }
 
 pub(super) struct OpProcessor {
-    op_receiver: Receiver<Op>,
+    ops: Receiver<Op>,
     shared: Arc<Mutex<Shared>>,
     working_set: WorkingSet,
     working_set_ids: IndexMap<ID, (Timestamp, SegmentID), BuildHasherDefault<FxHasher>>,
@@ -106,7 +88,7 @@ impl OpProcessor {
         let (op_sender, op_receiver) = batch::channel();
         let (segment_writer, segment_writer_future) = scheduler.register(writer);
         let processor = Self {
-            op_receiver,
+            ops: op_receiver,
             shared,
             working_set,
             working_set_ids: Default::default(),
@@ -150,7 +132,7 @@ impl Task for OpProcessor {
     type Error = ();
 
     fn run(&mut self, ctx: &TaskContext<Self>) -> result::Result<State<()>, ()> {
-        let batch = self.op_receiver.recv(256);
+        let batch = self.ops.recv(256);
         let more_ready = !batch.is_empty();
 
         /*

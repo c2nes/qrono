@@ -43,7 +43,7 @@ mod writer;
 
 pub(crate) struct Queue {
     name: String,
-    op_sender: Sender<Op>,
+    ops: Sender<Op>,
     op_processor: TaskHandle<OpProcessor>,
     op_processor_future: TaskFuture<OpProcessor>,
     directory: PathBuf,
@@ -136,7 +136,7 @@ impl Queue {
             compactor_future,
         )?;
 
-        // It is important that "files" is built before MutableSegment is opened so
+        // It is important that `files` is built before MutableSegment is opened so
         // the writer does not attempt to "recover" the newly opened WAL.
         writer.recover(&files)?;
 
@@ -153,7 +153,7 @@ impl Queue {
 
         Ok(Queue {
             name,
-            op_sender,
+            ops: op_sender,
             op_processor,
             op_processor_future,
             directory,
@@ -163,34 +163,37 @@ impl Queue {
         })
     }
 
-    pub(crate) fn enqueue(&self, req: EnqueueReq, resp: QronoPromise<EnqueueResp>) {
-        self.op_sender.send(Op::Enqueue(req, resp));
+    fn execute(&self, op: Op) {
+        self.ops.send(op);
         self.op_processor.schedule().ignore_err();
+    }
+
+    pub(crate) fn enqueue(&self, req: EnqueueReq, resp: QronoPromise<EnqueueResp>) {
+        self.execute(Op::Enqueue(req, resp));
     }
 
     pub(crate) fn dequeue(&self, req: DequeueReq, resp: QronoPromise<DequeueResp>) {
-        self.op_sender.send(Op::Dequeue(req, resp));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Dequeue(req, resp));
     }
 
     pub(crate) fn requeue(&self, req: RequeueReq, resp: QronoPromise<RequeueResp>) {
-        self.op_sender.send(Op::Requeue(req, resp));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Requeue(req, resp));
     }
 
     pub(crate) fn release(&self, req: ReleaseReq, resp: QronoPromise<ReleaseResp>) {
-        self.op_sender.send(Op::Release(req, resp));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Release(req, resp));
     }
 
     pub(crate) fn info(&self, req: InfoReq, resp: QronoPromise<InfoResp>) {
-        self.op_sender.send(Op::Info(req, resp));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Info(req, resp));
     }
 
     pub(crate) fn peek(&self, req: PeekReq, resp: QronoPromise<PeekResp>) {
-        self.op_sender.send(Op::Peek(req, resp));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Peek(req, resp));
+    }
+
+    pub(crate) fn compact(&self, req: CompactReq, resp: QronoPromise<CompactResp>) {
+        self.execute(Op::Compact(req, resp));
     }
 
     pub(crate) fn mark_deleted(&self) -> io::Result<()> {
@@ -200,8 +203,7 @@ impl Queue {
 
     pub(crate) fn delete(self, req: DeleteReq, resp: QronoPromise<DeleteResp>) {
         let (tx, rx) = QronoFuture::transferable();
-        self.op_sender.send(Op::Delete(req, tx));
-        self.op_processor.schedule().ignore_err();
+        self.execute(Op::Delete(req, tx));
         self.deletion_backlog.fetch_add(1, Ordering::SeqCst);
 
         rx.transfer_async(&self.scheduler, move |result| {
@@ -232,11 +234,6 @@ impl Queue {
                 );
             });
         })
-    }
-
-    pub(crate) fn compact(&self, req: CompactReq, resp: QronoPromise<CompactResp>) {
-        self.op_sender.send(Op::Compact(req, resp));
-        self.op_processor.schedule().ignore_err();
     }
 }
 

@@ -97,9 +97,10 @@ impl<T> Default for Slot<T> {
     }
 }
 
-/// A queue implemented using a slab. While entries are not ordered in memory,
-/// they are co-located within a contiguous block of memory.
-pub(super) struct SlabDeque<T> {
+/// A queue combined with a slab. Entries are maintained in FIFO order, but also have
+/// indices assigned matching their positions in the underlying slab. These indices
+/// allow for O(1) removal of arbitrary entries from the queue.
+pub(super) struct SlabQueue<T> {
     slots: Vec<Slot<T>>,
     head: Pointer,
     tail: Pointer,
@@ -107,13 +108,13 @@ pub(super) struct SlabDeque<T> {
     len: usize,
 }
 
-impl<T> Default for SlabDeque<T> {
+impl<T> Default for SlabQueue<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> SlabDeque<T> {
+impl<T> SlabQueue<T> {
     pub(super) fn new() -> Self {
         Self {
             slots: vec![],

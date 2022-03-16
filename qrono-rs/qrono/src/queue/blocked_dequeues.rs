@@ -1,14 +1,14 @@
 use crate::data::Timestamp;
 use crate::ops::DequeueResp;
 use crate::promise::QronoPromise;
-use crate::queue::slab_deque::SlabDeque;
+use crate::queue::slab_deque::SlabQueue;
 
 use std::collections::BTreeSet;
 
 /// A collection of blocking dequeue operations, waiting to be fulfilled or to time out.
 #[derive(Default)]
 pub(super) struct BlockedDequeues {
-    by_arrival: SlabDeque<(Timestamp, u64, QronoPromise<DequeueResp>)>,
+    by_arrival: SlabQueue<(Timestamp, u64, QronoPromise<DequeueResp>)>,
     by_deadline: BTreeSet<(Timestamp, usize)>,
     total_count: u64,
 }
