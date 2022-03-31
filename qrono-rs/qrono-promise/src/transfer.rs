@@ -49,7 +49,7 @@ impl<T> Inner<T> {
         self.state.load(Relaxed) & SENT_BIT != 0
     }
 
-    unsafe fn send(&mut self, val: T) -> State {
+    unsafe fn send(&self, val: T) -> State {
         UnsafeCell::raw_get(self.value.as_ptr()).write(val);
 
         match self
@@ -61,11 +61,11 @@ impl<T> Inner<T> {
         }
     }
 
-    unsafe fn send_slow(&mut self) -> State {
+    unsafe fn send_slow(&self) -> State {
         let prev = self.state.fetch_add(DROPPED_BIT | SENT_BIT, Release);
         if prev & DROPPED_BIT != 0 {
             // Receiver is already dropped. Make sure to drop the sent value.
-            ptr::drop_in_place(self.value.as_mut_ptr());
+            ptr::drop_in_place(self.value.assume_init_ref().get());
         } else if prev & PARKED_BIT != 0 {
             let key = self as *const _ as usize;
             parking_lot_core::unpark_one(key, |_res| DEFAULT_UNPARK_TOKEN);
@@ -85,7 +85,7 @@ impl<T> Sender<T> {
     }
 
     pub fn send(mut self, val: T) {
-        let state = unsafe { self.inner.as_mut().send(val) };
+        let state = unsafe { self.inner.as_ref().send(val) };
         self.state = state | SENT_BIT;
     }
 }
@@ -139,7 +139,7 @@ impl<T> Receiver<T> {
             panic!("Sender<T> dropped without sending");
         }
 
-        let inner = self.inner.as_mut();
+        let inner = self.inner.as_ref();
         inner.state.fetch_or(PARKED_BIT, Relaxed);
         let key = self.inner.as_ptr() as usize;
         let validate = || inner.state.load(Relaxed) == PARKED_BIT;
@@ -230,10 +230,22 @@ pub fn ready<T>(val: T) -> Receiver<T> {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     #[test]
-    pub fn test() {
+    pub fn receive_non_blocking() {
         let (tx, rx) = super::pair();
         tx.send("Hello, world!");
+        assert_eq!("Hello, world!", rx.receive());
+    }
+
+    #[test]
+    pub fn receive_blocking() {
+        let (tx, rx) = super::pair();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            tx.send("Hello, world!");
+        });
         assert_eq!("Hello, world!", rx.receive());
     }
 }
