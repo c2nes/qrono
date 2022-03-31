@@ -203,11 +203,11 @@ impl SegmentReader for MemorySegmentReader {
     }
 }
 
-fn cost_estimate(entry: &Entry) -> usize {
-    // This estimate is empirically derived by measuring RSS
-    // with various value sizes and number of entries.
-    const ENTRY_OVERHEAD: usize = 200;
+// This estimate is empirically derived by measuring RSS
+// with various value sizes and number of entries.
+const ENTRY_OVERHEAD: usize = 200;
 
+fn cost_estimate(entry: &Entry) -> usize {
     let value_size = match entry {
         Entry::Pending(item) => item.value.len(),
         Entry::Tombstone { .. } => 0,
@@ -223,6 +223,7 @@ mod tests {
     use crate::bytes::Bytes;
     use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp, ID};
     use crate::segment::mem::cost_estimate;
+    use claim::assert_le;
     use std::mem;
     use std::sync::Arc;
 
@@ -258,49 +259,6 @@ mod tests {
         println!("{:?}", reader.next().unwrap());
     }
 
-    #[test]
-    fn sizes() {
-        dbg!(cost_estimate(&Entry::Tombstone {
-            id: 0,
-            deadline: Timestamp::now(),
-            segment_id: 0,
-        }));
-
-        // 88 bytes
-        dbg!(mem::size_of::<Entry>());
-
-        // 32 bytes
-        dbg!(mem::size_of::<Bytes>());
-
-        // 32 bytes
-        dbg!(mem::size_of::<ID>());
-        dbg!(mem::size_of::<Timestamp>());
-        dbg!(mem::size_of::<Stats>());
-        dbg!(mem::size_of::<SegmentID>());
-        dbg!(mem::size_of::<Item>());
-        dbg!(mem::size_of::<Entry>());
-
-        // "Bytes" overhead is ~32 bytes
-        // Cloned "Bytes" overhead is ~64 bytes
-        // Vec<u8> overhead is ~24 bytes
-        // Box<[u8]> overhead is ~24 bytes
-        // String overhead is ~24 bytes
-        // Entry overhead is ~88/120 bytes depending on whether value is a clone
-
-        // Arc<[u8]> overhead is ~32 bytes
-        for m in [1, 10, 100, 1_000, 1_000_000] {
-            for n in [0, 16, 64, 256, 1024] {
-                let expected_size = m * n;
-                let v = (0..m)
-                    .map(|_| Arc::<[u8]>::from("A".repeat(n).into_bytes().into_boxed_slice()))
-                    .collect::<Vec<_>>();
-                let actual_size = size_of(v);
-                let overhead = (actual_size - expected_size) / m;
-                println!("Arc<[u8]> || m={:7}, n={:5}, overhead={:4}", m, n, overhead);
-            }
-        }
-    }
-
     fn size_of<V>(v: V) -> usize {
         let boxed = Box::new(v);
         let start = crate::test_alloc::allocated();
@@ -309,10 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn estimate_overhead() {
-        for m in [1, 10, 100, 1_000, 1_000_000] {
+    fn overhead() {
+        for m in [10, 1_000, 100_000] {
             let mut segment = MemorySegment::new(None);
-            let start = crate::test_alloc::allocated();
             for i in 0..m {
                 segment
                     .add(Entry::Tombstone {
@@ -322,13 +279,13 @@ mod tests {
                     })
                     .unwrap();
             }
-            let end = crate::test_alloc::allocated();
-            let overhead = (end - start) as f64 / (m as f64);
-            println!("M={:7}, tombstone, overhead={:.2}", m, overhead);
+
+            let overhead = (size_of(segment) as f64 / (m as f64)) as usize;
+            assert_le!(overhead, super::ENTRY_OVERHEAD);
         }
 
-        for m in [1, 10, 100, 1_000, 1_000_000] {
-            for n in [0, 16, 64, 256, 1024] {
+        for m in [10, 1_000, 100_000] {
+            for n in [0, 64, 256, 1024] {
                 let mut segment = MemorySegment::new(None);
                 let start = crate::test_alloc::allocated();
                 for i in 0..m {
@@ -344,16 +301,13 @@ mod tests {
                 }
 
                 let end = crate::test_alloc::allocated();
-                let overhead = ((end - start) - (n * m)) as f64 / (m as f64);
-                println!("M={:7}, size={:4}, overhead={:.2}", m, n, overhead);
+                let overhead = (((end - start) - (n * m)) as f64 / (m as f64)) as usize;
+                assert_le!(overhead, super::ENTRY_OVERHEAD);
 
                 let frozen = segment.freeze().0.entries();
                 let size = size_of(frozen);
-                let overhead = (size - (n * m)) as f64 / (m as f64);
-                println!(
-                    "M={:7}, size={:4}, overhead={:6.1} (frozen)",
-                    m, n, overhead
-                );
+                let overhead = ((size - (n * m)) as f64 / (m as f64)) as usize;
+                assert_le!(overhead, super::ENTRY_OVERHEAD);
             }
         }
     }

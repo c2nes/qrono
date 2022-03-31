@@ -140,15 +140,57 @@ impl Inner {
 mod tests {
     use crate::id_generator::IdGenerator;
     use crate::scheduler::{Scheduler, Unpooled};
+    use claim::{assert_ge, assert_gt};
+    use tempfile::tempdir;
 
     #[test]
-    fn test() {
-        for _ in 0..100 {
-            let gen = IdGenerator::new("/tmp/id", Scheduler::new(Unpooled)).unwrap();
-            for _ in 0..1_000_000 {
-                gen.generate_id();
+    fn monotonic() {
+        let dir = tempdir().unwrap();
+        let mut last = 0;
+        for _ in 0..10 {
+            let gen = IdGenerator::new(dir.path().join("id"), Scheduler::new(Unpooled)).unwrap();
+            for _ in 0..1000 {
+                let id = gen.generate_id();
+                assert!(id > last);
+                last = id;
             }
-            dbg!(gen.generate_id());
+        }
+    }
+
+    #[test]
+    fn monotonic_batches() {
+        let dir = tempdir().unwrap();
+        let mut last = 1;
+        for i in 0..10 {
+            let gen = IdGenerator::new(dir.path().join("id"), Scheduler::new(Unpooled)).unwrap();
+            for _ in 0..1000 {
+                let range = gen.generate_ids(i * 10 + 1);
+                assert!(range.start >= last);
+                last = range.end;
+            }
+        }
+    }
+
+    #[test]
+    fn empty_batch() {
+        let dir = tempdir().unwrap();
+        let gen = IdGenerator::new(dir.path().join("id"), Scheduler::new(Unpooled)).unwrap();
+        assert!(gen.generate_ids(0).is_empty());
+    }
+
+    #[test]
+    fn wait_for_clearance() {
+        let dir = tempdir().unwrap();
+        let gen = IdGenerator::new(dir.path().join("id"), Scheduler::new(Unpooled)).unwrap();
+        let mut last = 1;
+        for i in 0..100 {
+            // By requesting more IDs than the reservation size, we're guaranteed that the ceiling
+            // will need to be raised to complete our request.
+            let count = (10 * super::DEFAULT_RESERVATION_SIZE) as usize;
+            let range = gen.generate_ids(count);
+            assert_eq!(count, (range.end - range.start) as usize);
+            assert_ge!(range.start, last);
+            last = range.end;
         }
     }
 }

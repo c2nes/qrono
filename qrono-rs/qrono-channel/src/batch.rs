@@ -602,8 +602,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn spsc() {
-        const N: i64 = 1_000_000;
+        const N: i64 = 100_000;
         let (tx, mut rx) = channel::<i64>();
         let barrier = Barrier::new(2);
         crossbeam::scope(|scope| {
@@ -628,7 +629,7 @@ mod tests {
 
     #[test]
     fn serial() {
-        const N: i64 = 1_000_000;
+        const N: i64 = 100_000;
         let (tx, mut rx) = channel::<i64>();
         for i in 0..N {
             tx.send(i);
@@ -644,9 +645,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn mpsc() {
-        const N: i64 = 100_000;
-        const M: i64 = 100;
+        const N: i64 = 10_000;
+        const M: i64 = 10;
         let (tx, mut rx) = channel::<i64>();
         let barrier = Barrier::new((M + 1) as usize);
         crossbeam::scope(|scope| {
