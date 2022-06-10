@@ -147,3 +147,154 @@ impl Display for ReadError {
 }
 
 impl std::error::Error for ReadError {}
+
+#[cfg(test)]
+mod tests {
+    use super::WriteAheadLog;
+    use crate::data::generator::EntryGenerator;
+    use crate::data::{Entry, Item};
+    use crate::wal::ReadError;
+    use rand::seq::SliceRandom;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
+    use std::fs::File;
+    use std::io::{Seek, SeekFrom, Write};
+    use tempfile::tempdir;
+
+    #[test]
+    pub fn append_default_pending() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let pending = Entry::Pending(Item {
+            id: 0,
+            deadline: Default::default(),
+            stats: Default::default(),
+            value: Default::default(),
+            segment_id: 0,
+        });
+
+        wal.append(&[pending.clone()]).unwrap();
+        drop(wal);
+
+        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
+        assert_eq!(&entries, &[pending]);
+    }
+
+    #[test]
+    pub fn append_default_tombstone() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let tombstone = Entry::Tombstone {
+            id: 0,
+            deadline: Default::default(),
+            segment_id: 0,
+        };
+
+        wal.append(&[tombstone.clone()]).unwrap();
+        drop(wal);
+
+        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
+        assert_eq!(&entries, &[tombstone]);
+    }
+
+    #[test]
+    pub fn append_empty() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        wal.append(&[]).unwrap();
+
+        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
+        assert_eq!(&entries, &[]);
+    }
+
+    #[test]
+    pub fn no_append() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        drop(WriteAheadLog::new(&path, None).unwrap());
+
+        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
+        assert_eq!(&entries, &[]);
+    }
+
+    #[test]
+    pub fn append_many() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut gen = EntryGenerator::default();
+        let mut rng = ChaCha20Rng::from_seed([0; 32]);
+        let mut expected = vec![];
+
+        for _ in 0..200 {
+            let batch_size_base = [1, 10, 100, 500].choose(&mut rng).unwrap();
+            let jitter = batch_size_base / 2;
+            let batch_size = rng.gen_range(batch_size_base - jitter..=batch_size_base + jitter);
+            let batch = (0..batch_size).map(|_| gen.entry()).collect::<Vec<_>>();
+            wal.append(&batch).unwrap();
+            expected.extend(batch);
+        }
+        drop(wal);
+
+        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
+        expected.sort();
+        assert_eq!(&entries, &expected, "entries do not match");
+    }
+
+    #[test]
+    pub fn read_truncated() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut gen = EntryGenerator::default();
+
+        for _ in 0..100 {
+            let entry = gen.pending();
+            wal.append(&[entry.clone()]).unwrap();
+        }
+        drop(wal);
+
+        let mut wal = File::options().write(true).open(&path).unwrap();
+        let new_len = wal.seek(SeekFrom::End(-1)).unwrap();
+        wal.set_len(dbg!(new_len)).unwrap();
+        drop(wal);
+
+        assert!(matches!(
+            WriteAheadLog::read(&path),
+            Err(ReadError::Truncated)
+        ));
+    }
+
+    #[test]
+    pub fn read_corrupted() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut gen = EntryGenerator::default();
+
+        for _ in 0..100 {
+            let entry = gen.pending();
+            wal.append(&[entry.clone()]).unwrap();
+        }
+        drop(wal);
+
+        // Overwrite the checksum
+        let mut wal = File::options().write(true).open(&path).unwrap();
+        wal.seek(SeekFrom::End(-4)).unwrap();
+        wal.write_all(&[0, 0, 0, 0]).unwrap();
+        drop(wal);
+
+        assert!(matches!(
+            WriteAheadLog::read(&path),
+            Err(ReadError::Checksum)
+        ));
+    }
+}

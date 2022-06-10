@@ -8,8 +8,8 @@ name = "benches"
 harness = false
 
 [dependencies]
-parking_lot = "0.11"
-parking_lot_core = "0.8"
+parking_lot = "0.12"
+parking_lot_core = "0.9"
 
 [dev-dependencies]
 criterion = { version = "0.3", default-features = false }

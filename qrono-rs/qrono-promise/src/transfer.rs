@@ -98,8 +98,13 @@ impl<T> Drop for Sender<T> {
             }
         } else {
             let inner = unsafe { self.inner.as_mut() };
-            if inner.state.fetch_add(DROPPED_BIT, Relaxed) & DROPPED_BIT != 0 {
+            let prev = inner.state.fetch_add(DROPPED_BIT, Relaxed);
+
+            if prev & DROPPED_BIT != 0 {
                 drop(unsafe { Box::from_raw(inner) });
+            } else if prev & PARKED_BIT != 0 {
+                let key = self.inner.as_ptr() as usize;
+                unsafe { parking_lot_core::unpark_one(key, |_res| DEFAULT_UNPARK_TOKEN) };
             }
         }
     }
@@ -230,6 +235,7 @@ pub fn ready<T>(val: T) -> Receiver<T> {
 
 #[cfg(test)]
 mod test {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::time::Duration;
 
     #[test]
@@ -246,6 +252,57 @@ mod test {
             std::thread::sleep(Duration::from_millis(100));
             tx.send("Hello, world!");
         });
+        assert_eq!("Hello, world!", rx.receive());
+    }
+
+    #[test]
+    pub fn check_sent() {
+        let (tx, rx) = super::pair();
+        tx.send("Hello, world!");
+        assert!(rx.is_sent());
+    }
+
+    #[test]
+    pub fn not_sent_on_tx_drop() {
+        let (tx, rx) = super::pair::<()>();
+        drop(tx);
+        assert!(!rx.is_sent());
+    }
+
+    #[test]
+    pub fn panic_on_tx_drop_non_blocking() {
+        let (tx, rx) = super::pair::<()>();
+        drop(tx);
+
+        assert!(catch_unwind(AssertUnwindSafe(|| rx.receive())).is_err());
+    }
+
+    #[test]
+    pub fn panic_on_tx_drop_blocking() {
+        let (tx, rx) = super::pair::<()>();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(tx);
+        });
+
+        assert!(catch_unwind(AssertUnwindSafe(|| rx.receive())).is_err());
+    }
+
+    #[test]
+    pub fn try_receive() {
+        let (tx, rx) = super::pair();
+        let res = rx.try_receive();
+        assert!(res.is_err());
+        let rx = res.err().unwrap();
+        tx.send("Hello, world!");
+        let res = rx.try_receive();
+        assert_eq!(Some("Hello, world!"), res.ok());
+    }
+
+    #[test]
+    pub fn ready_future() {
+        let rx = super::ready("Hello, world!");
+        assert!(rx.is_sent());
         assert_eq!("Hello, world!", rx.receive());
     }
 }

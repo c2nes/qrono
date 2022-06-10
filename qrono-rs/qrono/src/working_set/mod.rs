@@ -1,6 +1,6 @@
 use crate::data::{Item, Stats, ID};
 use crate::encoding;
-use memmap::{MmapMut, MmapOptions};
+use memmap2::{MmapMut, MmapOptions};
 use slab::Slab;
 
 use std::fs::OpenOptions;

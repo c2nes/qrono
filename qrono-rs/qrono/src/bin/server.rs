@@ -18,6 +18,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 //  - Error handling (audit unwrap calls)
 //  - Working item timeouts and TTLs
 //  - Metrics & instrumentation
+//  - Compact large WALs?
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "qrono")]

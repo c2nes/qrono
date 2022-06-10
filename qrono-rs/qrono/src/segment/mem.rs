@@ -221,11 +221,7 @@ mod tests {
     use super::super::{Segment, SegmentReader};
     use super::MemorySegment;
     use crate::bytes::Bytes;
-    use crate::data::{Entry, Item, Key, SegmentID, Stats, Timestamp, ID};
-    use crate::segment::mem::cost_estimate;
-    use claim::assert_le;
-    use std::mem;
-    use std::sync::Arc;
+    use crate::data::{Entry, Item, Key, Timestamp, ID};
 
     #[test]
     fn test() {
@@ -281,7 +277,7 @@ mod tests {
             }
 
             let overhead = (size_of(segment) as f64 / (m as f64)) as usize;
-            assert_le!(overhead, super::ENTRY_OVERHEAD);
+            assert!(overhead <= super::ENTRY_OVERHEAD);
         }
 
         for m in [10, 1_000, 100_000] {
@@ -302,12 +298,12 @@ mod tests {
 
                 let end = crate::test_alloc::allocated();
                 let overhead = (((end - start) - (n * m)) as f64 / (m as f64)) as usize;
-                assert_le!(overhead, super::ENTRY_OVERHEAD);
+                assert!(overhead <= super::ENTRY_OVERHEAD);
 
                 let frozen = segment.freeze().0.entries();
                 let size = size_of(frozen);
                 let overhead = ((size - (n * m)) as f64 / (m as f64)) as usize;
-                assert_le!(overhead, super::ENTRY_OVERHEAD);
+                assert!(overhead <= super::ENTRY_OVERHEAD);
             }
         }
     }

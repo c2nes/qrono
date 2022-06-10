@@ -322,7 +322,11 @@ mod transferable {
 #[cfg(test)]
 mod test {
     use super::Future;
+    use parking_lot::Mutex;
     use std::panic::AssertUnwindSafe;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -367,5 +371,70 @@ mod test {
         });
         let actual = rx.take();
         assert_eq!("Hello, world!", actual);
+    }
+
+    #[test]
+    fn single_callback() {
+        let (mut tx, _) = Future::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        {
+            let counter = Arc::clone(&counter);
+            tx.on_complete(move || {
+                counter.fetch_add(1, Relaxed);
+            });
+        }
+
+        tx.complete("Hello, world!");
+        assert_eq!(1, counter.load(Relaxed));
+    }
+
+    #[test]
+    fn multiple_callbacks() {
+        let (mut tx, _) = Future::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let counter = Arc::clone(&counter);
+            tx.on_complete(move || {
+                counter.fetch_add(1, Relaxed);
+            });
+        }
+
+        tx.complete("Hello, world!");
+        assert_eq!(10, counter.load(Relaxed));
+    }
+
+    #[test]
+    fn transfer_before_completion() {
+        let (tx, rx) = Future::transferable();
+        let dest = Arc::new(Mutex::new(None));
+        {
+            let dest = Arc::clone(&dest);
+            rx.transfer(move |v| {
+                dest.lock().replace(v);
+            });
+        }
+        tx.complete("Hello, world!");
+        assert_eq!(Some("Hello, world!"), *dest.lock());
+    }
+
+    #[test]
+    fn transfer_after_completion() {
+        let (tx, rx) = Future::transferable();
+        tx.complete("Hello, world!");
+        let dest = Arc::new(Mutex::new(None));
+        {
+            let dest = Arc::clone(&dest);
+            rx.transfer(move |v| {
+                dest.lock().replace(v);
+            });
+        }
+        assert_eq!(Some("Hello, world!"), *dest.lock());
+    }
+
+    #[test]
+    fn completed() {
+        let rx = Future::completed("Hello, world!");
+        assert!(rx.is_complete());
+        assert_eq!("Hello, world!", rx.take());
     }
 }

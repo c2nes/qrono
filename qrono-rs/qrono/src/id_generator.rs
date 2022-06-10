@@ -140,7 +140,6 @@ impl Inner {
 mod tests {
     use crate::id_generator::IdGenerator;
     use crate::scheduler::{Scheduler, Unpooled};
-    use claim::{assert_ge, assert_gt};
     use tempfile::tempdir;
 
     #[test]
@@ -183,13 +182,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let gen = IdGenerator::new(dir.path().join("id"), Scheduler::new(Unpooled)).unwrap();
         let mut last = 1;
-        for i in 0..100 {
+        for _ in 0..100 {
             // By requesting more IDs than the reservation size, we're guaranteed that the ceiling
             // will need to be raised to complete our request.
             let count = (10 * super::DEFAULT_RESERVATION_SIZE) as usize;
             let range = gen.generate_ids(count);
             assert_eq!(count, (range.end - range.start) as usize);
-            assert_ge!(range.start, last);
+            assert!(range.start >= last);
             last = range.end;
         }
     }

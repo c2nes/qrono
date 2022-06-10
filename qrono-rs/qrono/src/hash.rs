@@ -74,20 +74,15 @@ mod murmur {
 
         #[test]
         fn test() {
-            fn compare(input: &[u8]) -> u32 {
-                let expected = murmur3::murmur3_32(&mut Cursor::new(input), 0).unwrap();
-                let actual = super::murmur3(input, 0);
-                assert_eq!(expected, actual);
-                actual
-            }
-
-            for _i in 0..100 {
+            for _ in 0..100 {
                 let mut rng = rand::thread_rng();
                 let len: usize = rng.gen_range(0..1000);
                 let mut buf = vec![0u8; len];
                 rng.fill(&mut buf[..]);
-                let h = compare(&buf);
-                println!("len={}, hash={}", len, h);
+
+                let expected = murmur3::murmur3_32(&mut Cursor::new(&buf), 0).unwrap();
+                let actual = super::murmur3(&buf, 0);
+                assert_eq!(expected, actual);
             }
         }
     }

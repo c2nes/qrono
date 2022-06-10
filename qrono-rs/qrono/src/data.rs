@@ -290,3 +290,144 @@ mod serde_impl {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod generator {
+    use crate::bytes::Bytes;
+    use crate::data::{Entry, Item, Stats, Timestamp, ID};
+    use rand::distributions::uniform::{
+        SampleBorrow, SampleUniform, UniformDuration, UniformSampler,
+    };
+    use rand::distributions::{Distribution, Standard};
+    use rand::seq::SliceRandom;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
+    use std::time::Duration;
+
+    const BASE_TIME: Timestamp = Timestamp::from_millis(1431735440000);
+    const ONE_WEEK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+    impl Distribution<Timestamp> for Standard {
+        fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Timestamp {
+            BASE_TIME + rng.gen_range(Duration::ZERO..ONE_WEEK)
+        }
+    }
+
+    pub struct UniformTimestamp {
+        base: Timestamp,
+        range: UniformDuration,
+    }
+
+    impl UniformSampler for UniformTimestamp {
+        type X = Timestamp;
+
+        fn new<B1, B2>(low: B1, high: B2) -> Self
+        where
+            B1: SampleBorrow<Self::X> + Sized,
+            B2: SampleBorrow<Self::X> + Sized,
+        {
+            let spread = *high.borrow() - *low.borrow();
+            Self {
+                base: *low.borrow(),
+                range: UniformDuration::new(Duration::ZERO, spread),
+            }
+        }
+
+        fn new_inclusive<B1, B2>(low: B1, high: B2) -> Self
+        where
+            B1: SampleBorrow<Self::X> + Sized,
+            B2: SampleBorrow<Self::X> + Sized,
+        {
+            let spread = *high.borrow() - *low.borrow();
+            Self {
+                base: *low.borrow(),
+                range: UniformDuration::new_inclusive(Duration::ZERO, spread),
+            }
+        }
+
+        fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Self::X {
+            self.base + self.range.sample(rng)
+        }
+    }
+
+    impl SampleUniform for Timestamp {
+        type Sampler = UniformTimestamp;
+    }
+
+    pub struct EntryGenerator {
+        rng: ChaCha20Rng,
+        last_id: ID,
+    }
+
+    impl EntryGenerator {
+        pub fn id(&mut self) -> ID {
+            let id = self.last_id + 1;
+            self.last_id = id;
+            id
+        }
+
+        pub fn item(&mut self) -> Item {
+            let deadline = self.rng.gen();
+            let dequeue_count = self.rng.gen_range(0..3);
+
+            let requeue_time = if dequeue_count > 0 {
+                self.rng.gen_range(BASE_TIME..deadline)
+            } else {
+                Timestamp::ZERO
+            };
+
+            let enqueue_time = if dequeue_count > 0 {
+                self.rng.gen_range(BASE_TIME..requeue_time)
+            } else {
+                self.rng.gen_range(BASE_TIME..deadline)
+            };
+
+            let value_len_base = [0, 32, 256, 1024].choose(&mut self.rng).unwrap();
+            let value_len = self.rng.gen_range(
+                (value_len_base - (value_len_base / 10))..=(value_len_base + (value_len_base / 10)),
+            );
+
+            let mut value = vec![0u8; value_len];
+            self.rng.fill(&mut value[..]);
+
+            Item {
+                id: self.id(),
+                deadline,
+                stats: Stats {
+                    enqueue_time,
+                    requeue_time,
+                    dequeue_count,
+                },
+                value: Bytes::from(value),
+                segment_id: 0,
+            }
+        }
+
+        pub fn pending(&mut self) -> Entry {
+            Entry::Pending(self.item())
+        }
+
+        pub fn tombstone(&mut self) -> Entry {
+            Entry::Tombstone {
+                id: self.id(),
+                deadline: self.rng.gen(),
+                segment_id: 0,
+            }
+        }
+
+        pub fn entry(&mut self) -> Entry {
+            if self.rng.gen() {
+                self.pending()
+            } else {
+                self.tombstone()
+            }
+        }
+    }
+
+    impl Default for EntryGenerator {
+        fn default() -> Self {
+            let rng = ChaCha20Rng::from_seed([0; 32]);
+            EntryGenerator { rng, last_id: 0 }
+        }
+    }
+}
