@@ -87,7 +87,6 @@ impl Scheduler {
                 let mut locked = inner.lock();
                 match locked.next_deadline() {
                     Some(deadline) => {
-                        eprintln!("{:?}", deadline - Instant::now());
                         notify.wait_until(&mut locked, deadline);
                     }
                     None => {
@@ -142,7 +141,7 @@ mod mock_time {
 
     pub fn now() -> Instant {
         let offset = OFFSET_NANOS.load(Ordering::Relaxed);
-        BASE.add(Duration::from_nanos(dbg!(offset)))
+        BASE.add(Duration::from_nanos(offset))
     }
 
     pub fn acquire() -> MutexGuard<'static, impl Clock> {

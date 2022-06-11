@@ -263,7 +263,7 @@ mod tests {
 
         let mut wal = File::options().write(true).open(&path).unwrap();
         let new_len = wal.seek(SeekFrom::End(-1)).unwrap();
-        wal.set_len(dbg!(new_len)).unwrap();
+        wal.set_len(new_len).unwrap();
         drop(wal);
 
         assert!(matches!(
