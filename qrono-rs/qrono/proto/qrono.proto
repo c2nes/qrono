@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package qrono;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service Qrono {
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+  rpc Dequeue(DequeueRequest) returns (DequeueResponse);
+  rpc Requeue(RequeueRequest) returns (RequeueResponse);
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  rpc Peek(PeekRequest) returns (PeekResponse);
+  rpc Compact(CompactRequest) returns (CompactResponse);
+  rpc Info(InfoRequest) returns (InfoResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message EnqueueRequest {
+  string queue = 1;
+  bytes value = 2;
+  oneof deadline {
+    google.protobuf.Duration relative = 3;
+    google.protobuf.Timestamp absolute = 4;
+  }
+}
+message EnqueueResponse {
+  uint64 id = 1;
+  google.protobuf.Timestamp deadline = 2;
+}
+
+message DequeueRequest {
+  string queue = 1;
+  uint64 timeout_millis = 2;
+  uint64 count = 3;
+}
+message DequeueResponse {
+  repeated Item item = 1;
+}
+
+message RequeueRequest {
+  string queue = 1;
+  oneof id_pattern {
+    bool any = 2;
+    uint64 id = 3;
+  }
+  oneof deadline {
+    google.protobuf.Duration relative = 4;
+    google.protobuf.Timestamp absolute = 5;
+  }
+}
+message RequeueResponse {
+  google.protobuf.Timestamp deadline = 1;
+}
+
+message ReleaseRequest {
+  string queue = 1;
+  oneof id_pattern {
+    bool any = 2;
+    uint64 id = 3;
+  }
+}
+message ReleaseResponse {}
+
+message PeekRequest {
+  string queue = 1;
+}
+message PeekResponse {
+  Item item = 1;
+}
+
+message CompactRequest {
+  string queue = 1;
+}
+message CompactResponse {}
+
+message InfoRequest {
+  string queue = 1;
+}
+message InfoResponse {
+  uint64 pending = 1;
+  uint64 dequeued = 2;
+}
+
+message DeleteRequest {
+  string queue = 1;
+}
+message DeleteResponse {}
+
+message IdPattern {
+  oneof pattern {
+    bool any = 1;
+    uint64 id = 2;
+  }
+}
+
+message Item {
+  uint64 id = 1;
+  google.protobuf.Timestamp deadline = 2;
+  Stats stats = 3;
+  bytes value = 4;
+}
+
+message Stats {
+  google.protobuf.Timestamp enqueue_time = 1;
+  google.protobuf.Timestamp requeue_time = 2;
+  uint32 dequeue_count = 3;
+}

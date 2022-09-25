@@ -30,21 +30,34 @@ env_logger = "0.8.4"
 rustc-hash = "1.1.0"
 parking_lot = "0.12"
 
-axum = "0.4"
+axum = "0.5"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 base64 = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
+
 async-trait = "0.1.52"
+tonic = "0.8"
+tonic-reflection = "0.5"
+prost = "0.11"
+prost-types = "0.11"
+futures-core = "0.3"
+futures-util = "0.3"
 
 qrono-promise = { path = "../qrono-promise" }
 qrono-channel = { path = "../qrono-channel" }
 
+rand = "0.8"
+
 [dev-dependencies]
 criterion = { version = "0.3", features = ["html_reports"] }
-rand = "0.8"
 rand_chacha = "0.3.1"
 murmur3 = "0.5"
 redis = "0.19"
 tempfile = "3.2"
 once_cell = "1.10.0"
+
+[build-dependencies]
+tonic-build = "0.8"

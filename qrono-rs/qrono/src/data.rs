@@ -222,7 +222,7 @@ mod serde_impl {
     use super::Timestamp;
     use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
     use serde::de::{Error, Unexpected, Visitor};
-    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::fmt::Formatter;
 
     struct TimestampVisitor;
@@ -247,7 +247,7 @@ mod serde_impl {
         {
             self.visit_i64(
                 v.try_into()
-                    .map_err(|_| de::Error::custom("value out of range"))?,
+                    .map_err(|_| Error::custom("value out of range"))?,
             )
         }
 
@@ -263,7 +263,7 @@ mod serde_impl {
             E: Error,
         {
             let date_time = DateTime::parse_from_rfc3339(v)
-                .map_err(|_| de::Error::invalid_value(Unexpected::Str(v), &self))?;
+                .map_err(|_| Error::invalid_value(Unexpected::Str(v), &self))?;
 
             Ok(Timestamp::from_millis(date_time.timestamp_millis()))
         }

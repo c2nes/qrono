@@ -6,10 +6,12 @@ use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
 use rayon::ThreadPoolBuilder;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{fs, io};
 use structopt::StructOpt;
+use tonic::transport::Server;
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -23,9 +25,17 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "qrono")]
 struct Opts {
-    /// Listen address
+    /// RESP2 listen address
     #[structopt(long, default_value = "0.0.0.0:16389")]
-    listen: String,
+    resp2_listen: SocketAddr,
+
+    /// HTTP listen address
+    #[structopt(long, default_value = "0.0.0.0:16380")]
+    http_listen: SocketAddr,
+
+    /// gRPC listen address
+    #[structopt(long, default_value = "0.0.0.0:16381")]
+    grpc_listen: SocketAddr,
 
     /// Data directory
     #[structopt(long, parse(from_os_str), default_value = "/tmp/qrono")]
@@ -101,8 +111,25 @@ async fn main() -> io::Result<()> {
     );
 
     // Start HTTP server in background.
-    tokio::spawn(qrono::http::run(qrono.clone()));
+    let http_server = axum::Server::bind(&opts.http_listen);
+    let http_router = qrono::http::router(qrono.clone());
+    tokio::spawn(http_server.serve(http_router.into_make_service()));
+    info!("Accepting HTTP connections on {}", &opts.http_listen);
+
+    // Start gRPC server
+    let grpc_service = qrono::grpc::service(qrono.clone());
+    let grpc_reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(include_bytes!("../grpc/generated/qrono.bin"))
+        .build()
+        .unwrap();
+    tokio::spawn(
+        Server::builder()
+            .add_service(grpc_service)
+            .add_service(grpc_reflection_service)
+            .serve(opts.grpc_listen),
+    );
+    info!("Accepting gRPC connections on {}", &opts.grpc_listen);
 
     info!("Start up completed in {:?}.", start.elapsed());
-    RedisServer::new(&qrono, &scheduler).run(opts.listen)
+    RedisServer::new(&qrono, &scheduler).run(opts.resp2_listen)
 }

@@ -8,6 +8,7 @@ pub mod segment;
 use qrono_channel as channel;
 pub mod bytes;
 mod error;
+pub mod grpc;
 pub mod http;
 pub mod id_generator;
 mod io;

@@ -7,7 +7,7 @@ use crate::ops::{
 use crate::promise::QronoFuture;
 use crate::service::Qrono;
 use async_trait::async_trait;
-use axum::body::HttpBody;
+use axum::body::{Body, HttpBody};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, FromRequest, Path, Query, RequestParts};
 use axum::response::{IntoResponse, Response};
@@ -21,9 +21,9 @@ mod error;
 type QronoExt = Extension<Arc<Qrono>>;
 type QronoResponse<T> = Result<Json<T>, QronoError>;
 
-pub async fn run(qrono: Qrono) {
+pub fn router(qrono: Qrono) -> Router<Body> {
     let qrono: QronoExt = Extension(Arc::new(qrono));
-    let router = Router::new()
+    Router::<Body>::new()
         .route("/queues/:queue/enqueue", post(enqueue))
         .route("/queues/:queue/dequeue", post(dequeue))
         .route("/queues/:queue/requeue", post(requeue))
@@ -32,12 +32,7 @@ pub async fn run(qrono: Qrono) {
         .route("/queues/:queue/compact", post(compact))
         .route("/queues/:queue", get(info))
         .route("/queues/:queue", delete(delete_queue))
-        .layer(qrono);
-
-    axum::Server::bind(&"0.0.0.0:16380".parse().unwrap())
-        .serve(router.into_make_service())
-        .await
-        .unwrap();
+        .layer(qrono)
 }
 
 async fn enqueue(
