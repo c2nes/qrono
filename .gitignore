@@ -1,8 +1,10 @@
 /target/
-*.class
 *.iml
+*.collapsed
 .idea/
 .run/
-dependency-reduced-pom.xml
-*.jfr
 perf.*
+flame.svg
+flamegraph.svg
+bench.sh
+dump.rdb

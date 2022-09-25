@@ -26,22 +26,22 @@ PONG
 # Normal enqueue. Uses "now" as the default deadline providing
 # traditional FIFO queue semantics.
 $ redis-cli -p 16379 ENQUEUE my-queue my-value
-1) (integer) 11000001                                                                                     │
+1) (integer) 11000001
 2) (integer) 1610207507966
 
 # Dequeue next value from the queue. The entry is now in the "working"
 # state and must be explicitly released or requeued by ID.
 $ redis-cli -p 16379 DEQUEUE my-queue
-1) (integer) 11000001
-2) (integer) 1610207507966
-3) (integer) 1610207507966
-4) (integer) 0
-5) (integer) 1
-6) "my-value"
+1) 1) (integer) 11000001
+   2) (integer) 1610207507966
+   3) (integer) 1610207507966
+   4) (integer) 0
+   5) (integer) 1
+   6) "my-value"
 
-# The queue has 1 entry total and 1 dequeued (i.e. "working") item.
+# The queue has 0 pending and 1 dequeued (i.e. "working") item.
 $ redis-cli -p 16379 STAT my-queue
-1) (integer) 1
+1) (integer) 0
 2) (integer) 1
 
 # Release the previously dequeued value.
@@ -54,7 +54,7 @@ $ redis-cli -p 16379 STAT my-queue
 2) (integer) 0
 
 # Enqueue a value 10 seconds in the future
-$ redis-cli -p 16379 ENQUEUE my-queue my-future-value DEADLINE $(( 1000 * $(date +%s) + 10000 ))
+$ redis-cli -p 16379 ENQUEUE my-queue my-future-value DELAY 10000
 1) (integer) 11000002
 2) (integer) 1610207677000
 
@@ -62,14 +62,18 @@ $ redis-cli -p 16379 ENQUEUE my-queue my-future-value DEADLINE $(( 1000 * $(date
 $ redis-cli -p 16379 DEQUEUE my-queue
 (nil)
 
-# After 10 seconds the value will be available
-$ sleep 10; redis-cli -p 16379 DEQUEUE my-queue
-1) (integer) 11000002
-2) (integer) 1610207677000
-3) (integer) 1610207667438
-4) (integer) 0
-5) (integer) 1
-6) "my-future-value"
+# With a timeout we can perform a blocking dequeue.
+$ time redis-cli -p 16379 DEQUEUE my-queue TIMEOUT 30000
+1) 1) (integer) 11000002
+   2) (integer) 1610207677000
+   3) (integer) 1610207667438
+   4) (integer) 0
+   5) (integer) 1
+   6) "my-future-value"
+
+real    0m8.692s
+user    0m0.005s
+sys     0m0.005s
 ```
 
 ## Queue operations
@@ -77,7 +81,7 @@ $ sleep 10; redis-cli -p 16379 DEQUEUE my-queue
 ### Enqueue
 
 ```
-ENQUEUE queue value [DEADLINE milliseconds-timestamp]
+ENQUEUE queue value [DEADLINE milliseconds-timestamp | DELAY milliseconds]
   (integer) id
   (integer) deadline
 ```
@@ -87,34 +91,35 @@ Add a `value` to the `queue` with the given deadline which defaults to now. Afte
 ### Dequeue
 
 ```
-DEQUEUE queue
-  (integer) id
-  (integer) deadline
-  (integer) enqueue-time
-  (integer) requeue-time
-  (integer) dequeue-count
-  (bulk) value
+DEQUEUE queue [COUNT n] [TIMEOUT milliseconds]
+  (array)
+    (integer) id
+    (integer) deadline
+    (integer) enqueue-time
+    (integer) requeue-time
+    (integer) dequeue-count
+    (bulk) value
 ```
 
-Dequeue the next pending value from the `queue` if available. Returns `null` if the queue is empty, or the deadline of the next value in the queue lies in the future. On success, the next pending value in the queue is moved into the _dequeued_ state.
+Dequeue the next _n_ pending value from the `queue`. With a timeout, the operation is blocking and returns once the timeout expires or at least one item becomes available. Otherwise the operation is non-blocking and returns `null` if no items are immediately available. The returned values are moved into the _dequeued_state.
 
 ### Requeue
 
 ```
-REQUEUE queue id [DEADLINE milliseconds-timestamp]
+REQUEUE queue {id | ANY} [DEADLINE milliseconds-timestamp | DELAY milliseconds]
   OK
 ```
 
-Requeue a dequeued value by `id`, returning it to pending status. If not specified, deadline will default to now.
+Requeue a dequeued value by `id`, returning it to pending status. If not specified, deadline will default to now. "ANY" may be specified in lieu of an ID in which case an arbitrary dequeued value will be requeued.
 
 ### Release
 
 ```
-RELEASE queue id
+RELEASE queue {id | ANY}
   OK
 ```
 
-Release a dequeued value by `id`.
+Release a dequeued value by `id`. "ANY" may be specified in lieu of an ID in which case an arbitrary dequeued value will be released.
 
 ### Peek
 
@@ -138,4 +143,4 @@ STAT queue
   (integer) dequeued-count
 ```
 
-Returns statistics for the `queue` including the number of _pending_ and _dequeued_ values. The pending count includes dequeued values.
+Returns statistics for the `queue` including the number of _pending_ and _dequeued_ values. The sum of these values is the total size of the queue. The _pending_ count includes values whose deadlines lie in the future.

@@ -1,2 +1,3 @@
-/qrono-bench/
+/target/
 /aws-bench/
+perf.*

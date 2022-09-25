@@ -7,70 +7,49 @@ on:
     tags:
       - '[0-9]+.*'
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Cache Rust dependencies
+        uses: actions/cache@v2
+        with:
+          path: 'qrono-rs/target/'
+          key: rs-${{ hashFiles('**/Cargo.*') }}-check
+          restore-keys: |
+              rs-${{ hashFiles('**/Cargo.*') }}-
+              rs-
+      - name: Install protoc
+        run: apt-get update && apt-get install -y protobuf-compiler
+      - name: Check
+        run: cargo check --workspace
   test:
     runs-on: ubuntu-latest
+    needs: check
     container:
-      image: maven:3.8-adoptopenjdk-16
+      image: rust:1
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-      - name: Cache Maven dependencies
+      - name: Cache Rust dependencies
         uses: actions/cache@v2
         with:
-          path: /root/.m2/repository
-          key: m2-${{ hashFiles('**/pom.xml') }}-test
+          path: 'qrono-rs/target/'
+          key: rs-${{ hashFiles('**/Cargo.*') }}-test
           restore-keys: |
-              m2-${{ hashFiles('**/pom.xml') }}-
-              m2-
+              rs-${{ hashFiles('**/Cargo.*') }}-
+              rs-
+      - name: Install protoc
+        run: apt-get update && apt-get install -y protobuf-compiler
       - name: Run tests
-        run: mvn -B test
-  build-server:
-    runs-on: ubuntu-latest
-    container:
-      image: maven:3.8-adoptopenjdk-16
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-      - name: Cache Maven dependencies
-        uses: actions/cache@v2
-        with:
-          path: /root/.m2/repository
-          key: m2-${{ hashFiles('**/pom.xml') }}-package
-          restore-keys: |
-              m2-${{ hashFiles('**/pom.xml') }}-
-              m2-
-      - name: Build server
-        run: mvn -B -DskipTests package
-      - uses: actions/upload-artifact@v2
-        with:
-          name: server-jar
-          path: target/qrono-server.jar
-  build-gateway:
-    runs-on: ubuntu-latest
-    container:
-      image: golang:1.15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-      - uses: actions/cache@v2
-        with:
-          path: /root/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-build
-          restore-keys: |
-            ${{ runner.os }}-go-
-      - name: Build gateway
-        run: go build .
-        working-directory: gateway
-      - uses: actions/upload-artifact@v2
-        with:
-          name: gateway-binary
-          path: gateway/gateway
+        run: cargo test --workspace
   build-docker-image:
     runs-on: ubuntu-latest
     needs:
       - test
-      - build-server
-      - build-gateway
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -81,19 +60,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
-      - name: Download server artifacts
-        uses: actions/download-artifact@v2
-        with:
-          name: server-jar
-          path: target/
-      - name: Download gateway artifacts
-        uses: actions/download-artifact@v2
-        with:
-          name: gateway-binary
-          path: gateway/
-      - name: Restore gateway binary permissions
-        run: |
-            chmod 0755 gateway/gateway
       - name: Compute build parameters
         run: |
             build/set-release-params.sh >> $GITHUB_ENV

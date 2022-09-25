@@ -1,7 +1,0 @@
-perf.data*
-/target/
-flame.svg
-flamegraph.svg
-bench.sh
-dump.rdb
-*.collapsed
