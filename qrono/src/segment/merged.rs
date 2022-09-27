@@ -152,11 +152,11 @@ where
         Ok(())
     }
 
-    // TODO: Make the return type opaque? "DeferredDrop"?
-    pub fn remove<S: BuildHasher>(
-        &mut self,
-        keys: &HashSet<K, S>,
-    ) -> io::Result<Vec<Box<dyn Segment<R = ReaderWrapper<K>> + Send>>> {
+    /// Removes the segments associated with the given keys.
+    ///
+    /// Returns an opaque representation of the removed segments to allow their dropping
+    /// to be deferred as desired.
+    pub fn remove<S: BuildHasher>(&mut self, keys: &HashSet<K, S>) -> io::Result<impl Drop> {
         let mut removed = Vec::with_capacity(keys.len());
 
         for key in keys {
