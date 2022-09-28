@@ -539,7 +539,6 @@ mod tests {
         for expected in 0..(2 * SLOTS) {
             assert_eq!(Some(&expected), batch_iter.next());
         }
-        drop(batch_iter);
         for expected in 0..(2 * SLOTS) {
             assert_eq!(Some(expected), batch.next());
         }

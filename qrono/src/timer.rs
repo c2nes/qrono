@@ -35,10 +35,6 @@ impl Inner {
     }
 
     fn take_ready_callbacks(&mut self, now: Instant) -> Vec<Callback> {
-        // We use collect() here to terminate the iterator chain and
-        // drop the immutable borrow of self so we can borrow it
-        // mutably below.
-        #[allow(clippy::needless_collect)]
         let ready_keys = self
             .callbacks
             .keys()
@@ -46,14 +42,13 @@ impl Inner {
             .cloned()
             .collect::<Vec<_>>();
 
-        for (_, id) in &ready_keys {
-            self.deadlines.remove(*id as usize);
+        let mut ready = Vec::with_capacity(ready_keys.len());
+        for key in &ready_keys {
+            self.deadlines.remove(key.1 as usize);
+            ready.push(self.callbacks.remove(key).unwrap())
         }
 
-        ready_keys
-            .into_iter()
-            .map(|key| self.callbacks.remove(&key).unwrap())
-            .collect::<Vec<_>>()
+        ready
     }
 }
 
@@ -150,6 +145,12 @@ impl Scheduler {
     }
 }
 
+impl Default for Scheduler {
+    fn default() -> Self {
+        Scheduler::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -172,15 +173,6 @@ mod tests {
     }
 
     impl MockCallback {
-        fn new(chan: &Sender<MockResult>, name: &'static str) -> impl FnOnce() + Send {
-            let mut callback = MockCallback {
-                chan: chan.clone(),
-                name,
-                sent: false,
-            };
-            move || callback.call()
-        }
-
         fn call(&mut self) {
             self.chan.send(MockResult::Call(self.name)).unwrap();
             self.sent = true;
@@ -195,13 +187,22 @@ mod tests {
         }
     }
 
+    fn mock_callback(chan: &Sender<MockResult>, name: &'static str) -> impl FnOnce() + Send {
+        let mut callback = MockCallback {
+            chan: chan.clone(),
+            name,
+            sent: false,
+        };
+        move || callback.call()
+    }
+
     #[test]
     fn smoke() {
         let (tx, rx) = mpsc::channel();
         let scheduler = Scheduler::new();
         scheduler.schedule(
             Instant::now() + Duration::from_millis(10),
-            MockCallback::new(&tx, "1"),
+            mock_callback(&tx, "1"),
         );
         assert_eq!(MockResult::Call("1"), rx.recv().unwrap());
         let locked = scheduler.inner.lock();
@@ -218,7 +219,7 @@ mod tests {
         // Verify that canceling a schedule drops it.
         let id = scheduler.schedule(
             Instant::now() + Duration::from_secs(60),
-            MockCallback::new(&tx, "1"),
+            mock_callback(&tx, "1"),
         );
         scheduler.cancel(id);
         assert_eq!(MockResult::Drop("1"), rx.recv().unwrap())
@@ -234,27 +235,27 @@ mod tests {
         // These schedules should run in order of timestamp once the scheduler is started.
         scheduler.schedule(
             Instant::now() + Duration::from_millis(2),
-            MockCallback::new(&tx, "2"),
+            mock_callback(&tx, "2"),
         );
         scheduler.schedule(
             Instant::now() + Duration::from_millis(1),
-            MockCallback::new(&tx, "1"),
+            mock_callback(&tx, "1"),
         );
         scheduler.schedule(
             Instant::now() + Duration::from_millis(4),
-            MockCallback::new(&tx, "4"),
+            mock_callback(&tx, "4"),
         );
         scheduler.schedule(
             Instant::now() + Duration::from_millis(6),
-            MockCallback::new(&tx, "6"),
+            mock_callback(&tx, "6"),
         );
         scheduler.schedule(
             Instant::now() + Duration::from_millis(3),
-            MockCallback::new(&tx, "3"),
+            mock_callback(&tx, "3"),
         );
         scheduler.schedule(
             Instant::now() + Duration::from_millis(5),
-            MockCallback::new(&tx, "5"),
+            mock_callback(&tx, "5"),
         );
 
         // Ensure all schedules run in the expected order
@@ -279,7 +280,7 @@ mod tests {
         // Schedule a task far in future.
         let id1 = scheduler.schedule(
             Instant::now() + Duration::from_secs(3600),
-            MockCallback::new(&tx, "1"),
+            mock_callback(&tx, "1"),
         );
 
         // The scheduler thread should be woken, see the newly added schedule,
@@ -289,7 +290,7 @@ mod tests {
         // Schedule a second task, still in the future, but sooner than the first.
         let id2 = scheduler.schedule(
             Instant::now() + Duration::from_secs(1800),
-            MockCallback::new(&tx, "2"),
+            mock_callback(&tx, "2"),
         );
 
         // Since we have a new soonest schedule the scheduler thread should be woken,
@@ -300,7 +301,7 @@ mod tests {
         // should wake the scheduler thread and the callback should be invoked quite soon.
         scheduler.schedule(
             Instant::now() + Duration::from_millis(10),
-            MockCallback::new(&tx, "3"),
+            mock_callback(&tx, "3"),
         );
         assert_eq!(
             MockResult::Call("3"),
