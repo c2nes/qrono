@@ -1,23 +1,24 @@
 extern crate core;
 
+use qrono_channel as channel;
+
+pub mod bytes;
 pub mod data;
 mod encoding;
-pub mod hash;
-mod ops;
-pub mod segment;
-use qrono_channel as channel;
-pub mod bytes;
 mod error;
 pub mod grpc;
+pub mod hash;
 pub mod http;
 pub mod id_generator;
 mod io;
+pub mod ops;
 mod path;
-mod promise;
+pub mod promise;
 mod queue;
 pub mod redis;
-mod result;
+pub mod result;
 pub mod scheduler;
+pub mod segment;
 pub mod service;
 pub mod timer;
 pub mod wal;

@@ -1,8 +1,10 @@
-use crate::bytes::Bytes;
-use crate::data::{Item, Timestamp, ID};
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use crate::bytes::Bytes;
+use crate::data::{Item, Timestamp, ID};
 
 #[derive(Deserialize, Debug)]
 pub enum ValueReq {
@@ -11,6 +13,18 @@ pub enum ValueReq {
 
     #[serde(rename = "string")]
     String(String),
+}
+
+impl From<&str> for ValueReq {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_string())
+    }
+}
+
+impl From<&[u8]> for ValueReq {
+    fn from(s: &[u8]) -> Self {
+        Self::Bytes(s.into())
+    }
 }
 
 impl From<ValueReq> for Bytes {
@@ -129,14 +143,15 @@ pub struct CompactReq;
 pub type CompactResp = ();
 
 mod serde_impl {
+    use std::fmt::Formatter;
+    use std::time::Duration;
 
-    use crate::data::Timestamp;
-    use crate::ops::DeadlineReq;
     use chrono::DateTime;
     use serde::de::{Error, Unexpected, Visitor};
     use serde::{de, Deserialize, Deserializer};
-    use std::fmt::Formatter;
-    use std::time::Duration;
+
+    use crate::data::Timestamp;
+    use crate::ops::DeadlineReq;
 
     fn duration_from_str<E: de::Error>(delay: &str) -> Result<Duration, E> {
         for (suffix, scale) in [("ms", 1e-3), ("s", 1.0), ("m", 60.0), ("h", 3600.0)] {

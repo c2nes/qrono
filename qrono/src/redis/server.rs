@@ -57,6 +57,10 @@ impl Client {
         factory: F,
     ) -> QronoPromise<Resp> {
         let response_writer = Arc::clone(&self.response_writer);
+
+        // Cell: <uninitialized> bool
+        // Sender -> Cell
+
         let (mut resp_promise, resp_future) = QronoFuture::new();
         resp_promise.on_complete(move || response_writer.schedule().ignore_err());
         self.responses.send(factory(resp_future)).unwrap();

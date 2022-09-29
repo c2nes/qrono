@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
@@ -7,6 +8,8 @@ pub enum QronoError {
     ItemNotDequeued,
     Internal,
 }
+
+impl Error for QronoError {}
 
 impl Display for QronoError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

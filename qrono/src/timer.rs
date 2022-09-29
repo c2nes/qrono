@@ -26,8 +26,9 @@ impl Inner {
     }
 
     fn cancel(&mut self, id: ID) {
-        let deadline = self.deadlines.remove(id);
-        self.callbacks.remove(&(deadline, id));
+        if let Some(deadline) = self.deadlines.try_remove(id) {
+            self.callbacks.remove(&(deadline, id));
+        }
     }
 
     fn next_deadline(&self) -> Option<Deadline> {
