@@ -14,7 +14,9 @@ use crate::redis::protocol::Value::{Integer, SimpleString};
 #[derive(Debug, Clone)]
 pub enum Value {
     SimpleString(String),
+    SimpleStaticString(&'static str),
     Error(String),
+    StaticError(&'static str),
     Integer(i64),
     BulkString(Vec<u8>),
     BulkStringBytes(Bytes),
@@ -209,7 +211,17 @@ impl Value {
                 buf.put_slice(s.as_bytes());
                 buf.put_slice(b"\r\n");
             }
+            Value::SimpleStaticString(s) => {
+                buf.put_u8(b'+');
+                buf.put_slice(s.as_bytes());
+                buf.put_slice(b"\r\n");
+            }
             Value::Error(s) => {
+                buf.put_u8(b'-');
+                buf.put_slice(s.as_bytes());
+                buf.put_slice(b"\r\n");
+            }
+            Value::StaticError(s) => {
                 buf.put_u8(b'-');
                 buf.put_slice(s.as_bytes());
                 buf.put_slice(b"\r\n");
@@ -248,9 +260,11 @@ impl Value {
 
     pub fn encoded_length(&self) -> usize {
         match self {
-            Value::SimpleString(s) => s.len() + 3, // +<s>\r\n
-            Value::Error(s) => s.len() + 3,        // -<s>\r\n
-            Value::Integer(n) => i64_len(*n) + 3,  // :<n>\r\n
+            Value::SimpleString(s) => s.len() + 3,       // +<s>\r\n
+            Value::SimpleStaticString(s) => s.len() + 3, // +<s>\r\n
+            Value::Error(s) => s.len() + 3,              // -<s>\r\n
+            Value::StaticError(s) => s.len() + 3,        // -<s>\r\n
+            Value::Integer(n) => i64_len(*n) + 3,        // :<n>\r\n
             Value::BulkString(b) => u32_len(b.len() as u32) + b.len() + 5, // $<len>\r\n<b>\r\n
             Value::BulkStringBytes(b) => u32_len(b.len() as u32) + b.len() + 5, // $<len>\r\n<b>\r\n
             Value::Array(els) => {

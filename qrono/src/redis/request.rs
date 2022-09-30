@@ -309,10 +309,10 @@ impl Response {
         match result {
             Ok(resp) => converter(resp),
             Err(err) => match err {
-                QronoError::NoSuchQueue => Value::Error("ERR no such queue".into()),
+                QronoError::NoSuchQueue => Value::StaticError("ERR no such queue"),
                 QronoError::NoItemReady => Value::NullArray,
-                QronoError::ItemNotDequeued => Value::Error("ERR item not dequeued".into()),
-                QronoError::Internal => Value::Error("ERR internal error, see logs".into()),
+                QronoError::ItemNotDequeued => Value::StaticError("ERR item not dequeued"),
+                QronoError::Internal => Value::StaticError("ERR internal error, see logs"),
             },
         }
     }
@@ -355,7 +355,7 @@ impl Response {
                 Self::convert(future.take(), |v| Value::Integer(v.deadline.millis()))
             }
             Response::Release(future) | Response::Delete(future) | Response::Compact(future) => {
-                Self::convert(future.take(), |_| Value::SimpleString("OK".into()))
+                Self::convert(future.take(), |_| Value::SimpleStaticString("OK"))
             }
             Response::Info(future) => Self::convert(future.take(), |v| {
                 Value::Array(vec![
