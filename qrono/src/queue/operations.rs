@@ -1,3 +1,16 @@
+use std::hash::BuildHasherDefault;
+use std::result;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use indexmap::IndexMap;
+use log::{debug, error, trace};
+use parking_lot::Mutex;
+use rustc_hash::FxHasher;
+
+use qrono_channel::batch;
+use qrono_channel::batch::{Receiver, Sender};
+
 use crate::data::{Key, SegmentID, Stats, Timestamp, ID};
 use crate::error::QronoError;
 use crate::id_generator::IdGenerator;
@@ -14,16 +27,6 @@ use crate::result::{IgnoreErr, QronoResult};
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskFuture, TaskHandle};
 use crate::timer;
 use crate::working_set::{WorkingItem, WorkingSet};
-use indexmap::IndexMap;
-use log::{debug, error, trace};
-use parking_lot::Mutex;
-use qrono_channel::batch;
-use qrono_channel::batch::{Receiver, Sender};
-use rustc_hash::FxHasher;
-use std::hash::BuildHasherDefault;
-use std::result;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 pub(super) enum Op {
     Enqueue(EnqueueReq, QronoPromise<EnqueueResp>),
@@ -143,19 +146,19 @@ impl Task for OpProcessor {
         5. Execute dequeue operations.
          */
 
-        let mut enqueue_count = 0;
+        let mut ids_needed = 0;
         let mut dequeue_count = 0;
         let mut deleted = false;
         for op in batch.iter() {
             match op {
-                Op::Enqueue(_, _) => enqueue_count += 1,
+                Op::Enqueue(_, _) | Op::Requeue(_, _) => ids_needed += 1,
                 Op::Dequeue(_, _) => dequeue_count += 1,
                 Op::Delete(_, _) => deleted = true,
                 _ => {}
             }
         }
 
-        let mut ids = self.id_generator.generate_ids(enqueue_count);
+        let mut ids = self.id_generator.generate_ids(ids_needed);
         let now = Timestamp::now();
         let mut dequeues = Vec::with_capacity(dequeue_count);
         let mut working_set_tx = self.working_set.tx();
@@ -186,7 +189,7 @@ impl Task for OpProcessor {
                         ..Default::default()
                     };
 
-                    let val = Ok(EnqueueResp { id, deadline });
+                    let val = Ok(EnqueueResp { deadline });
 
                     responses.push(Response::Enqueue(resp, val));
                     tx.add_pending(id, deadline, stats, req.value.into());
@@ -206,9 +209,10 @@ impl Task for OpProcessor {
                     };
 
                     if let Some((id, (deadline, segment_id))) = working_entry {
-                        // Push tombstone with original deadline
+                        // Push tombstone with original deadline + id
                         tx.add_tombstone(id, deadline, segment_id);
 
+                        let new_id = ids.next().unwrap();
                         let deadline = adjust_deadline(id, req.deadline.resolve(now));
                         let item_ref = self
                             .working_set
@@ -219,7 +223,7 @@ impl Task for OpProcessor {
                             mut stats, value, ..
                         } = item_ref.load().unwrap();
                         stats.requeue_time = now;
-                        tx.add_pending(id, deadline, stats, value);
+                        tx.add_pending(new_id, deadline, stats, value);
                         let val = Ok(RequeueResp { deadline });
                         responses.push(Response::Requeue(resp, val));
                         working_set_tx.release(id);

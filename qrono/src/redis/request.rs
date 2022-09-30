@@ -1,3 +1,9 @@
+use std::string::FromUtf8Error;
+use std::time::Duration;
+use std::vec::IntoIter;
+
+use qrono_promise::Future;
+
 use crate::bytes::Bytes;
 use crate::data::{Item, Timestamp};
 use crate::error::QronoError;
@@ -8,10 +14,6 @@ use crate::ops::{
 };
 use crate::redis::protocol::Value;
 use crate::result::QronoResult;
-use qrono_promise::Future;
-use std::string::FromUtf8Error;
-use std::time::Duration;
-use std::vec::IntoIter;
 
 struct RawRequest(IntoIter<Value>);
 
@@ -328,12 +330,9 @@ impl Response {
 
     pub fn take(self) -> Value {
         match self {
-            Response::Enqueue(future) => Self::convert(future.take(), |v| {
-                Value::Array(vec![
-                    Value::Integer(v.id as i64),
-                    Value::Integer(v.deadline.millis()),
-                ])
-            }),
+            Response::Enqueue(future) => {
+                Self::convert(future.take(), |v| Value::Integer(v.deadline.millis()))
+            }
             Response::Dequeue(future) => {
                 let res = future.take();
                 if let Err(QronoError::NoSuchQueue) = res {

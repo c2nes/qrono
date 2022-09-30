@@ -41,7 +41,6 @@ impl Qrono for QronoService {
         self.qrono.enqueue(queue, req, promise);
         let resp = resp.await?;
         Ok(Response::new(EnqueueResponse {
-            id: resp.id as u64,
             deadline: Some(resp.deadline.into()),
         }))
     }

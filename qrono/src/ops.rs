@@ -70,7 +70,6 @@ pub struct EnqueueReq {
 
 #[derive(Debug, Serialize)]
 pub struct EnqueueResp {
-    pub id: ID,
     pub deadline: Timestamp,
 }
 

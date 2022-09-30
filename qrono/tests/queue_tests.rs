@@ -63,7 +63,6 @@ fn test_enqueue_dequeue_release() -> anyhow::Result<()> {
         promise,
     );
     let enqueue_res = res.take()?;
-    assert!(enqueue_res.id > 0);
     assert!(enqueue_res.deadline.millis() > 0);
 
     let (promise, res) = Future::new();
@@ -78,7 +77,6 @@ fn test_enqueue_dequeue_release() -> anyhow::Result<()> {
     let mut dequeue_res = res.take()?;
     assert_eq!(1, dequeue_res.len());
     let item = dequeue_res.remove(0);
-    assert_eq!(enqueue_res.id, item.id);
     assert_eq!(b"Hello, world!".as_ref(), item.value.as_ref());
 
     let (promise, res) = Future::new();
@@ -178,9 +176,7 @@ fn test_requeue() -> anyhow::Result<()> {
 
     let item1 = items.pop().ok_or(fail("item expected"))?;
 
-    assert_eq!(item0.id, item1.id);
     assert_eq!(item0.value, item1.value);
-
     assert_ne!(Timestamp::ZERO, item1.stats.requeue_time);
     assert_eq!(2, item1.stats.dequeue_count);
 

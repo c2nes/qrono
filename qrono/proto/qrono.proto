@@ -25,7 +25,6 @@ message EnqueueRequest {
   }
 }
 message EnqueueResponse {
-  uint64 id = 1;
   google.protobuf.Timestamp deadline = 2;
 }
 
@@ -86,13 +85,6 @@ message DeleteRequest {
   string queue = 1;
 }
 message DeleteResponse {}
-
-message IdPattern {
-  oneof pattern {
-    bool any = 1;
-    uint64 id = 2;
-  }
-}
 
 message Item {
   uint64 id = 1;
