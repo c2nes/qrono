@@ -9,6 +9,7 @@ use crate::promise::QronoPromise;
 use crate::queue::Queue;
 use crate::scheduler::Scheduler;
 use crate::timer;
+use crate::wait_group::WaitGroup;
 use crate::working_set::WorkingSet;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
@@ -17,7 +18,7 @@ use parking_lot::Mutex;
 use rustc_hash::FxHasher;
 use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, io};
@@ -33,7 +34,7 @@ pub struct Qrono {
     timer: timer::Scheduler,
     scheduler: Scheduler,
     deletion_scheduler: Scheduler,
-    deletion_backlog: Arc<AtomicUsize>,
+    deletion_backlog: Arc<WaitGroup>,
     wal_sync_period: Option<Duration>,
     lock: Arc<Mutex<()>>,
 }
@@ -207,5 +208,11 @@ impl Qrono {
 
     pub fn list(&self) -> Vec<String> {
         self.queues.iter().map(|e| e.key().to_string()).collect()
+    }
+}
+
+impl Drop for Qrono {
+    fn drop(&mut self) {
+        self.deletion_backlog.wait()
     }
 }

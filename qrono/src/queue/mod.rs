@@ -1,3 +1,16 @@
+use std::collections::VecDeque;
+use std::ffi::OsStr;
+use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::path::{Path, PathBuf};
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use std::{fs, io, result};
+
+use log::{debug, trace};
+use parking_lot::Mutex;
+
 use crate::channel::batch::Sender;
 use crate::data::{Entry, Item, Key, Timestamp};
 use crate::id_generator::IdGenerator;
@@ -6,7 +19,6 @@ use crate::ops::{
     EnqueueResp, InfoReq, InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp, RequeueReq,
     RequeueResp,
 };
-
 use crate::promise::{QronoFuture, QronoPromise};
 use crate::queue::compactor::Compactor;
 use crate::queue::coordinator::SegmentCoordinator;
@@ -18,18 +30,8 @@ use crate::result::IgnoreErr;
 use crate::scheduler::{Scheduler, TaskFuture, TaskHandle, TransferAsync};
 use crate::segment::{MergedSegmentReader, SegmentReader};
 use crate::timer;
+use crate::wait_group::WaitGroup;
 use crate::working_set::WorkingSet;
-use log::{debug, trace};
-use parking_lot::Mutex;
-use std::collections::VecDeque;
-use std::ffi::OsStr;
-use std::fmt::{Display, Formatter};
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use std::{fs, io, result};
 
 mod blocked_dequeues;
 mod compactor;
@@ -50,7 +52,7 @@ pub(crate) struct Queue {
 
     scheduler: Scheduler,
     deletion_scheduler: Scheduler,
-    deletion_backlog: Arc<AtomicUsize>,
+    deletion_backlog: Arc<WaitGroup>,
 }
 
 impl Queue {
@@ -79,7 +81,7 @@ impl Queue {
         name: String,
         scheduler: Scheduler,
         deletion_scheduler: Scheduler,
-        deletion_backlog: Arc<AtomicUsize>,
+        deletion_backlog: Arc<WaitGroup>,
         timer: timer::Scheduler,
         id_generator: IdGenerator,
         working_set: WorkingSet,
@@ -204,7 +206,7 @@ impl Queue {
     pub(crate) fn delete(self, req: DeleteReq, resp: QronoPromise<DeleteResp>) {
         let (tx, rx) = QronoFuture::transferable();
         self.execute(Op::Delete(req, tx));
-        self.deletion_backlog.fetch_add(1, Ordering::SeqCst);
+        self.deletion_backlog.add(1);
 
         rx.transfer_async(&self.scheduler, move |result| {
             // Let the caller know that the deletion has completed. We still have
@@ -226,7 +228,7 @@ impl Queue {
                 // Delete queue data from filesystem
                 Queue::safe_delete(&self.directory).expect("FIXME: Error delete queue directory");
 
-                let outstanding = self.deletion_backlog.fetch_sub(1, Ordering::SeqCst) - 1;
+                let outstanding = self.deletion_backlog.done();
                 let duration = Instant::now() - start;
                 debug!(
                     "Deleted {:?} in {:?}; {} queues left to delete",

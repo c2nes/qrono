@@ -21,6 +21,7 @@ pub mod scheduler;
 pub mod segment;
 pub mod service;
 pub mod timer;
+pub mod wait_group;
 pub mod wal;
 pub mod working_set;
 
