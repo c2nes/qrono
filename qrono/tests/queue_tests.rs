@@ -1,14 +1,8 @@
-use std::cell::UnsafeCell;
-use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
-use std::mem::MaybeUninit;
 use std::path::Path;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering::Release;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use log::{debug, info};
 use rand::seq::SliceRandom;
 use tempfile::tempdir;
 
@@ -17,16 +11,14 @@ use qrono::data::{Timestamp, ID};
 use qrono::id_generator::IdGenerator;
 use qrono::ops::IdPattern::Id;
 use qrono::ops::{
-    DeadlineReq, DeleteReq, DequeueReq, DequeueResp, EnqueueReq, EnqueueResp, IdPattern, InfoReq,
+    DeadlineReq, DeleteReq, DeleteResp, DequeueReq, DequeueResp, EnqueueReq, EnqueueResp, InfoReq,
     InfoResp, PeekReq, PeekResp, ReleaseReq, ReleaseResp, RequeueReq, RequeueResp, ValueReq,
 };
 use qrono::promise::QronoFuture;
-use qrono::result::QronoResult;
 use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
-use qrono_promise::Future;
 
 fn build_service(dir: &Path) -> anyhow::Result<Qrono> {
     let working_set_dir = dir.join("working_set");
@@ -53,45 +45,21 @@ fn test_enqueue_dequeue_release() -> anyhow::Result<()> {
     let dir = tempdir()?;
     let qrono = build_service(dir.path())?;
 
-    let (promise, res) = Future::new();
-    qrono.enqueue(
-        "q",
-        EnqueueReq {
-            value: "Hello, world!".into(),
-            deadline: Default::default(),
-        },
-        promise,
-    );
-    let enqueue_res = res.take()?;
+    let enqueue_res = enqueue(&qrono, "q", "Hello, world!", DeadlineReq::Now).take()?;
     assert!(enqueue_res.deadline.millis() > 0);
 
-    let (promise, res) = Future::new();
-    qrono.dequeue(
-        "q",
-        DequeueReq {
-            timeout: Default::default(),
-            count: 1,
-        },
-        promise,
-    );
-    let mut dequeue_res = res.take()?;
+    let mut dequeue_res = dequeue(&qrono, "q", 1, Duration::ZERO).take()?;
     assert_eq!(1, dequeue_res.len());
     let item = dequeue_res.remove(0);
     assert_eq!(b"Hello, world!".as_ref(), item.value.as_ref());
 
-    let (promise, res) = Future::new();
-    qrono.release("q", ReleaseReq { id: Id(item.id) }, promise);
-    assert!(res.take().is_ok());
+    assert!(release(&qrono, "q", item.id).take().is_ok());
 
-    let (promise, res) = Future::new();
-    qrono.info("q", InfoReq {}, promise);
-    let info = res.take()?;
+    let info = info(&qrono, "q").take()?;
     assert_eq!(0, info.pending);
     assert_eq!(0, info.dequeued);
 
-    let (promise, res) = Future::new();
-    qrono.delete("q", DeleteReq, promise);
-    assert!(res.take().is_ok());
+    assert!(delete(&qrono, "q").take().is_ok());
 
     Ok(())
 }
@@ -124,25 +92,14 @@ fn test_ordered_by_deadline() -> anyhow::Result<()> {
 
     // Ensure dequeues happen in order
     for i in 0..N {
-        let (promise, resp) = QronoFuture::new();
-        qrono.dequeue(
-            "q",
-            DequeueReq {
-                timeout: Duration::from_secs(10),
-                count: 1,
-            },
-            promise,
-        );
-        let items = resp.take()?;
+        let items = dequeue(&qrono, "q", 1, Duration::from_secs(10)).take()?;
         assert_eq!(1, items.len());
         let s = String::from_utf8(items[0].value.to_vec())?;
         assert_eq!(format!("{}", i), s);
     }
 
     // Verify that all N items are now dequeued.
-    let (promise, resp) = QronoFuture::new();
-    qrono.info("q", InfoReq, promise);
-    let info = resp.take()?;
+    let info = info(&qrono, "q").take()?;
     assert_eq!(0, info.pending);
     assert_eq!(N, info.dequeued);
 
@@ -159,23 +116,11 @@ fn test_requeue() -> anyhow::Result<()> {
     let item0 = items.pop().ok_or(fail("item expected"))?;
     assert_eq!(Timestamp::ZERO, item0.stats.requeue_time);
     assert_eq!(1, item0.stats.dequeue_count, "invalid dequeue_count");
+
     requeue(&qrono, "q", item0.id, DeadlineReq::Now).take()?;
-    let mut items = match dequeue(&qrono, "q", 1, Duration::ZERO).take() {
-        Ok(items) => items,
-        Err(_) => {
-            std::thread::sleep(Duration::from_secs(1));
 
-            return Err(fail(format!(
-                "{:?} / {:?} / {:?}",
-                info(&qrono, "q").take(),
-                dequeue(&qrono, "q", 1, Duration::ZERO).take(),
-                peek(&qrono, "q").take(),
-            )))?;
-        }
-    };
-
+    let mut items = dequeue(&qrono, "q", 1, Duration::ZERO).take()?;
     let item1 = items.pop().ok_or(fail("item expected"))?;
-
     assert_eq!(item0.value, item1.value);
     assert_ne!(Timestamp::ZERO, item1.stats.requeue_time);
     assert_eq!(2, item1.stats.dequeue_count);
@@ -229,6 +174,12 @@ fn release(qrono: &Qrono, queue: &str, id: ID) -> QronoFuture<ReleaseResp> {
 fn info(qrono: &Qrono, queue: &str) -> QronoFuture<InfoResp> {
     let (promise, resp) = QronoFuture::new();
     qrono.info(queue, InfoReq, promise);
+    resp
+}
+
+fn delete(qrono: &Qrono, queue: &str) -> QronoFuture<DeleteResp> {
+    let (promise, resp) = QronoFuture::new();
+    qrono.delete(queue, DeleteReq, promise);
     resp
 }
 
