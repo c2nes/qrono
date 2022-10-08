@@ -1,49 +1,70 @@
-use crate::redis::protocol;
+use std::fmt::Display;
+use std::io::{BufWriter, ErrorKind, Write};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{mpsc, Arc};
+use std::thread::{Scope, ScopedJoinHandle};
+use std::{io, thread};
+
+use bytes::{Buf, BytesMut};
+use log::{error, info, trace, warn};
+use parking_lot::Mutex;
+use slab::Slab;
+
+use protocol::Error;
+use qrono_promise::Future;
 
 use crate::io::ReadInto;
 use crate::promise::{QronoFuture, QronoPromise};
+use crate::redis::protocol;
 use crate::redis::protocol::Value;
 use crate::redis::request::{Request, Response};
 use crate::result::IgnoreErr;
 use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskError, TaskFuture, TaskHandle};
 use crate::service::Qrono;
-use bytes::{Buf, BytesMut};
-use log::{error, info, warn};
-use protocol::Error;
-use std::fmt::Display;
-use std::io::{BufWriter, ErrorKind, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{mpsc, Arc};
-use std::{io, thread};
 
 pub struct RedisServer {
-    qrono: Qrono,
+    qrono: Arc<Qrono>,
     scheduler: Scheduler,
 }
 
 struct Client {
-    qrono: Qrono,
+    qrono: Arc<Qrono>,
     conn: TcpStream,
 
     responses: Sender<Response>,
     response_writer: Arc<TaskHandle<ResponseWriter>>,
-    response_writer_future: TaskFuture<ResponseWriter>,
+    response_writer_future: Option<TaskFuture<ResponseWriter>>,
+
+    client_id: usize,
+    client_conns: Arc<Mutex<Slab<TcpStream>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Client {
-    fn new(qrono: &Qrono, scheduler: &Scheduler, conn: TcpStream) -> io::Result<Client> {
+    fn new(
+        qrono: Arc<Qrono>,
+        scheduler: &Scheduler,
+        conn: TcpStream,
+        shutdown: Arc<AtomicBool>,
+        client_conns: Arc<Mutex<Slab<TcpStream>>>,
+    ) -> io::Result<Client> {
         let (tx, rx) = mpsc::channel::<Response>();
         let writer = ResponseWriter::new(&conn, rx)?;
         let (task_handle, task_future) = scheduler.register(writer);
         let response_writer = Arc::new(task_handle);
+        let client_id = client_conns.lock().insert(conn.try_clone()?);
 
         Ok(Client {
-            qrono: qrono.clone(),
+            qrono,
             conn,
             responses: tx,
             response_writer,
-            response_writer_future: task_future,
+            response_writer_future: Some(task_future),
+            client_conns,
+            client_id,
+            shutdown,
         })
     }
 
@@ -57,10 +78,6 @@ impl Client {
         factory: F,
     ) -> QronoPromise<Resp> {
         let response_writer = Arc::clone(&self.response_writer);
-
-        // Cell: <uninitialized> bool
-        // Sender -> Cell
-
         let (mut resp_promise, resp_future) = QronoFuture::new();
         resp_promise.on_complete(move || response_writer.schedule().ignore_err());
         self.responses.send(factory(resp_future)).unwrap();
@@ -110,13 +127,13 @@ impl Client {
         }
     }
 
-    fn try_run(mut self) -> io::Result<()> {
+    fn try_run(&mut self) -> io::Result<()> {
         // Socket setup
         self.conn.set_nodelay(true)?;
 
         // Request read loop
         let mut buf = BytesMut::with_capacity(8 * 1024);
-        'read: while !self.response_writer_future.is_complete() {
+        'read: while !self.response_writer_future.as_ref().unwrap().is_complete() {
             // Ensure we have space for more data, growing the buffer if necessary.
             buf.reserve(1024);
 
@@ -150,7 +167,7 @@ impl Client {
         }
 
         self.response_writer.cancel();
-        let (mut writer, result) = self.response_writer_future.take();
+        let (mut writer, result) = self.response_writer_future.take().unwrap().take();
         if let Err(TaskError::Failed(err)) = result {
             error!("Response writer failed: {err}")
         } else if let Err(err) = writer.finish() {
@@ -160,7 +177,7 @@ impl Client {
         Ok(())
     }
 
-    fn run(self) {
+    fn run(&mut self) {
         let addr = self
             .conn
             .peer_addr()
@@ -169,9 +186,17 @@ impl Client {
             .unwrap_or_else(|| "<unknown>".to_string());
 
         match self.try_run() {
-            Ok(()) => info!("Connection {addr} closed"),
-            Err(err) => error!("Connection {addr} closed due to unexpected error, {err:?}"),
+            Err(err) if !self.shutdown.load(Ordering::Relaxed) => {
+                error!("Connection {addr} closed due to unexpected error, {err:?}")
+            }
+            _ => info!("Connection {addr} closed"),
         }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.client_conns.lock().remove(self.client_id);
     }
 }
 
@@ -246,9 +271,14 @@ impl ResponseWriter {
     }
 
     fn finish(&mut self) -> io::Result<()> {
+        let send_error = false;
         while let Some(resp) = self.next().take() {
             self.buf.clear();
-            resp.take().put(&mut self.buf);
+            if !send_error && resp.is_ready() {
+                resp.take().put(&mut self.buf);
+            } else {
+                Value::StaticError("ERR server shutting down").put(&mut self.buf);
+            }
             self.writer.write_all(&self.buf[..])?;
         }
 
@@ -272,25 +302,61 @@ impl Task for ResponseWriter {
 }
 
 impl RedisServer {
-    pub fn new(qrono: &Qrono, scheduler: &Scheduler) -> Self {
-        let qrono = qrono.clone();
+    pub fn new(qrono: Arc<Qrono>, scheduler: &Scheduler) -> Self {
         let scheduler = scheduler.clone();
         Self { qrono, scheduler }
     }
 
-    pub fn run<A: ToSocketAddrs + Display>(self, addr: A) -> io::Result<()> {
-        let listener = TcpListener::bind(&addr)?;
-        info!("Accepting RESP2 connections on {}", &addr);
-        for conn in listener.incoming() {
-            let conn = conn?;
-            let addr = conn.peer_addr()?;
-            let client = Client::new(&self.qrono, &self.scheduler, conn)?;
-            info!("Accepted RESP2 connection from {}", &addr);
-            thread::Builder::new()
-                .name(format!("QronoClient[{}]", &addr))
-                .spawn(move || client.run())
-                .unwrap();
-        }
-        Ok(())
+    pub fn start<'scope, A: ToSocketAddrs + Display>(
+        self,
+        scope: &'scope Scope<'scope, '_>,
+        addr: A,
+        shutdown_signal: Option<Future<()>>,
+    ) -> ScopedJoinHandle<'scope, io::Result<()>> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let client_conns: Arc<Mutex<Slab<TcpStream>>> = Arc::new(Mutex::new(Slab::new()));
+        let listener = TcpListener::bind(&addr);
+
+        scope.spawn(move || {
+            let listener = listener?;
+            for conn in listener.incoming() {
+                if shutdown_signal
+                    .as_ref()
+                    .map(|f| f.is_complete())
+                    .unwrap_or(false)
+                {
+                    trace!("Shutdown signal received");
+                    drop(conn);
+                    shutdown.store(true, Ordering::Relaxed);
+                    for (_, conn) in client_conns.lock().iter() {
+                        if let Err(err) = conn.shutdown(Shutdown::Read) {
+                            match err.kind() {
+                                ErrorKind::NotConnected => (), /* The connection is already closed. */
+                                _ => error!("Error shutting down connection: {}", err),
+                            }
+                        }
+                    }
+                    trace!("Shutdown complete");
+                    break;
+                }
+
+                let conn = conn?;
+                let addr = conn.peer_addr()?;
+                let mut client = Client::new(
+                    self.qrono.clone(),
+                    &self.scheduler,
+                    conn,
+                    Arc::clone(&shutdown),
+                    Arc::clone(&client_conns),
+                )?;
+                info!("Accepted RESP2 connection from {}", &addr);
+
+                thread::Builder::new()
+                    .name(format!("QronoClient[{}]", &addr))
+                    .spawn_scoped(scope, move || client.run())
+                    .unwrap();
+            }
+            Ok(())
+        })
     }
 }

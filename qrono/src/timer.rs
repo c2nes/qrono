@@ -95,7 +95,7 @@ impl Scheduler {
         self.inner.lock().cancel(id)
     }
 
-    pub fn start(&self) {
+    fn start(&self) {
         let cloned = self.clone();
         std::thread::spawn(move || cloned.run_loop());
     }

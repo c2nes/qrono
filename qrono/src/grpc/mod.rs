@@ -6,6 +6,7 @@ use crate::ops::{
     ReleaseReq, RequeueReq, ValueReq,
 };
 use crate::promise::QronoFuture;
+use std::sync::Arc;
 
 use generated::qrono::qrono_server::{Qrono, QronoServer};
 use generated::qrono::{
@@ -21,7 +22,7 @@ use crate::grpc::generated::qrono::{Item, Stats};
 use tonic::{Request, Response, Status};
 
 struct QronoService {
-    qrono: crate::service::Qrono,
+    qrono: Arc<crate::service::Qrono>,
 }
 
 #[tonic::async_trait]
@@ -145,7 +146,7 @@ impl Qrono for QronoService {
     }
 }
 
-pub fn service(qrono: crate::service::Qrono) -> QronoServer<impl Qrono> {
+pub fn service(qrono: Arc<crate::service::Qrono>) -> QronoServer<impl Qrono> {
     QronoServer::new(QronoService { qrono })
 }
 
@@ -173,6 +174,7 @@ impl From<QronoError> for Status {
             QronoError::NoItemReady => Status::unavailable("no item ready"),
             QronoError::ItemNotDequeued => Status::failed_precondition("item not dequeued"),
             QronoError::Internal => Status::internal("internal error"),
+            QronoError::Canceled => Status::aborted("canceled"),
         }
     }
 }

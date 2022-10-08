@@ -1,6 +1,7 @@
 use crate::transfer;
 use crate::transfer::{Receiver, Sender};
 use parking_lot::Mutex;
+use std::fmt::{Debug, Formatter};
 use std::mem;
 
 use std::pin::Pin;
@@ -90,6 +91,16 @@ impl<T> Promise<T> {
     /// Register the callback to be invoked when this Promise is completed.
     pub fn on_complete<F: FnOnce() + Send + 'static>(&mut self, callback: F) {
         self.callbacks.add(callback);
+    }
+}
+
+impl<T> Debug for Promise<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.is_cancelled() {
+            f.write_str("Promise[cancelled]")
+        } else {
+            f.write_str("Promise[unfulfilled]")
+        }
     }
 }
 

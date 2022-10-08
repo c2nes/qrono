@@ -1,7 +1,7 @@
 use crate::data::ID;
 use crate::path;
 use crate::result::IgnoreErr;
-use crate::scheduler::{FnTask, Scheduler, TaskHandle};
+use crate::scheduler::{BoxFn, Scheduler, TaskHandle};
 use crossbeam::utils::Backoff;
 use std::fs::File;
 use std::io::Write;
@@ -15,7 +15,7 @@ use std::{fs, io};
 #[derive(Clone)]
 pub struct IdGenerator {
     inner: Arc<Inner>,
-    raise_ceiling: Arc<TaskHandle<FnTask>>,
+    raise_ceiling: Arc<TaskHandle<BoxFn>>,
 }
 
 impl IdGenerator {
@@ -23,7 +23,7 @@ impl IdGenerator {
         let inner = Arc::new(Inner::new(path)?);
         let raise_ceiling = {
             let inner = Arc::clone(&inner);
-            let (handle, _) = scheduler.register_fn(move || inner.raise_ceiling());
+            let (handle, _) = scheduler.register(BoxFn::new(move || inner.raise_ceiling()));
             Arc::new(handle)
         };
         if inner.raise_ceiling() {
@@ -83,7 +83,7 @@ impl Inner {
         })
     }
 
-    fn generate_ids(&self, n: usize, raise_ceiling: &TaskHandle<FnTask>) -> Range<ID> {
+    fn generate_ids(&self, n: usize, raise_ceiling: &TaskHandle<BoxFn>) -> Range<ID> {
         if n == 0 {
             return 0..0;
         }

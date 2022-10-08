@@ -3,6 +3,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::Path;
 use std::time::Duration;
 
+use qrono::error::QronoError;
 use rand::seq::SliceRandom;
 use tempfile::tempdir;
 
@@ -124,6 +125,34 @@ fn test_requeue() -> anyhow::Result<()> {
     assert_eq!(item0.value, item1.value);
     assert_ne!(Timestamp::ZERO, item1.stats.requeue_time);
     assert_eq!(2, item1.stats.dequeue_count);
+
+    Ok(())
+}
+
+#[test]
+fn test_peek() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let qrono = build_service(dir.path())?;
+
+    // Enqueue item with deadline 1 hour in the future
+    enqueue(
+        &qrono,
+        "q",
+        "Hello, world",
+        DeadlineReq::Relative(Duration::from_secs(3600)),
+    )
+    .take()?;
+
+    // Verify no items are immediately available for dequeue
+    assert!(matches!(
+        dequeue(&qrono, "q", 1, Duration::ZERO).take(),
+        Err(QronoError::NoItemReady)
+    ));
+
+    // Verify peek still shows us the value
+    let item = peek(&qrono, "q").take()?;
+    assert_eq!("Hello, world", std::str::from_utf8(&item.value).unwrap());
+    assert!(item.deadline > Timestamp::now());
 
     Ok(())
 }

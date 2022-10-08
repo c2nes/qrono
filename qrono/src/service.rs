@@ -1,3 +1,15 @@
+use std::hash::BuildHasherDefault;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{fs, io};
+
+use dashmap::mapref::one::Ref;
+use dashmap::DashMap;
+use log::{debug, error, info, trace};
+use parking_lot::Mutex;
+use rustc_hash::FxHasher;
+
 use crate::error::QronoError;
 use crate::id_generator::IdGenerator;
 use crate::ops::{
@@ -11,21 +23,9 @@ use crate::scheduler::Scheduler;
 use crate::timer;
 use crate::wait_group::WaitGroup;
 use crate::working_set::WorkingSet;
-use dashmap::mapref::one::Ref;
-use dashmap::DashMap;
-use log::{debug, error, info};
-use parking_lot::Mutex;
-use rustc_hash::FxHasher;
-use std::hash::BuildHasherDefault;
-use std::path::{Path, PathBuf};
-
-use std::sync::Arc;
-use std::time::Duration;
-use std::{fs, io};
 
 type BuildHasher = BuildHasherDefault<FxHasher>;
 
-#[derive(Clone)]
 pub struct Qrono {
     queues: Arc<DashMap<String, Queue, BuildHasher>>,
     queues_directory: PathBuf,
@@ -147,8 +147,10 @@ impl Qrono {
 
     pub fn dequeue(&self, queue: &str, req: DequeueReq, resp: QronoPromise<DequeueResp>) {
         if let Some(queue) = self.queues.get(queue) {
+            trace!("dequeue: req={req:?}");
             return queue.dequeue(req, resp);
         }
+        trace!("No queue!?!");
         resp.complete(Err(QronoError::NoSuchQueue))
     }
 
@@ -213,6 +215,12 @@ impl Qrono {
 
 impl Drop for Qrono {
     fn drop(&mut self) {
-        self.deletion_backlog.wait()
+        self.deletion_backlog.wait();
+        let queue_names: Vec<_> = self.queues.iter().map(|r| r.key().clone()).collect();
+        for queue_name in queue_names {
+            if let Some((_, queue)) = self.queues.remove(&queue_name) {
+                queue.shutdown();
+            }
+        }
     }
 }

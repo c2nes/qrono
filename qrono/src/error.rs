@@ -7,6 +7,7 @@ pub enum QronoError {
     NoItemReady,
     ItemNotDequeued,
     Internal,
+    Canceled,
 }
 
 impl Error for QronoError {}
@@ -18,6 +19,7 @@ impl Display for QronoError {
             QronoError::NoItemReady => write!(f, "no item ready"),
             QronoError::ItemNotDequeued => write!(f, "item not dequeued"),
             QronoError::Internal => write!(f, "internal"),
+            QronoError::Canceled => write!(f, "canceled"),
         }
     }
 }

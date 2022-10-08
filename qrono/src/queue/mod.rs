@@ -166,6 +166,7 @@ impl Queue {
     }
 
     fn execute(&self, op: Op) {
+        trace!("Submitting op={op:?}");
         self.ops.send(op);
         self.op_processor.schedule().ignore_err();
     }
@@ -236,6 +237,12 @@ impl Queue {
                 );
             });
         })
+    }
+
+    pub(crate) fn shutdown(self) {
+        self.op_processor.cancel();
+        let op_processor = self.op_processor_future.take().0;
+        op_processor.shutdown();
     }
 }
 

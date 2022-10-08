@@ -45,6 +45,7 @@ impl TryFrom<Value> for RawRequest {
     }
 }
 
+#[derive(Debug)]
 pub enum Request {
     Enqueue(String, EnqueueReq),
     Dequeue(String, DequeueReq),
@@ -313,6 +314,7 @@ impl Response {
                 QronoError::NoItemReady => Value::NullArray,
                 QronoError::ItemNotDequeued => Value::StaticError("ERR item not dequeued"),
                 QronoError::Internal => Value::StaticError("ERR internal error, see logs"),
+                QronoError::Canceled => Value::StaticError("ERR canceled"),
             },
         }
     }

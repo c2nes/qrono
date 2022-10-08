@@ -29,6 +29,7 @@ log = "0.4"
 env_logger = "0.8.4"
 rustc-hash = "1.1.0"
 parking_lot = "0.12"
+parking_lot_core = "0.9"
 
 axum = "0.5"
 tokio = { version = "1", features = ["full"] }
@@ -51,6 +52,9 @@ qrono-channel = { path = "../qrono-channel" }
 
 rand = "0.8"
 
+ctrlc = { version = "3.2", features = ["termination"] }
+anyhow = "1"
+
 [dev-dependencies]
 criterion = { version = "0.3", features = ["html_reports"] }
 rand_chacha = "0.3.1"
@@ -58,7 +62,6 @@ murmur3 = "0.5"
 redis = "0.19"
 tempfile = "3.2"
 once_cell = "1.10.0"
-anyhow = "1"
 
 [build-dependencies]
 tonic-build = "0.8"

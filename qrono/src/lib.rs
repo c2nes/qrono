@@ -5,7 +5,7 @@ use qrono_channel as channel;
 pub mod bytes;
 pub mod data;
 mod encoding;
-mod error;
+pub mod error;
 pub mod grpc;
 pub mod hash;
 pub mod http;

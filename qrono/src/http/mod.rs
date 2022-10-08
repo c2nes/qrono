@@ -21,8 +21,8 @@ mod error;
 type QronoExt = Extension<Arc<Qrono>>;
 type QronoResponse<T> = Result<Json<T>, QronoError>;
 
-pub fn router(qrono: Qrono) -> Router<Body> {
-    let qrono: QronoExt = Extension(Arc::new(qrono));
+pub fn router(qrono: Arc<Qrono>) -> Router<Body> {
+    let qrono: QronoExt = Extension(qrono);
     Router::<Body>::new()
         .route("/queues/:queue/enqueue", post(enqueue))
         .route("/queues/:queue/dequeue", post(dequeue))

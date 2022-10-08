@@ -32,6 +32,7 @@ impl IntoResponse for QronoError {
             QronoError::Internal => {
                 make_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
             }
+            QronoError::Canceled => make_response(StatusCode::SERVICE_UNAVAILABLE, "canceled"),
         }
     }
 }

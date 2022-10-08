@@ -28,6 +28,7 @@ use crate::scheduler::{Scheduler, State, Task, TaskContext, TaskFuture, TaskHand
 use crate::timer;
 use crate::working_set::{WorkingItem, WorkingSet};
 
+#[derive(Debug)]
 pub(super) enum Op {
     Enqueue(EnqueueReq, QronoPromise<EnqueueResp>),
     Dequeue(DequeueReq, QronoPromise<DequeueResp>),
@@ -114,7 +115,11 @@ impl OpProcessor {
 
         // Wait for the writer to stop, but ignore the result; a "Canceled" error is to be
         // expected.
-        let segment_writer = self.segment_writer_future.take().0;
+        let mut segment_writer = self.segment_writer_future.take().0;
+
+        // Force flush to improve startup time.
+        (*self.shared.lock()).force_flush = true;
+        segment_writer.flush().expect("TODO: Handle error");
 
         // Shut down the writer which will handle gracefully stopping the compactor as well.
         segment_writer.shutdown();
@@ -126,6 +131,31 @@ impl OpProcessor {
                 .expect("FIXME: Error retrieving working set entry")
                 .expect("BUG: working_set_ids inconsistent with working_set")
                 .release();
+        }
+
+        // Cancel blocked dequeue operations
+        while let Some((_, _, resp)) = self.blocked_dequeues.pop_front() {
+            resp.complete(Err(QronoError::Canceled));
+        }
+
+        // Cancel other outstanding operations
+        loop {
+            let batch = self.ops.recv(100);
+            if batch.is_empty() {
+                break;
+            }
+            for op in batch {
+                match op {
+                    Op::Enqueue(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Dequeue(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Requeue(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Release(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Info(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Peek(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Delete(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                    Op::Compact(_, resp) => resp.complete(Err(QronoError::Canceled)),
+                }
+            }
         }
     }
 }
@@ -180,6 +210,8 @@ impl Task for OpProcessor {
         let mut info_resp = None;
 
         for op in batch {
+            trace!("Processing op={op:?}");
+
             match op {
                 Op::Enqueue(req, resp) => {
                     let id = ids.next().unwrap();
@@ -333,6 +365,8 @@ impl Task for OpProcessor {
 
         // Deliver to blocked dequeues first
         while let Some((_, _, resp)) = self.blocked_dequeues.front() {
+            trace!("Delayed DequeueReq");
+
             // Drop cancelled dequeues
             if resp.is_cancelled() {
                 self.blocked_dequeues.pop_front();
@@ -367,6 +401,8 @@ impl Task for OpProcessor {
 
         // Handle new dequeues next
         for (req, resp) in dequeues {
+            trace!("DequeueReq: {req:?}");
+
             let val = match dequeued_items.pop_front() {
                 Some(item) => {
                     let mut items = vec![item];

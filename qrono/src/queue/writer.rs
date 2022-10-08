@@ -47,6 +47,28 @@ impl MemorySegmentWriter {
         })
     }
 
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
+        if let Some(mut segment) = self.rotate() {
+            let start = Instant::now();
+            segment.wal.sync()?;
+            let (temp_dir, mut pending, tombstones) = self.write(segment.id, segment.segment)?;
+            segment.wal.delete().unwrap();
+
+            // Promote new segments and remove temporary mem segment
+            let mut tx = coordinator::tx();
+            tx.remove(SegmentKey::pending(segment.id, segment.id, 0));
+            for seg in pending.take().into_iter().chain(tombstones) {
+                tx.promote(seg);
+            }
+            self.coordinator.lock().commit(tx)?;
+
+            fs::remove_dir(temp_dir).unwrap();
+            self.compactor.schedule().ignore_err();
+            debug!("Flush completed in {:?}", start.elapsed());
+        }
+        Ok(())
+    }
+
     fn rotate(&mut self) -> Option<RotatedSegment> {
         let start = Instant::now();
         let mut locked = self.shared.lock();
@@ -166,25 +188,7 @@ impl Task for MemorySegmentWriter {
     type Error = io::Error;
 
     fn run(&mut self, _ctx: &TaskContext<Self>) -> Result<State<()>, io::Error> {
-        if let Some(mut segment) = self.rotate() {
-            let start = Instant::now();
-            segment.wal.sync()?;
-            let (temp_dir, mut pending, tombstones) = self.write(segment.id, segment.segment)?;
-            segment.wal.delete().unwrap();
-
-            // Promote new segments and remove temporary mem segment
-            let mut tx = coordinator::tx();
-            tx.remove(SegmentKey::pending(segment.id, segment.id, 0));
-            for seg in pending.take().into_iter().chain(tombstones) {
-                tx.promote(seg);
-            }
-            self.coordinator.lock().commit(tx)?;
-
-            fs::remove_dir(temp_dir).unwrap();
-            self.compactor.schedule().ignore_err();
-            debug!("Flush completed in {:?}", start.elapsed());
-        }
-
+        self.flush()?;
         Ok(State::Idle)
     }
 }
