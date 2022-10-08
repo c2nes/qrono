@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use log::info;
 use rayon::ThreadPoolBuilder;
 use structopt::StructOpt;
 
-use tokio::runtime::Builder;
+use tokio::task::JoinHandle;
 use tonic::transport::Server;
 
 use qrono::id_generator::IdGenerator;
@@ -17,7 +18,7 @@ use qrono::scheduler::{Scheduler, StaticPool};
 use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
-use qrono_promise::Future;
+use qrono_promise::{Future, Promise};
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -64,34 +65,20 @@ struct Opts {
     wal_sync_period: i64,
 }
 
-fn register_shutdown_handler() -> Result<Future<()>, ctrlc::Error> {
-    let (shutdown_promise, shutdown_future) = Future::new();
+async fn register_shutdown_handler() {
+    let (shutdown_promise, shutdown_future) = Future::new_std();
     let mut shutdown_promise = Some(shutdown_promise);
     ctrlc::set_handler(move || {
         if let Some(shutdown_promise) = shutdown_promise.take() {
             shutdown_promise.complete(())
         }
-    })?;
-    Ok(shutdown_future)
+    })
+    .unwrap();
+    shutdown_future.await
 }
 
-fn main() -> anyhow::Result<()> {
-    let shutdown_future = register_shutdown_handler()?;
-    env_logger::builder().format_timestamp_micros().init();
-    let opts: Opts = Opts::from_args();
-    let start = Instant::now();
-    info!("Starting...");
-
-    fs::create_dir_all(&opts.data)?;
-
-    // Scheduler needs to be shut down
-    // All schedule tasks need to be canceled
-    // Qrono needs to be dropped
-    // Timer thread needs to be stopped; all schedules canceled
-    // ID generator shut down
-    // Working set needs to be shut down
-
-    let scheduler = if opts.rayon {
+fn build_scheduler(opts: &Opts) -> Scheduler {
+    if opts.rayon {
         Scheduler::new(
             ThreadPoolBuilder::new()
                 .num_threads(opts.workers.unwrap_or(0))
@@ -104,8 +91,10 @@ fn main() -> anyhow::Result<()> {
             info!("Using {} scheduler threads.", n);
             n
         })))
-    };
+    }
+}
 
+fn build_qrono_service(opts: &Opts, scheduler: Scheduler) -> std::io::Result<Qrono> {
     let timer = timer::Scheduler::new();
     let deletion_scheduler = Scheduler::new(StaticPool::new(1));
     let id_generator = IdGenerator::new(opts.data.join("id"), scheduler.clone()).unwrap();
@@ -120,7 +109,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         Some(Duration::from_millis(opts.wal_sync_period as u64))
     };
-    let qrono = Arc::new(Qrono::new(
+    Ok(Qrono::new(
         scheduler.clone(),
         timer,
         id_generator,
@@ -128,60 +117,95 @@ fn main() -> anyhow::Result<()> {
         opts.data.join("queues"),
         deletion_scheduler,
         wal_sync_period,
-    ));
+    ))
+}
 
-    let tokio_runtime = Builder::new_multi_thread().enable_all().build()?;
-    let _tokio_runtime_guard = tokio_runtime.enter();
+struct Shutdown<T> {
+    signal: Promise<()>,
+    handler: JoinHandle<T>,
+}
 
-    // Start HTTP server in background.
-    let http_server = axum::Server::bind(&opts.http_listen);
-    let http_router = qrono::http::router(qrono.clone());
-    let (http_shutdown, http_shutdown_signal) = Future::new_std();
-    let http_future = http_server
-        .serve(http_router.into_make_service())
-        .with_graceful_shutdown(http_shutdown_signal);
+impl<T> Shutdown<T> {
+    async fn shutdown(self) -> T {
+        self.signal.complete(());
+        self.handler.await.unwrap()
+    }
+}
+
+fn start_http_server(opts: &Opts, qrono: Arc<Qrono>) -> Shutdown<Result<(), impl Error>> {
+    let server = axum::Server::bind(&opts.http_listen);
+    let router = qrono::http::router(qrono);
+    let (shutdown, shutdown_signal) = Future::new_std();
+    let server_future = tokio::spawn(
+        server
+            .serve(router.into_make_service())
+            .with_graceful_shutdown(shutdown_signal),
+    );
+
     info!("Accepting HTTP connections on {}", &opts.http_listen);
+    Shutdown {
+        signal: shutdown,
+        handler: server_future,
+    }
+}
 
-    // Start gRPC server
-    let grpc_service = qrono::grpc::service(qrono.clone());
-    let grpc_reflection_service = tonic_reflection::server::Builder::configure()
+fn start_grpc_server(opts: &Opts, qrono: Arc<Qrono>) -> Shutdown<Result<(), impl Error>> {
+    let service = qrono::grpc::service(qrono);
+    let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(include_bytes!("../grpc/generated/qrono.bin"))
         .build()
         .unwrap();
-    let (grpc_shutdown, grpc_shutdown_signal) = Future::new_std();
-    let grpc_future = tokio::spawn(
+    let (shutdown, shutdown_signal) = Future::new_std();
+    let server_future = tokio::spawn(
         Server::builder()
-            .add_service(grpc_service)
-            .add_service(grpc_reflection_service)
-            .serve_with_shutdown(opts.grpc_listen, grpc_shutdown_signal),
+            .add_service(service)
+            .add_service(reflection_service)
+            .serve_with_shutdown(opts.grpc_listen, shutdown_signal),
     );
     info!("Accepting gRPC connections on {}", &opts.grpc_listen);
+    Shutdown {
+        signal: shutdown,
+        handler: server_future,
+    }
+}
 
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    env_logger::builder().format_timestamp_micros().init();
+    let shutdown_signal = register_shutdown_handler();
+    let opts: Opts = Opts::from_args();
+    let start = Instant::now();
+    info!("Starting...");
+
+    fs::create_dir_all(&opts.data)?;
+
+    let scheduler = build_scheduler(&opts);
+    let qrono = Arc::new(build_qrono_service(&opts, scheduler.clone())?);
+
+    let http_server = start_http_server(&opts, qrono.clone());
+    let grpc_server = start_grpc_server(&opts, qrono.clone());
     let redis_server = RedisServer::new(qrono.clone(), &scheduler);
     let redis_handle = redis_server.start(opts.resp2_listen)?;
     info!("Accepting RESP2 connections on {}", &opts.resp2_listen);
     info!("Start up completed in {:?}.", start.elapsed());
 
     // Wait for shutdown signal
-    shutdown_future.take();
+    shutdown_signal.await;
+
     info!("Shutting down...");
+    let shutdown_start = Instant::now();
 
     redis_handle.shutdown()?;
-
-    http_shutdown.complete(());
-    tokio_runtime.block_on(http_future)?;
-
-    grpc_shutdown.complete(());
-    tokio_runtime.block_on(grpc_future)??;
-
-    drop(_tokio_runtime_guard);
-    drop(tokio_runtime);
+    http_server.shutdown().await?;
+    grpc_server.shutdown().await?;
 
     if let Ok(qrono) = Arc::try_unwrap(qrono) {
         drop(qrono);
     } else {
         panic!("BUG: All Qrono references should be dropped at this point");
     }
+
+    info!("Shutdown completed in {:?}", shutdown_start.elapsed());
 
     Ok(())
 }

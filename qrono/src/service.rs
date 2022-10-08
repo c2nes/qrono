@@ -220,6 +220,7 @@ impl Drop for Qrono {
         for queue_name in queue_names {
             if let Some((_, queue)) = self.queues.remove(&queue_name) {
                 queue.shutdown();
+                info!(r#"Closed queue "{queue_name}""#);
             }
         }
     }
