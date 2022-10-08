@@ -157,30 +157,22 @@ fn main() -> anyhow::Result<()> {
     );
     info!("Accepting gRPC connections on {}", &opts.grpc_listen);
 
-    std::thread::scope(|s| {
-        let (redis_shutdown, redis_shutdown_signal) = Future::new();
-        let redis_server = RedisServer::new(qrono.clone(), &scheduler);
-        let redis_future = redis_server.start(s, opts.resp2_listen, Some(redis_shutdown_signal));
-        info!("Accepting RESP2 connections on {}", &opts.resp2_listen);
-        info!("Start up completed in {:?}.", start.elapsed());
+    let redis_server = RedisServer::new(qrono.clone(), &scheduler);
+    let redis_handle = redis_server.start(opts.resp2_listen)?;
+    info!("Accepting RESP2 connections on {}", &opts.resp2_listen);
+    info!("Start up completed in {:?}.", start.elapsed());
 
-        // Wait for shutdown signal
-        shutdown_future.take();
-        info!("Shutting down...");
+    // Wait for shutdown signal
+    shutdown_future.take();
+    info!("Shutting down...");
 
-        // Connect to wake up listener
-        redis_shutdown.complete(());
-        let _ = std::net::TcpStream::connect(&opts.resp2_listen)?;
-        let _ = redis_future.join().unwrap();
+    redis_handle.shutdown()?;
 
-        http_shutdown.complete(());
-        tokio_runtime.block_on(http_future)?;
+    http_shutdown.complete(());
+    tokio_runtime.block_on(http_future)?;
 
-        grpc_shutdown.complete(());
-        tokio_runtime.block_on(grpc_future)??;
-
-        Ok::<(), anyhow::Error>(())
-    })?;
+    grpc_shutdown.complete(());
+    tokio_runtime.block_on(grpc_future)??;
 
     drop(_tokio_runtime_guard);
     drop(tokio_runtime);

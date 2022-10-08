@@ -1,10 +1,10 @@
 use std::fmt::Display;
 use std::io::{BufWriter, ErrorKind, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
-use std::thread::{Scope, ScopedJoinHandle};
+use std::thread::JoinHandle;
 use std::{io, thread};
 
 use bytes::{Buf, BytesMut};
@@ -13,7 +13,6 @@ use parking_lot::Mutex;
 use slab::Slab;
 
 use protocol::Error;
-use qrono_promise::Future;
 
 use crate::io::ReadInto;
 use crate::promise::{QronoFuture, QronoPromise};
@@ -307,56 +306,69 @@ impl RedisServer {
         Self { qrono, scheduler }
     }
 
-    pub fn start<'scope, A: ToSocketAddrs + Display>(
-        self,
-        scope: &'scope Scope<'scope, '_>,
-        addr: A,
-        shutdown_signal: Option<Future<()>>,
-    ) -> ScopedJoinHandle<'scope, io::Result<()>> {
+    pub fn start<A: ToSocketAddrs + Display>(self, addr: A) -> io::Result<ServerHandle> {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let client_conns: Arc<Mutex<Slab<TcpStream>>> = Arc::new(Mutex::new(Slab::new()));
-        let listener = TcpListener::bind(&addr);
+        let shutdown_clone = shutdown.clone();
 
-        scope.spawn(move || {
-            let listener = listener?;
-            for conn in listener.incoming() {
-                if shutdown_signal
-                    .as_ref()
-                    .map(|f| f.is_complete())
-                    .unwrap_or(false)
-                {
-                    trace!("Shutdown signal received");
-                    drop(conn);
-                    shutdown.store(true, Ordering::Relaxed);
-                    for (_, conn) in client_conns.lock().iter() {
-                        if let Err(err) = conn.shutdown(Shutdown::Read) {
-                            match err.kind() {
-                                ErrorKind::NotConnected => (), /* The connection is already closed. */
-                                _ => error!("Error shutting down connection: {}", err),
+        let client_conns: Arc<Mutex<Slab<TcpStream>>> = Arc::new(Mutex::new(Slab::new()));
+        let addr = addr.to_socket_addrs()?.collect::<Vec<_>>();
+        let listener = TcpListener::bind(&addr[..])?;
+        let join_handle = thread::spawn(move || {
+            thread::scope(|scope| {
+                for conn in listener.incoming() {
+                    if shutdown.load(Ordering::Relaxed) {
+                        trace!("Shutdown signal received");
+                        drop(conn);
+                        shutdown.store(true, Ordering::Relaxed);
+                        for (_, conn) in client_conns.lock().iter() {
+                            if let Err(err) = conn.shutdown(Shutdown::Read) {
+                                match err.kind() {
+                                    ErrorKind::NotConnected => (), /* The connection is already closed. */
+                                    _ => error!("Error shutting down connection: {}", err),
+                                }
                             }
                         }
+                        trace!("Shutdown complete");
+                        break;
                     }
-                    trace!("Shutdown complete");
-                    break;
+
+                    let conn = conn?;
+                    let addr = conn.peer_addr()?;
+                    let mut client = Client::new(
+                        self.qrono.clone(),
+                        &self.scheduler,
+                        conn,
+                        Arc::clone(&shutdown),
+                        Arc::clone(&client_conns),
+                    )?;
+                    info!("Accepted RESP2 connection from {}", &addr);
+
+                    thread::Builder::new()
+                        .name(format!("QronoClient[{}]", &addr))
+                        .spawn_scoped(scope, move || client.run())
+                        .unwrap();
                 }
-
-                let conn = conn?;
-                let addr = conn.peer_addr()?;
-                let mut client = Client::new(
-                    self.qrono.clone(),
-                    &self.scheduler,
-                    conn,
-                    Arc::clone(&shutdown),
-                    Arc::clone(&client_conns),
-                )?;
-                info!("Accepted RESP2 connection from {}", &addr);
-
-                thread::Builder::new()
-                    .name(format!("QronoClient[{}]", &addr))
-                    .spawn_scoped(scope, move || client.run())
-                    .unwrap();
-            }
-            Ok(())
+                Ok(())
+            })
+        });
+        Ok(ServerHandle {
+            join_handle,
+            shutdown: shutdown_clone,
+            addr,
         })
+    }
+}
+
+pub struct ServerHandle {
+    join_handle: JoinHandle<io::Result<()>>,
+    shutdown: Arc<AtomicBool>,
+    addr: Vec<SocketAddr>,
+}
+
+impl ServerHandle {
+    pub fn shutdown(self) -> io::Result<()> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        let _ = std::net::TcpStream::connect(&self.addr[..])?;
+        self.join_handle.join().unwrap()
     }
 }
