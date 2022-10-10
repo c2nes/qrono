@@ -1,13 +1,14 @@
 use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, io};
 
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use log::{debug, error, info, trace};
 use parking_lot::Mutex;
+use rayon::ThreadPoolBuilder;
 use rustc_hash::FxHasher;
 
 use crate::error::QronoError;
@@ -215,13 +216,22 @@ impl Qrono {
 
 impl Drop for Qrono {
     fn drop(&mut self) {
+        // Wait for any in-progress deletions to complete
         self.deletion_backlog.wait();
-        let queue_names: Vec<_> = self.queues.iter().map(|r| r.key().clone()).collect();
-        for queue_name in queue_names {
-            if let Some((_, queue)) = self.queues.remove(&queue_name) {
-                queue.shutdown();
-                info!(r#"Closed queue "{queue_name}""#);
+        // Close queues in parallel
+        ThreadPoolBuilder::new().build().unwrap().scope(|s| {
+            let queue_names: Vec<_> = self.queues.iter().map(|r| r.key().clone()).collect();
+            for queue_name in queue_names {
+                if let Some((queue_name, queue)) = self.queues.remove(&queue_name) {
+                    s.spawn(move |_| {
+                        let start = Instant::now();
+                        info!(r#"Closing queue "{queue_name}"..."#);
+                        queue.shutdown();
+                        let elapsed = start.elapsed();
+                        info!(r#"Closed queue "{queue_name}" in {elapsed:?}"#);
+                    });
+                }
             }
-        }
+        });
     }
 }

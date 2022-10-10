@@ -79,7 +79,7 @@ impl MemorySegmentWriter {
         }
 
         let pos = locked.last;
-        let rotated = locked.mutable.rotate(pos).unwrap();
+        let rotated = locked.mutable.rotate(pos);
         let id = rotated.id;
         let segment = rotated.segment.clone();
         locked

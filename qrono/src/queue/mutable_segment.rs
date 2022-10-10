@@ -21,16 +21,16 @@ impl MutableSegment {
         directory: P,
         next_segment_id: SegmentID,
         wal_sync_period: Option<Duration>,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let directory = directory.as_ref().to_path_buf();
-        let active = Active::new(&directory, next_segment_id, Key::ZERO, wal_sync_period)?;
+        let active = Active::new(&directory, next_segment_id, Key::ZERO, wal_sync_period);
         let tx = Vec::new();
-        Ok(Self {
+        Self {
             directory,
             wal_sync_period,
             active,
             tx,
-        })
+        }
     }
 
     pub(super) fn new_transaction(&mut self) -> Transaction {
@@ -60,18 +60,18 @@ impl MutableSegment {
         self.active.segment.size()
     }
 
-    pub(super) fn rotate(&mut self, pos: Key) -> io::Result<RotatedSegment> {
+    pub(super) fn rotate(&mut self, pos: Key) -> RotatedSegment {
         let next_active = Active::new(
             &self.directory,
             self.active.id + 1,
             pos,
             self.wal_sync_period,
-        )?;
+        );
         let rotated = mem::replace(&mut self.active, next_active);
         let id = rotated.id;
         let (segment, wal) = rotated.segment.freeze();
         let wal = wal.expect("MemorySegment was created with a WAL");
-        Ok(RotatedSegment { id, segment, wal })
+        RotatedSegment { id, segment, wal }
     }
 
     pub(super) fn metadata(&self) -> Metadata {
@@ -126,22 +126,17 @@ struct Active {
 }
 
 impl Active {
-    fn new(
-        directory: &Path,
-        id: SegmentID,
-        pos: Key,
-        wal_sync_period: Option<Duration>,
-    ) -> io::Result<Self> {
+    fn new(directory: &Path, id: SegmentID, pos: Key, wal_sync_period: Option<Duration>) -> Self {
         let path = QueueFile::WriteAheadLog(id).to_path(directory);
-        let wal = WriteAheadLog::new(path, wal_sync_period)?;
+        let wal = WriteAheadLog::new(path, wal_sync_period);
         let segment = MemorySegment::new(Some(wal));
         let reader = segment.open_pending_reader(pos);
 
-        Ok(Self {
+        Self {
             id,
             segment,
             reader,
-        })
+        }
     }
 }
 

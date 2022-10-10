@@ -14,29 +14,22 @@ use std::time::{Duration, Instant};
 use std::{fs, io};
 
 pub struct WriteAheadLog {
-    file: File,
+    file: Option<File>,
     path: PathBuf,
     last_sync: Instant,
     sync_period: Option<Duration>,
 }
 
 impl WriteAheadLog {
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        sync_period: Option<Duration>,
-    ) -> io::Result<WriteAheadLog> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
+    pub fn new<P: AsRef<Path>>(path: P, sync_period: Option<Duration>) -> WriteAheadLog {
         let last_sync = Instant::now();
         let path = path.as_ref().to_path_buf();
-        Ok(WriteAheadLog {
-            file,
+        WriteAheadLog {
+            file: None,
             path,
             last_sync,
             sync_period,
-        })
+        }
     }
 
     pub fn read<P: AsRef<Path>>(path: P) -> Result<MemorySegment, ReadError> {
@@ -96,7 +89,16 @@ impl WriteAheadLog {
         }
         buf.put_u32(murmur3(&buf[4..], 0));
 
-        self.file.write_all(&buf)?;
+        if self.file.is_none() {
+            self.file = Some(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&self.path)?,
+            );
+        }
+
+        self.file.as_mut().unwrap().write_all(&buf)?;
 
         if let Some(sync_period) = self.sync_period {
             if sync_period == Duration::ZERO || self.last_sync.elapsed() > sync_period {
@@ -107,20 +109,26 @@ impl WriteAheadLog {
     }
 
     pub fn sync(&mut self) -> io::Result<()> {
-        if self.sync_period.is_some() {
-            let start = Instant::now();
-            self.file.sync_all()?;
-            let end = Instant::now();
-            trace!("sync_all completed in {:?}", end - start);
-            self.last_sync = end;
+        if let Some(file) = &self.file {
+            if self.sync_period.is_some() {
+                let start = Instant::now();
+                file.sync_all()?;
+                let end = Instant::now();
+                trace!("sync_all completed in {:?}", end - start);
+                self.last_sync = end;
+            }
         }
 
         Ok(())
     }
 
-    pub fn delete(self) -> io::Result<()> {
-        drop(self.file);
-        fs::remove_file(&self.path)
+    pub fn delete(mut self) -> io::Result<()> {
+        if let Some(file) = self.file.take() {
+            drop(file);
+            fs::remove_file(&self.path)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -165,7 +173,7 @@ mod tests {
     pub fn append_default_pending() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         let pending = Entry::Pending(Item {
             id: 0,
             deadline: Default::default(),
@@ -185,7 +193,7 @@ mod tests {
     pub fn append_default_tombstone() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         let tombstone = Entry::Tombstone {
             id: 0,
             deadline: Default::default(),
@@ -204,19 +212,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
 
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         wal.append(&[]).unwrap();
-
-        let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
-        assert_eq!(&entries, &[]);
-    }
-
-    #[test]
-    pub fn no_append() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.log");
-
-        drop(WriteAheadLog::new(&path, None).unwrap());
 
         let entries = WriteAheadLog::read(&path).unwrap().freeze().0.entries();
         assert_eq!(&entries, &[]);
@@ -227,7 +224,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
 
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         let mut gen = EntryGenerator::default();
         let mut rng = ChaCha20Rng::from_seed([0; 32]);
         let mut expected = vec![];
@@ -252,7 +249,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
 
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         let mut gen = EntryGenerator::default();
 
         for _ in 0..100 {
@@ -277,7 +274,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.log");
 
-        let mut wal = WriteAheadLog::new(&path, None).unwrap();
+        let mut wal = WriteAheadLog::new(&path, None);
         let mut gen = EntryGenerator::default();
 
         for _ in 0..100 {

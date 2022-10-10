@@ -113,7 +113,7 @@ impl Queue {
             .max()
             .unwrap_or(0);
 
-        let mutable = MutableSegment::open(&directory, next_segment_id, wal_sync_period)?;
+        let mutable = MutableSegment::open(&directory, next_segment_id, wal_sync_period);
         let immutable = MergedSegmentReader::new();
         let shared = Arc::new(Mutex::new(Shared {
             mutable,
