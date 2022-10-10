@@ -157,6 +157,43 @@ fn test_peek() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn test_blocking_dequeue() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let qrono = build_service(dir.path())?;
+
+    // Create the queue by enqueueing an item an hour into the future.
+    enqueue(
+        &qrono,
+        "q",
+        "",
+        DeadlineReq::Relative(Duration::from_secs(3600)),
+    )
+    .take()?;
+
+    // Start a blocking dequeue with 10 second timeout.
+    let deq = dequeue(&qrono, "q", 1, Duration::from_secs(10));
+
+    // Meanwhile, enqueue a value 100ms into the future
+    enqueue(
+        &qrono,
+        "q",
+        "Hello, world!",
+        DeadlineReq::Relative(Duration::from_millis(100)),
+    )
+    .take()?;
+
+    // Verify the dequeue waits for and returns the newly enqueued item.
+    let items = deq.take()?;
+    assert_eq!(1, items.len());
+    assert_eq!(
+        "Hello, world!",
+        std::str::from_utf8(&items[0].value).unwrap()
+    );
+
+    Ok(())
+}
+
 fn enqueue<B: Into<Bytes>>(
     qrono: &Qrono,
     queue: &str,

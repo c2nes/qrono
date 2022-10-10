@@ -8,3 +8,4 @@ flame.svg
 flamegraph.svg
 bench.sh
 dump.rdb
+*.profraw
