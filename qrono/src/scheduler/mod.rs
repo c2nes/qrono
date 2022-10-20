@@ -123,14 +123,9 @@ impl<T: Task> TaskContext<T> {
     }
 
     fn cancel(&self) {
-        loop {
-            match self.state.load() {
-                state @ (Idle | Running | Scheduled | Rescheduled) => {
-                    if self.state.compare_exchange(state, Canceled).is_ok() {
-                        break;
-                    }
-                }
-                Canceled | Failed | Complete => break,
+        while let state @ (Idle | Running | Scheduled | Rescheduled) = self.state.load() {
+            if self.state.compare_exchange(state, Canceled).is_ok() {
+                break;
             }
         }
 

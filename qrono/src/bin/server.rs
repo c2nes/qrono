@@ -110,7 +110,7 @@ fn build_qrono_service(opts: &Opts, scheduler: Scheduler) -> std::io::Result<Qro
         Some(Duration::from_millis(opts.wal_sync_period as u64))
     };
     Ok(Qrono::new(
-        scheduler.clone(),
+        scheduler,
         timer,
         id_generator,
         working_set,

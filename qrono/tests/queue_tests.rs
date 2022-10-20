@@ -1,10 +1,15 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::Hasher;
 use std::path::Path;
+use std::sync::Once;
 use std::time::Duration;
 
 use qrono::error::QronoError;
 use rand::seq::SliceRandom;
+use rand::RngCore;
 use tempfile::tempdir;
 
 use qrono::bytes::Bytes;
@@ -21,7 +26,16 @@ use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
 
+static LOG_INIT: Once = Once::new();
+
+fn init_logging() {
+    LOG_INIT.call_once(|| {
+        env_logger::init();
+    })
+}
+
 fn build_service(dir: &Path) -> anyhow::Result<Qrono> {
+    init_logging();
     let working_set_dir = dir.join("working_set");
     let queues_dir = dir.join("queues");
     std::fs::create_dir_all(&working_set_dir)?;
@@ -35,7 +49,7 @@ fn build_service(dir: &Path) -> anyhow::Result<Qrono> {
         id_generator,
         working_set,
         queues_dir,
-        scheduler.clone(),
+        scheduler,
         None,
     ))
 }
@@ -67,8 +81,7 @@ fn test_enqueue_dequeue_release() -> anyhow::Result<()> {
 
 #[test]
 fn test_ordered_by_deadline() -> anyhow::Result<()> {
-    env_logger::builder().format_timestamp_micros().init();
-
+    init_logging();
     let dir = tempdir()?;
     let qrono = build_service(dir.path())?;
 
@@ -114,14 +127,14 @@ fn test_requeue() -> anyhow::Result<()> {
 
     enqueue(&qrono, "q", "Hello, world", DeadlineReq::Now).take()?;
     let mut items = dequeue(&qrono, "q", 1, Duration::ZERO).take()?;
-    let item0 = items.pop().ok_or(fail("item expected"))?;
+    let item0 = items.pop().ok_or_else(|| fail("item expected"))?;
     assert_eq!(Timestamp::ZERO, item0.stats.requeue_time);
     assert_eq!(1, item0.stats.dequeue_count, "invalid dequeue_count");
 
     requeue(&qrono, "q", item0.id, DeadlineReq::Now).take()?;
 
     let mut items = dequeue(&qrono, "q", 1, Duration::ZERO).take()?;
-    let item1 = items.pop().ok_or(fail("item expected"))?;
+    let item1 = items.pop().ok_or_else(|| fail("item expected"))?;
     assert_eq!(item0.value, item1.value);
     assert_ne!(Timestamp::ZERO, item1.stats.requeue_time);
     assert_eq!(2, item1.stats.dequeue_count);
@@ -190,6 +203,61 @@ fn test_blocking_dequeue() -> anyhow::Result<()> {
         "Hello, world!",
         std::str::from_utf8(&items[0].value).unwrap()
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_large_queue() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let qrono = build_service(dir.path())?;
+
+    // Push ~1GB of data into the queue
+    let mut enqueue_hasher = DefaultHasher::new();
+    let mut enqueue_count = 0;
+    let mut pipeline = VecDeque::new();
+    for _ in 0..(100 * 1000) {
+        let mut value = vec![0u8; 10000];
+        rand::thread_rng().fill_bytes(&mut value);
+        enqueue_hasher.write(&value);
+        pipeline.push_back(enqueue(&qrono, "q", value, DeadlineReq::Now));
+        enqueue_count += 1;
+        if pipeline.len() == 100 {
+            pipeline.pop_front().unwrap().take()?;
+        }
+    }
+    for enqueue in pipeline {
+        enqueue.take()?;
+    }
+
+    // Dequeue and release all items in batches
+    let mut dequeue_hasher = DefaultHasher::new();
+    let mut dequeue_count = 0;
+    loop {
+        let items = match dequeue(&qrono, "q", 100, Duration::ZERO).take() {
+            Ok(items) => items,
+            Err(QronoError::NoItemReady) => break,
+            Err(err) => Err(err)?,
+        };
+        for item in &items {
+            dequeue_hasher.write(&item.value);
+            dequeue_count += 1;
+        }
+        let releases = items
+            .into_iter()
+            .map(|item| release(&qrono, "q", item.id))
+            .collect::<Vec<_>>();
+        for release in releases {
+            release.take()?;
+        }
+    }
+
+    // Verify queue is once again empty
+    let info = info(&qrono, "q").take()?;
+    assert_eq!(0, info.pending);
+    assert_eq!(0, info.dequeued);
+    assert_eq!(enqueue_count, dequeue_count);
+    assert_eq!(enqueue_hasher.finish(), dequeue_hasher.finish());
 
     Ok(())
 }
