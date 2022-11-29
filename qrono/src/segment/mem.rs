@@ -1,7 +1,10 @@
 use super::{Segment, SegmentReader};
-use crate::data::{Entry, Key};
-use std::collections::BTreeMap;
+use crate::{
+    alloc,
+    data::{Entry, Key},
+};
 use std::io;
+use std::{collections::BTreeMap};
 
 use crate::wal::WriteAheadLog;
 
@@ -32,6 +35,7 @@ impl Inner {
     }
 
     fn add(&mut self, entry: Entry) {
+        let mem_tracker = alloc::track();
         if let Entry::Tombstone { id, deadline, .. } = entry {
             if let Some(pair) = self.entries.remove(&Key::Pending { id, deadline }) {
                 // Tombstone cancels out existing pending item.
@@ -47,6 +51,7 @@ impl Inner {
 
         self.size += cost_estimate(&entry);
         self.entries.insert(entry.key(), entry);
+        self.size = ((self.size as isize) + mem_tracker.allocation_change()) as usize;
     }
 
     fn open_reader(inner: &Arc<Mutex<Self>>, pos: Key) -> io::Result<MemorySegmentReader> {
@@ -203,21 +208,17 @@ impl SegmentReader for MemorySegmentReader {
     }
 }
 
-// This estimate is empirically derived by measuring RSS
-// with various value sizes and number of entries.
-const ENTRY_OVERHEAD: usize = 200;
-
 fn cost_estimate(entry: &Entry) -> usize {
-    let value_size = match entry {
-        Entry::Pending(item) => item.value.len(),
+    match entry {
+        Entry::Pending(item) => item.value.size_on_heap(),
         Entry::Tombstone { .. } => 0,
-    };
-
-    value_size + ENTRY_OVERHEAD
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use super::super::{Segment, SegmentReader};
     use super::MemorySegment;
     use crate::bytes::Bytes;
@@ -255,17 +256,15 @@ mod tests {
         println!("{:?}", reader.next().unwrap());
     }
 
-    fn size_of<V>(v: V) -> usize {
-        let boxed = Box::new(v);
-        let start = crate::test_alloc::allocated();
-        drop(boxed);
-        start - crate::test_alloc::allocated()
-    }
-
     #[test]
     fn overhead() {
+        const OVERHEAD_ALLOWANCE: isize = 128;
+        const NOMINAL_ENTRY_SIZE: isize =
+            (mem::size_of::<Key>() + mem::size_of::<Entry>()) as isize;
+
         for m in [10, 1_000, 100_000] {
             let mut segment = MemorySegment::new(None);
+            let mem_tracker = crate::alloc::track();
             for i in 0..m {
                 segment
                     .add(Entry::Tombstone {
@@ -276,14 +275,23 @@ mod tests {
                     .unwrap();
             }
 
-            let overhead = (size_of(segment) as f64 / (m as f64)) as usize;
-            assert!(overhead <= super::ENTRY_OVERHEAD);
+            let actual = segment.size() as isize;
+            let expected = mem_tracker.allocation_change();
+            assert_eq!(expected, actual);
+
+            let m = m as isize;
+            let overhead = expected - (m * NOMINAL_ENTRY_SIZE);
+            let per_entry_overhead = overhead / m;
+            assert!(
+                0 <= per_entry_overhead && per_entry_overhead <= OVERHEAD_ALLOWANCE,
+                "{per_entry_overhead} >= {OVERHEAD_ALLOWANCE} or < 0"
+            );
         }
 
         for m in [10, 1_000, 100_000] {
             for n in [0, 64, 256, 1024] {
                 let mut segment = MemorySegment::new(None);
-                let start = crate::test_alloc::allocated();
+                let mem_tracker = crate::alloc::track();
                 for i in 0..m {
                     segment
                         .add(Entry::Pending(Item {
@@ -296,14 +304,14 @@ mod tests {
                         .unwrap();
                 }
 
-                let end = crate::test_alloc::allocated();
-                let overhead = (((end - start) - (n * m)) as f64 / (m as f64)) as usize;
-                assert!(overhead <= super::ENTRY_OVERHEAD);
-
-                let frozen = segment.freeze().0.entries();
-                let size = size_of(frozen);
-                let overhead = ((size - (n * m)) as f64 / (m as f64)) as usize;
-                assert!(overhead <= super::ENTRY_OVERHEAD);
+                let used = mem_tracker.allocation_change();
+                let value_size = Bytes::from("A".repeat(n)).size_on_heap() as isize;
+                let overhead = used - m * (NOMINAL_ENTRY_SIZE + value_size);
+                let per_entry_overhead = overhead / m;
+                assert!(
+                    0 <= per_entry_overhead && per_entry_overhead <= OVERHEAD_ALLOWANCE,
+                    "{per_entry_overhead} >= {OVERHEAD_ALLOWANCE} or < 0"
+                );
             }
         }
     }

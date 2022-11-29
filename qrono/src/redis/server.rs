@@ -10,9 +10,8 @@ use std::{io, thread};
 use bytes::{Buf, BytesMut};
 use log::{error, info, trace, warn};
 use parking_lot::Mutex;
-use slab::Slab;
-
 use protocol::Error;
+use slab::Slab;
 
 use crate::io::ReadInto;
 use crate::promise::{QronoFuture, QronoPromise};
@@ -122,6 +121,17 @@ impl Client {
                     Some(msg) => Value::BulkString(msg),
                     None => Value::SimpleString("PONG".to_string()),
                 }));
+            }
+            Request::ServerInfo => {
+                use jemalloc_ctl::epoch;
+                use jemalloc_ctl::stats;
+                epoch::advance().unwrap();
+                let allocated = stats::allocated::read().unwrap();
+                let resident = stats::resident::read().unwrap();
+                let mut stats = Vec::new();
+                writeln!(&mut stats, "bytes_allocated:{}", allocated,).unwrap();
+                writeln!(&mut stats, "bytes_resident:{}", resident).unwrap();
+                self.respond_now(Response::Value(Value::BulkString(stats.into())));
             }
         }
     }

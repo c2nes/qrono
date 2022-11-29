@@ -99,6 +99,10 @@ impl Qrono {
         qrono
     }
 
+    pub fn scheduler(&self) -> &Scheduler {
+        &self.scheduler
+    }
+
     fn open_queue(&self, queue_name: &str, queue_path: &Path) -> io::Result<Queue> {
         Queue::open(
             queue_name.to_string(),

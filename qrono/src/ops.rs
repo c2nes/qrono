@@ -129,6 +129,11 @@ pub struct InfoReq;
 pub struct InfoResp {
     pub pending: u64,
     pub dequeued: u64,
+    pub mem_size: u64,
+    // Pending bytes
+    // Dequeued bytes
+    // Mem size
+    // Disk size
 }
 
 #[derive(Debug)]

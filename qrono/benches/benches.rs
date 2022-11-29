@@ -59,7 +59,7 @@ pub fn mem_segment(c: &mut Criterion) {
         c.bench_with_input(id, &batch, |b, m| {
             b.iter_custom(move |iters| {
                 let wal_path = "/tmp/qrono.log";
-                let wal = WriteAheadLog::new(wal_path, None).unwrap();
+                let wal = WriteAheadLog::new(wal_path, None);
                 let mut s = MemorySegment::new(Some(wal));
                 let value = QronoBytes::from(vec![0; 64]);
                 let start = Instant::now();

@@ -1,9 +1,12 @@
 use serde::de::{Error, Unexpected, Visitor};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use std::alloc::Layout;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::sync::Arc;
+
+use crate::alloc;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Bytes {
@@ -21,6 +24,14 @@ impl Bytes {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn size_on_heap(&self) -> usize {
+        const ARC_INNER_OVERHEAD: usize = 16;
+        let slice: &[u8] = &self.data;
+        let size = std::mem::size_of_val(slice) + ARC_INNER_OVERHEAD;
+        let align = std::mem::align_of_val(slice);
+        alloc::size_of(Layout::from_size_align(size, align).unwrap())
     }
 }
 
@@ -124,5 +135,23 @@ impl Serialize for Bytes {
         S: Serializer,
     {
         serializer.serialize_str(&base64::encode(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::alloc;
+
+    use super::Bytes;
+
+    #[test]
+    fn test_size_on_heap() {
+        for i in 0..10000 {
+            let mem_tracker = alloc::track();
+            let b = Bytes::from(vec![0u8; i]);
+            let allocated = mem_tracker.allocation_change();
+            assert_ne!(allocated, 0);
+            assert_eq!(allocated, b.size_on_heap() as isize);
+        }
     }
 }

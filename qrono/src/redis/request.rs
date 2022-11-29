@@ -52,6 +52,7 @@ pub enum Request {
     Requeue(String, RequeueReq),
     Release(String, ReleaseReq),
     Info(String, InfoReq),
+    ServerInfo,
     Peek(String, PeekReq),
     Delete(String, DeleteReq),
     Compact(String, CompactReq),
@@ -82,8 +83,6 @@ impl Request {
             b'r' | b'R' if cmd.eq_ignore_ascii_case(b"REQUEUE") => Self::parse_requeue_req(args),
             b'r' | b'R' if cmd.eq_ignore_ascii_case(b"RELEASE") => Self::parse_release_req(args),
             b'i' | b'I' if cmd.eq_ignore_ascii_case(b"INFO") => Self::parse_info_req(args),
-            // "STAT" is an alias for INFO
-            b's' | b'S' if cmd.eq_ignore_ascii_case(b"STAT") => Self::parse_info_req(args),
             b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PEEK") => Self::parse_peek_req(args),
             b'p' | b'P' if cmd.eq_ignore_ascii_case(b"PING") => Self::parse_ping_req(args),
             b'd' | b'D' if cmd.eq_ignore_ascii_case(b"DELETE") => Self::parse_delete_req(args),
@@ -243,16 +242,16 @@ impl Request {
         Ok(Request::Peek(queue, PeekReq))
     }
 
-    // INFO <queue>
+    // INFO [<queue>]
     fn parse_info_req(mut args: RawRequest) -> Result<Request, Response> {
         match args.len() {
-            1 => {}
-            n => return Err(Self::err_invalid_argument_count(n)),
-        };
-
-        let queue = Self::parse_queue_name(args.next()?)?;
-
-        Ok(Request::Info(queue, InfoReq))
+            0 => Ok(Request::ServerInfo),
+            1 => {
+                let queue = Self::parse_queue_name(args.next()?)?;
+                Ok(Request::Info(queue, InfoReq))
+            }
+            n => Err(Self::err_invalid_argument_count(n)),
+        }
     }
 
     // DELETE <queue>
@@ -363,6 +362,7 @@ impl Response {
                 Value::Array(vec![
                     Value::Integer(v.pending as i64),
                     Value::Integer(v.dequeued as i64),
+                    Value::Integer(v.mem_size as i64),
                 ])
             }),
             Response::Error(msg) => Value::Error(msg),

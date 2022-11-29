@@ -26,6 +26,157 @@ use qrono::service::Qrono;
 use qrono::timer;
 use qrono::working_set::WorkingSet;
 
+mod test_alloc {
+    use jemallocator::usable_size;
+    use qrono::{alloc::QronoAllocator, scheduler::Spawn};
+    use std::{
+        alloc::{GlobalAlloc, Layout},
+        cell::Cell,
+        collections::{hash_map::Entry, HashMap},
+        sync::{
+            atomic::{AtomicUsize, Ordering::Relaxed},
+            Mutex,
+        },
+    };
+
+    #[global_allocator]
+    static GLOBAL: TestAlloc = TestAlloc(QronoAllocator::new());
+
+    thread_local! {
+        static THREAD_ID: Cell<usize> = Cell::new(0);
+        static GUARD: Cell<bool> = Cell::new(false);
+    }
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+    static ALLOCS: Mutex<Option<HashMap<usize, isize>>> = Mutex::new(None);
+
+    struct TestAlloc(QronoAllocator);
+
+    impl TestAlloc {
+        fn record_delta(&self, size: isize) {
+            guard(|| {
+                let id = THREAD_ID.with(|v| v.get());
+                with_allocs(|allocs| {
+                    if allocs.is_none() {
+                        *allocs = Some(HashMap::new());
+                    }
+                    match allocs.as_mut().unwrap().entry(id) {
+                        Entry::Occupied(mut e) => {
+                            e.insert(*e.get() + size);
+                        }
+                        Entry::Vacant(e) => {
+                            e.insert(size);
+                        }
+                    }
+                })
+            });
+        }
+
+        fn add(&self, size: usize) {
+            self.record_delta(size as isize)
+        }
+
+        fn sub(&self, size: usize) {
+            self.record_delta(-(size as isize))
+        }
+    }
+
+    fn guard<F: FnOnce()>(f: F) {
+        if THREAD_ID.with(|v| v.get()) == 0 {
+            return;
+        }
+        GUARD.with(|v| {
+            if !v.replace(true) {
+                f();
+                v.set(false);
+            }
+        })
+    }
+
+    unsafe impl GlobalAlloc for TestAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let res = self.0.alloc(layout);
+            if !res.is_null() {
+                self.add(usable_size(res));
+            }
+            res
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            self.sub(usable_size(ptr));
+            self.0.dealloc(ptr, layout)
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let res = self.0.alloc_zeroed(layout);
+            if !res.is_null() {
+                self.add(usable_size(res));
+            }
+            res
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let old_size = usable_size(ptr);
+            let res = self.0.realloc(ptr, layout, new_size);
+            if !res.is_null() {
+                self.add(usable_size(res));
+                self.sub(old_size);
+            }
+            res
+        }
+    }
+
+    fn with_allocs<F: FnOnce(&mut Option<HashMap<usize, isize>>) -> R, R>(f: F) -> R {
+        let mut allocs = ALLOCS.lock().unwrap();
+        f(&mut *allocs)
+    }
+
+    pub fn allocated() -> isize {
+        with_allocs(|allocs| match allocs.as_ref() {
+            Some(allocs) => {
+                let id = THREAD_ID.with(|v| v.get());
+                allocs.get(&id).copied().unwrap_or(0)
+            }
+            None => 0,
+        })
+    }
+
+    pub fn wrap_spawn<S: Spawn>(spawn: S) -> AllocTrackingSpawn<S> {
+        let id = THREAD_ID.with(|v| v.get());
+        AllocTrackingSpawn { id, spawn }
+    }
+
+    pub struct AllocTrackingSpawn<S: Spawn> {
+        id: usize,
+        spawn: S,
+    }
+
+    impl<S: Spawn> Spawn for AllocTrackingSpawn<S> {
+        fn spawn(&self, op: Box<dyn FnOnce() + Send>) {
+            let id = self.id;
+            self.spawn.spawn(Box::new(move || {
+                THREAD_ID.with(|v| v.set(id));
+                op()
+                // We intentionally leave THREAD_ID set to `id` rather
+                // than saving and restoring its value after calling `op`.
+                // Spawning tasks requires allocating memory (as we did to
+                // construct this very boxed fn) that is dropped and freed
+                // with the Spawn impl after the op is invoked. Restoring
+                // the original THREAD_ID (which is likely unset) causes
+                // memory allocated on the spawning thread to be counted
+                // against one thread while the corresponding deallocation
+                // is counted againt another (or none at all assuming the
+                // default THREAD_ID of 0 is restored).
+            }));
+        }
+    }
+
+    pub fn start_test() {
+        let id = NEXT_ID.fetch_add(1, Relaxed);
+        THREAD_ID.with(|val| val.set(id));
+    }
+}
+
 static LOG_INIT: Once = Once::new();
 
 fn init_logging() {
@@ -40,7 +191,7 @@ fn build_service(dir: &Path) -> anyhow::Result<Qrono> {
     let queues_dir = dir.join("queues");
     std::fs::create_dir_all(&working_set_dir)?;
     std::fs::create_dir_all(&queues_dir)?;
-    let scheduler = Scheduler::new(StaticPool::new(1));
+    let scheduler = Scheduler::new(test_alloc::wrap_spawn(StaticPool::new(1)));
     let id_generator = IdGenerator::new(dir.join("id"), scheduler.clone())?;
     let working_set = WorkingSet::new(vec![(working_set_dir, scheduler.clone())])?;
     Ok(Qrono::new(
@@ -208,6 +359,56 @@ fn test_blocking_dequeue() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_memory_estimate() -> anyhow::Result<()> {
+    test_memory_estimate_n(0)?;
+    test_memory_estimate_n(10)?;
+    test_memory_estimate_n(100)?;
+    test_memory_estimate_n(1000)?;
+    Ok(())
+}
+
+fn test_memory_estimate_n(n: usize) -> anyhow::Result<()> {
+    test_alloc::start_test();
+
+    let dir = tempdir()?;
+    let qrono = build_service(dir.path())?;
+
+    // Ensure the queue exists before measuring the baseline memory usage.
+    enqueue(&qrono, "q", "", DeadlineReq::Now).take()?;
+    let items = dequeue(&qrono, "q", 1, Duration::ZERO).take()?;
+    release(&qrono, "q", items[0].id).take()?;
+
+    const M: usize = 100;
+    let value = vec![0u8; n];
+    eprintln!("Starting test...");
+
+    let baseline = test_alloc::allocated();
+    let mut count = 0;
+    for _ in 0..1000 {
+        enqueue_many(&qrono, "q", M, || {
+            (Bytes::from(&value[..]), DeadlineReq::Now)
+        })?;
+        count += M;
+        let info = info(&qrono, "q").take()?;
+        let actual = info.mem_size;
+        let expected = (test_alloc::allocated() - baseline) as f64;
+        let actual = actual as f64;
+        let diff = actual - expected;
+        let diff_percent = 100.0 * diff / actual;
+
+        println!("{n}\t{count}\t{actual}\t{expected}\t{diff}\t{diff_percent:.2}%");
+        assert!(
+            diff.abs() < 100.0 * 1024.0 || diff_percent.abs() < 1.0,
+            "expected memory estimate to be within 1.0%, actually |{actual} - {expected} = {diff}| > {diff_percent:.2}%",
+        );
+    }
+
+    Ok(())
+}
+
+// Slow. Do not run by default.
+#[ignore = "slow"]
+#[test]
 fn test_large_queue() -> anyhow::Result<()> {
     let dir = tempdir()?;
     let qrono = build_service(dir.path())?;
@@ -259,6 +460,31 @@ fn test_large_queue() -> anyhow::Result<()> {
     assert_eq!(enqueue_count, dequeue_count);
     assert_eq!(enqueue_hasher.finish(), dequeue_hasher.finish());
 
+    Ok(())
+}
+
+fn enqueue_many<F, B>(
+    qrono: &Qrono,
+    queue: &str,
+    count: usize,
+    mut producer: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> (B, DeadlineReq),
+    B: Into<Bytes>,
+{
+    const PIPELINE_LENGTH: usize = 100;
+    let mut pipeline = VecDeque::new();
+    for _ in 0..count {
+        let (value, deadline) = producer();
+        pipeline.push_back(enqueue(&qrono, queue, value, deadline));
+        if pipeline.len() == PIPELINE_LENGTH {
+            pipeline.pop_front().unwrap().take()?;
+        }
+    }
+    for enqueue in pipeline {
+        enqueue.take()?;
+    }
     Ok(())
 }
 

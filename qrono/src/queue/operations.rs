@@ -307,8 +307,13 @@ impl Task for OpProcessor {
 
                         let dequeued = self.working_set_ids.len() as u64;
                         let pending = total.pending_count - total.tombstone_count - dequeued;
+                        let mem_size = locked.mutable.size() as u64;
 
-                        InfoResp { pending, dequeued }
+                        InfoResp {
+                            pending,
+                            dequeued,
+                            mem_size,
+                        }
                     });
 
                     responses.push(Response::Info(resp, Ok(val.clone())));

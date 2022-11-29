@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use log::info;
+use qrono::alloc::QronoAllocator;
 use rayon::ThreadPoolBuilder;
 use structopt::StructOpt;
 
@@ -21,7 +22,8 @@ use qrono::working_set::WorkingSet;
 use qrono_promise::{Future, Promise};
 
 #[global_allocator]
-static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+static GLOBAL: QronoAllocator = QronoAllocator::new();
+//static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 // TODO:
 //  - Error handling (audit unwrap calls)
