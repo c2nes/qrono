@@ -82,6 +82,16 @@ impl<T: Task> Drop for TaskHandle<T> {
     }
 }
 
+impl<T> Debug for State<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "Idle"),
+            Self::Runnable => write!(f, "Runnable"),
+            Self::Complete(_) => write!(f, "Complete(_)"),
+        }
+    }
+}
+
 pub struct TaskContext<T: Task> {
     pool: Arc<dyn Spawn>,
     #[allow(clippy::type_complexity)]
@@ -185,15 +195,16 @@ impl<T: Task> TaskContext<T> {
                     return;
                 }
                 Complete | Failed => panic!("BUG"),
-                state => {
+                Running => {
                     if reschedule {
-                        if self.state.compare_exchange(state, Scheduled).is_ok() {
+                        if self.state.compare_exchange(Running, Scheduled).is_ok() {
                             return self.submit();
                         }
-                    } else if self.state.compare_exchange(state, Idle).is_ok() {
+                    } else if self.state.compare_exchange(Running, Idle).is_ok() {
                         return;
                     }
                 }
+                Idle | Scheduled => panic!("invalid state?"),
             };
         }
     }
@@ -256,11 +267,11 @@ impl AtomicScheduleState {
     }
 
     fn load(&self) -> ScheduleState {
-        self.0.load(Ordering::Relaxed).into()
+        self.0.load(Ordering::Acquire).into()
     }
 
     fn store(&self, val: ScheduleState) {
-        self.0.store(val.into(), Ordering::Relaxed)
+        self.0.store(val.into(), Ordering::Release)
     }
 
     fn compare_exchange(
@@ -271,8 +282,8 @@ impl AtomicScheduleState {
         match self.0.compare_exchange(
             current.into(),
             new.into(),
-            Ordering::Relaxed,
-            Ordering::Relaxed,
+            Ordering::AcqRel,
+            Ordering::Acquire,
         ) {
             Ok(state) => Ok(state.into()),
             Err(state) => Err(state.into()),
