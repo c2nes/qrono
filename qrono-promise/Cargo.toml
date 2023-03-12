@@ -15,3 +15,5 @@ parking_lot_core = "0.9"
 criterion = { version = "0.3", default-features = false }
 jemallocator = "0.5"
 crossbeam = "0.8"
+futures = "0.3"
+rand = "0.8"

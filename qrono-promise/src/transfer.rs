@@ -97,11 +97,11 @@ impl<T> Drop for Sender<T> {
                 drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
             }
         } else {
-            let inner = unsafe { self.inner.as_mut() };
+            let inner = unsafe { self.inner.as_ref() };
             let prev = inner.state.fetch_add(DROPPED_BIT, Relaxed);
 
             if prev & DROPPED_BIT != 0 {
-                drop(unsafe { Box::from_raw(inner) });
+                drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
             } else if prev & PARKED_BIT != 0 {
                 let key = self.inner.as_ptr() as usize;
                 unsafe { parking_lot_core::unpark_one(key, |_res| DEFAULT_UNPARK_TOKEN) };
@@ -117,7 +117,7 @@ impl<T> Receiver<T> {
 
     pub fn try_receive(mut self) -> Result<T, Self> {
         unsafe {
-            let inner = self.inner.as_mut();
+            let inner = self.inner.as_ref();
             self.state = inner.state.load(Acquire);
             if self.state & SENT_BIT != 0 {
                 Ok(inner.take_value())
@@ -129,7 +129,7 @@ impl<T> Receiver<T> {
 
     pub fn receive(mut self) -> T {
         unsafe {
-            let inner = self.inner.as_mut();
+            let inner = self.inner.as_ref();
             self.state = inner.state.load(Acquire);
             if self.state & SENT_BIT != 0 {
                 inner.take_value()

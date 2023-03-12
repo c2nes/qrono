@@ -334,10 +334,13 @@ mod transferable {
 mod test {
     use super::Future;
     use parking_lot::Mutex;
+    use rand::distributions::Uniform;
+    use rand::prelude::Distribution;
+    use rand::Rng;
     use std::panic::AssertUnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
     #[test]
@@ -447,5 +450,35 @@ mod test {
         let rx = Future::completed("Hello, world!");
         assert!(rx.is_complete());
         assert_eq!("Hello, world!", rx.take());
+    }
+
+    #[test]
+    fn std() {
+        let (tx, rx) = mpsc::channel::<super::Promise<usize>>();
+        let range = Uniform::new(Duration::ZERO, Duration::from_micros(500));
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut rng = rand::thread_rng();
+                for (i, f) in rx.into_iter().enumerate() {
+                    if rng.gen_bool(0.5) {
+                        std::thread::sleep(range.sample(&mut rng));
+                    }
+                    f.complete(i);
+                }
+            });
+
+            let mut rng = rand::thread_rng();
+            for i in 0..1000 {
+                let (pro, fut) = Future::new_std();
+                tx.send(pro).unwrap();
+                if rng.gen_bool(0.5) {
+                    std::thread::sleep(range.sample(&mut rng));
+                }
+                assert_eq!(i, futures::executor::block_on(fut));
+            }
+
+            drop(tx)
+        });
     }
 }
