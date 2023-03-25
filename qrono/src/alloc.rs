@@ -63,16 +63,22 @@ unsafe impl GlobalAlloc for QronoAllocator {
     }
 }
 
+#[cfg(miri)]
 pub fn size_of(layout: Layout) -> usize {
-    if layout.size() == 0 {
-        return 0;
-    }
+    return layout.size();
+}
 
-    let flags = layout_to_flags(layout.align(), layout.size());
-    unsafe {
-        // SAFETY: layout.size() == 0 is handled above
-        jemalloc_sys::nallocx(layout.size(), flags)
-    }
+#[cfg(not(miri))]
+pub fn size_of(layout: Layout) -> usize {
+        if layout.size() == 0 {
+            return 0;
+        }
+
+        let flags = layout_to_flags(layout.align(), layout.size());
+        unsafe {
+            // SAFETY: layout.size() == 0 is handled above
+            jemalloc_sys::nallocx(layout.size(), flags)
+        }
 }
 
 pub fn track() -> Tracker {

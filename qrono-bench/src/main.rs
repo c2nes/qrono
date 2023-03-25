@@ -88,10 +88,12 @@ impl FromStr for HostAndPort {
 impl IntoConnectionInfo for &HostAndPort {
     fn into_connection_info(self) -> RedisResult<ConnectionInfo> {
         Ok(ConnectionInfo {
-            addr: Box::new(ConnectionAddr::Tcp(self.0.clone(), self.1)),
-            db: 0,
-            username: None,
-            passwd: None,
+            addr: ConnectionAddr::Tcp(self.0.clone(), self.1),
+            redis: redis::RedisConnectionInfo {
+                db: 0,
+                username: None,
+                password: None,
+            },
         })
     }
 }

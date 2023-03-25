@@ -45,7 +45,7 @@ impl Inner {
 
         let mut ready = Vec::with_capacity(ready_keys.len());
         for key in &ready_keys {
-            self.deadlines.remove(key.1 as usize);
+            self.deadlines.remove(key.1);
             ready.push(self.callbacks.remove(key).unwrap())
         }
 
@@ -137,7 +137,7 @@ impl Scheduler {
         let mut locked = self.inner.lock();
         while locked.waiter_observed_schedule_count != Some(expected) {
             let res = self.notify_waiting.wait_until(&mut locked, deadline);
-            let actual = (*locked).waiter_observed_schedule_count;
+            let actual = locked.waiter_observed_schedule_count;
             assert!(
                 !res.timed_out(),
                 "expected {expected} observed schedules, actually {actual:?}"

@@ -334,7 +334,7 @@ impl<'a> Transaction<'a> {
 impl WorkingSet {
     pub fn new(stripes: Vec<(PathBuf, Scheduler)>) -> io::Result<WorkingSet> {
         for (directory, _) in &stripes {
-            fs::create_dir_all(&directory)?;
+            fs::create_dir_all(directory)?;
         }
 
         let stripes = stripes

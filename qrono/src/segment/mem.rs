@@ -283,7 +283,7 @@ mod tests {
             let overhead = expected - (m * NOMINAL_ENTRY_SIZE);
             let per_entry_overhead = overhead / m;
             assert!(
-                0 <= per_entry_overhead && per_entry_overhead <= OVERHEAD_ALLOWANCE,
+                (0..=OVERHEAD_ALLOWANCE).contains(&per_entry_overhead),
                 "{per_entry_overhead} >= {OVERHEAD_ALLOWANCE} or < 0"
             );
         }
@@ -309,7 +309,7 @@ mod tests {
                 let overhead = used - m * (NOMINAL_ENTRY_SIZE + value_size);
                 let per_entry_overhead = overhead / m;
                 assert!(
-                    0 <= per_entry_overhead && per_entry_overhead <= OVERHEAD_ALLOWANCE,
+                    (0..=OVERHEAD_ALLOWANCE).contains(&per_entry_overhead),
                     "{per_entry_overhead} >= {OVERHEAD_ALLOWANCE} or < 0"
                 );
             }

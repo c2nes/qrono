@@ -118,7 +118,7 @@ impl OpProcessor {
         let mut segment_writer = self.segment_writer_future.take().0;
 
         // Force flush to improve startup time.
-        (*self.shared.lock()).force_flush = true;
+        self.shared.lock().force_flush = true;
         segment_writer.flush().expect("TODO: Handle error");
 
         // Shut down the writer which will handle gracefully stopping the compactor as well.

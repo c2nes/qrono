@@ -86,7 +86,7 @@ pub trait Decoder: Buf {
         let id = unpack_shift!(packed, 64, ID);
         let deadline_millis = unpack!(packed, 48, i64);
         let deadline = Timestamp::from_millis(deadline_millis);
-        match kind as u8 {
+        match kind {
             PENDING => Key::Pending { deadline, id },
             TOMBSTONE => Key::Tombstone { deadline, id },
             _ => panic!("unrecognized key type {kind:?}"),

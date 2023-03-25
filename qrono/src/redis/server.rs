@@ -131,7 +131,7 @@ impl Client {
                 let mut stats = Vec::new();
                 writeln!(&mut stats, "bytes_allocated:{}", allocated,).unwrap();
                 writeln!(&mut stats, "bytes_resident:{}", resident).unwrap();
-                self.respond_now(Response::Value(Value::BulkString(stats.into())));
+                self.respond_now(Response::Value(Value::BulkString(stats)));
             }
         }
     }

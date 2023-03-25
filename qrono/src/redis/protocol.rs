@@ -461,7 +461,7 @@ pub fn parse_unsigned(src: &[u8]) -> Result<u64, Error> {
     Ok(scale)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use crate::redis::protocol::{put_i64, put_u32, put_u64, Error, Value};
 

@@ -30,6 +30,7 @@ pub fn router(qrono: Arc<Qrono>) -> Router<Body> {
         .route("/queues/:queue/release", post(release))
         .route("/queues/:queue/peek", get(peek))
         .route("/queues/:queue/compact", post(compact))
+        .route("/queues/:queue/poke", get(poke))
         .route("/queues/:queue", get(info))
         .route("/queues/:queue", delete(delete_queue))
         .layer(qrono)
@@ -109,6 +110,14 @@ async fn compact(
     let (promise, future) = QronoFuture::new_std();
     qrono.compact(&queue_name, CompactReq, promise);
     future.await.map(Json)
+}
+
+async fn poke(
+    Extension(qrono): QronoExt,
+    Path(queue_name): Path<String>,
+) -> QronoResponse<CompactResp> {
+    qrono.poke(&queue_name);
+    Ok(Json(()))
 }
 
 struct Req<T>(T);

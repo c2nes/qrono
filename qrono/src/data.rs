@@ -284,7 +284,8 @@ mod serde_impl {
             S: Serializer,
         {
             serializer.serialize_str(
-                &Utc.timestamp_millis(self.millis())
+                &Utc.timestamp_millis_opt(self.millis())
+                    .unwrap()
                     .to_rfc3339_opts(SecondsFormat::Millis, true),
             )
         }

@@ -199,6 +199,10 @@ impl Queue {
         self.execute(Op::Compact(req, resp));
     }
 
+    pub(crate) fn poke(&self) {
+        self.op_processor.schedule().ignore_err()
+    }
+
     pub(crate) fn mark_deleted(&self) -> io::Result<()> {
         File::create(self.directory.join("deleted"))?;
         Ok(())

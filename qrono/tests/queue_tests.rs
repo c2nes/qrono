@@ -128,7 +128,7 @@ mod test_alloc {
 
     fn with_allocs<F: FnOnce(&mut Option<HashMap<usize, isize>>) -> R, R>(f: F) -> R {
         let mut allocs = ALLOCS.lock().unwrap();
-        f(&mut *allocs)
+        f(&mut allocs)
     }
 
     pub fn allocated() -> isize {
@@ -477,7 +477,7 @@ where
     let mut pipeline = VecDeque::new();
     for _ in 0..count {
         let (value, deadline) = producer();
-        pipeline.push_back(enqueue(&qrono, queue, value, deadline));
+        pipeline.push_back(enqueue(qrono, queue, value, deadline));
         if pipeline.len() == PIPELINE_LENGTH {
             pipeline.pop_front().unwrap().take()?;
         }

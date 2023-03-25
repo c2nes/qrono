@@ -21,9 +21,9 @@ use qrono::timer;
 use qrono::working_set::WorkingSet;
 use qrono_promise::{Future, Promise};
 
+#[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: QronoAllocator = QronoAllocator::new();
-//static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 // TODO:
 //  - Error handling (audit unwrap calls)

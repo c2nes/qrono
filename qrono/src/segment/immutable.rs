@@ -467,7 +467,7 @@ impl ImmutableSegmentReader {
                             self.src.seek(SeekFrom::Start(pos))?;
                         }
                         None => {
-                            self.src.seek(SeekFrom::Start(0))?;
+                            self.src.rewind()?;
                             return self.read_next_key();
                         }
                     }
@@ -572,7 +572,7 @@ impl SegmentReader for ImmutableSegmentReader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use crate::data::{Entry, Key, Timestamp, ID};
     use crate::segment::mock::MockSegmentReader;

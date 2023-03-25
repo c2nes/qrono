@@ -67,7 +67,7 @@ mod murmur {
         fmix32(h1)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(miri)))]
     mod tests {
         use rand::Rng;
         use std::io::Cursor;

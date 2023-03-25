@@ -213,6 +213,12 @@ impl Qrono {
         resp.complete(Err(QronoError::NoSuchQueue))
     }
 
+    pub fn poke(&self, queue: &str) {
+        if let Some(queue) = self.queues.get(queue) {
+            queue.poke();
+        }
+    }
+
     pub fn list(&self) -> Vec<String> {
         self.queues.iter().map(|e| e.key().to_string()).collect()
     }

@@ -136,7 +136,7 @@ impl Inner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use crate::id_generator::IdGenerator;
     use crate::scheduler::{Scheduler, Unpooled};

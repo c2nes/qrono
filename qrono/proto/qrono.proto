@@ -7,6 +7,7 @@ import "google/protobuf/timestamp.proto";
 
 service Qrono {
   rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+  rpc EnqueueMany(stream EnqueueRequest) returns (stream EnqueueResponse);
   rpc Dequeue(DequeueRequest) returns (DequeueResponse);
   rpc Requeue(RequeueRequest) returns (RequeueResponse);
   rpc Release(ReleaseRequest) returns (ReleaseResponse);

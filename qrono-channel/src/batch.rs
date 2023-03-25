@@ -4,6 +4,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
 use std::ptr::NonNull;
+use std::slice::SliceIndex;
 use std::{mem, ptr};
 
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
@@ -24,7 +25,7 @@ impl<T> Slot<T> {
     ///
     /// If there is an existing value in the slot it is replaced without dropping. To drop
     /// an existing value, `take()` should be called first.
-    unsafe fn write(&mut self, value: T) {
+    unsafe fn write(&self, value: T) {
         self.value.get().write(MaybeUninit::new(value));
         self.ready.store(true, Release);
     }
@@ -33,7 +34,7 @@ impl<T> Slot<T> {
         let backoff = Backoff::new();
         while self
             .ready
-            .compare_exchange_weak(true, false, Acquire, Relaxed)
+            .compare_exchange_weak(true, false, Acquire, Acquire)
             .is_err()
         {
             backoff.spin();
@@ -139,7 +140,7 @@ impl<T> Shared<T> {
                         self.push_new_tail(new_block, tail, next_index);
                     }
 
-                    (*tail).slots.get_unchecked_mut(pos).write(value);
+                    (*tail).slots.get_unchecked(pos).write(value);
                     return;
                 },
                 Err(idx) => {
@@ -172,7 +173,7 @@ impl<T> Drop for Sender<T> {
             let shared = self.shared.as_ref();
             let dropped = shared.dropped.swap(true, Relaxed);
             if dropped {
-                drop(Box::from(self.shared.as_ptr()))
+                drop(Box::from_raw(self.shared.as_ptr()))
             }
         }
     }
@@ -324,7 +325,7 @@ impl<T> Drop for Receiver<T> {
 
                 shared.tail.block.store(ptr::null_mut(), Release);
             } else {
-                drop(Box::from(self.shared.as_ptr()))
+                drop(Box::from_raw(self.shared.as_ptr()))
             }
 
             let mut block = self.head.as_ptr();
@@ -601,9 +602,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn spsc() {
-        const N: i64 = 100_000;
+        const N: i64 = if cfg!(miri) { 1000 } else { 100_000 };
         let (tx, mut rx) = channel::<i64>();
         let barrier = Barrier::new(2);
         crossbeam::scope(|scope| {
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn serial() {
-        const N: i64 = 100_000;
+        const N: i64 = if cfg!(miri) { 1000 } else { 100_000 };
         let (tx, mut rx) = channel::<i64>();
         for i in 0..N {
             tx.send(i);
@@ -644,9 +644,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn mpsc() {
-        const N: i64 = 10_000;
+        const N: i64 = if cfg!(miri) { 100 } else { 10_000 };
         const M: i64 = 10;
         let (tx, mut rx) = channel::<i64>();
         let barrier = Barrier::new((M + 1) as usize);
@@ -654,12 +653,16 @@ mod tests {
             for i in 0..M {
                 let barrier = &barrier;
                 let tx = &tx;
-                scope.spawn(move |_| {
-                    barrier.wait();
-                    for j in 0..N {
-                        tx.send(i * N + j);
-                    }
-                });
+                scope
+                    .builder()
+                    .name(format!("Producer-{}", i))
+                    .spawn(move |_| {
+                        barrier.wait();
+                        for j in 0..N {
+                            tx.send(i * N + j);
+                        }
+                    })
+                    .unwrap();
             }
 
             barrier.wait();
@@ -675,5 +678,19 @@ mod tests {
             assert_eq!((N * M) * (N * M - 1) / 2, sum);
         })
         .unwrap();
+    }
+
+    #[test]
+    fn drop_tx_then_rx() {
+        let (tx, rx) = channel::<()>();
+        drop(tx);
+        drop(rx);
+    }
+
+    #[test]
+    fn drop_rx_then_tx() {
+        let (tx, rx) = channel::<()>();
+        drop(rx);
+        drop(tx);
     }
 }

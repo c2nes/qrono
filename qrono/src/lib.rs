@@ -26,6 +26,6 @@ pub mod wait_group;
 pub mod wal;
 pub mod working_set;
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 #[global_allocator]
 static ALLOC: alloc::QronoAllocator = alloc::QronoAllocator::new();
