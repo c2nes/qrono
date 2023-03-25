@@ -4,7 +4,6 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
 use std::ptr::NonNull;
-use std::slice::SliceIndex;
 use std::{mem, ptr};
 
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
@@ -23,14 +22,24 @@ impl<T> Slot<T> {
     ///
     /// ## Safety
     ///
-    /// If there is an existing value in the slot it is replaced without dropping. To drop
-    /// an existing value, `take()` should be called first.
+    /// This slot must be empty when this method is called. That is, this must be a new
+    /// slot or `take()` must have been called to consume the previously written value.
+    ///
+    /// Failure to observe this rule will cause any value currently stored in this slot to
+    /// be replaced without dropping and permits data races on `value` with a concurrent
+    /// reader.
     unsafe fn write(&self, value: T) {
         self.value.get().write(MaybeUninit::new(value));
         self.ready.store(true, Release);
     }
 
-    fn take(&mut self) -> T {
+    /// Wait for and take the value written to the slot.
+    ///
+    /// ## Safety
+    ///
+    /// Must not be called while any reference returned by `borrow()` is still alive. Doing
+    /// so creates aliasing violations.
+    unsafe fn take(&self) -> T {
         let backoff = Backoff::new();
         while self
             .ready
@@ -44,6 +53,7 @@ impl<T> Slot<T> {
         unsafe { ptr::read(self.value.get() as *const T) }
     }
 
+    /// Wait for a value to be written and return a reference to it.
     fn borrow(&self) -> &T {
         let backoff = Backoff::new();
         while !self.ready.load(Acquire) {
@@ -53,7 +63,7 @@ impl<T> Slot<T> {
         // SAFETY:
         // - `write` sets `ready` to true only after writing an initialized value.
         // - The reference is valid until `take` or `write` are called, both of which
-        //   require a mutable reference.
+        //   are unsafe.
         unsafe { &*(self.value.get() as *const T) }
     }
 }
@@ -273,21 +283,18 @@ impl<T> Receiver<T> {
 
         if batch_head.is_null() {
             Batch {
-                block: None,
+                block: ptr::null_mut(),
                 len: 0,
                 pos: 0,
                 block_pos: 0,
                 free: &mut self.free,
             }
         } else {
-            let block = unsafe {
-                // Terminate the linked list
-                (*batch_tail).next = AtomicPtr::default();
-                Box::from_raw(batch_head)
-            };
+            // Terminate the linked list.
+            unsafe { (*batch_tail).next = AtomicPtr::default() };
 
             Batch {
-                block: Some(block),
+                block: batch_head,
                 len: batch_len,
                 pos: 0,
                 block_pos: 0,
@@ -345,7 +352,7 @@ impl<T> Drop for Receiver<T> {
 }
 
 pub struct Batch<'a, T> {
-    block: Option<Box<Block<T>>>,
+    block: *mut Block<T>,
     len: usize,
     pos: usize,
     block_pos: usize,
@@ -363,7 +370,10 @@ impl<'a, T> Batch<'a, T> {
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
-            block: self.block.as_ref().map(|b| b.as_ref()),
+            // SAFETY: Aliasing enforced by &self Batch lifetime and blocks being
+            //   owned by at most one Batch at time (blocks are only recycled after
+            //   being removed from a Batch).
+            block: unsafe { self.block.as_ref() },
             len: self.len,
             pos: self.pos,
             block_pos: self.block_pos,
@@ -376,29 +386,32 @@ impl<'a, T> Iterator for Batch<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.block_pos == SLOTS && self.pos < self.len {
-            unsafe {
-                let mut old = self.block.take().unwrap_unchecked();
-                let ptr = mem::take(&mut old.next);
-                *self.free = Some(old);
-
-                self.block = Some(Box::from_raw(ptr.into_inner()));
-                self.block_pos = 0;
-            }
+            // SAFETY: The block was originally allocted by Box and no other
+            //   references to the Block are live at this point given that
+            //   that all values from all Slots in the Block have been taken.
+            let mut old = unsafe { Box::from_raw(self.block) };
+            let ptr = mem::take(&mut old.next);
+            *self.free = Some(old);
+            self.block = ptr.into_inner();
+            self.block_pos = 0;
         }
 
-        match &mut self.block {
-            None => None,
-            Some(block) => {
-                if self.pos < self.len {
-                    let slot = &mut block.slots[self.block_pos];
-                    let val = slot.take();
-                    self.pos += 1;
-                    self.block_pos += 1;
-                    Some(val)
-                } else {
-                    None
-                }
-            }
+        if self.block.is_null() {
+            return None;
+        }
+
+        if self.pos < self.len {
+            // SAFETY: Block is non-null.
+            let slot = &unsafe { &*self.block }.slots[self.block_pos];
+            // SAFETY: There are no remaining borrows of this slot. The lifetime of any `borrow()`
+            //   of this slot is bounded by the lifetime of its corresponding Iter and no Iter
+            //   can be alive while we have a &mut reference to self.
+            let val = unsafe { slot.take() };
+            self.pos += 1;
+            self.block_pos += 1;
+            Some(val)
+        } else {
+            None
         }
     }
 }
@@ -410,8 +423,12 @@ impl<'a, T> Drop for Batch<'a, T> {
         for _ in self.by_ref() {}
 
         // Recycling the final block, if any.
-        if let Some(block) = self.block.take() {
-            assert!(block.next.load(Relaxed).is_null());
+        if !self.block.is_null() {
+            // SAFETY: We hold the only pointer to block and any writes to slots
+            //   within the block have been completed since we have taken all values
+            //   in the block above.
+            let mut block = unsafe { Box::from_raw(self.block) };
+            assert!(block.next.get_mut().is_null());
             *self.free = Some(block);
         }
     }
