@@ -2,10 +2,11 @@ mod generated;
 
 use crate::bytes::Bytes;
 use crate::ops::{
-    CompactReq, DeadlineReq, DeleteReq, DequeueReq, EnqueueReq, IdPattern, InfoReq, PeekReq,
-    ReleaseReq, RequeueReq, ValueReq,
+    CompactReq, DeadlineReq, DeleteReq, DequeueReq, EnqueueReq, EnqueueResp, IdPattern, InfoReq,
+    PeekReq, ReleaseReq, RequeueReq, ValueReq,
 };
 use crate::promise::QronoFuture;
+use crate::result::QronoResult;
 use std::sync::Arc;
 
 use generated::qrono::qrono_server::{Qrono, QronoServer};
@@ -17,7 +18,7 @@ use generated::qrono::{
 use prost_types::Timestamp;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::error::QronoError;
 use crate::grpc::generated::qrono::{Item, Stats};
@@ -58,7 +59,7 @@ impl Qrono for QronoService {
         }))
     }
 
-    type EnqueueManyStream = ReceiverStream<Result<EnqueueResponse, tonic::Status>>;
+    type EnqueueManyStream = UnboundedReceiverStream<Result<EnqueueResponse, tonic::Status>>;
 
     async fn enqueue_many(
         &self,
@@ -66,7 +67,31 @@ impl Qrono for QronoService {
     ) -> Result<Response<Self::EnqueueManyStream>, tonic::Status> {
         let mut req_stream = request.into_inner();
         let qrono = self.qrono.clone();
-        let (tx, rx) = mpsc::channel(4);
+        let (resp_tx, resp_rx) = mpsc::unbounded_channel();
+        let (resp_adapter_tx, mut resp_adapter_rx) = mpsc::channel(500);
+
+        // Wait on Qrono futures and send gRPC responses
+        tokio::spawn(async move {
+            loop {
+                match resp_adapter_rx.recv().await {
+                    Some(Ok(resp)) => {
+                        let resp: QronoResult<EnqueueResp> = resp.await;
+                        let resp = match resp {
+                            Ok(resp) => Ok(EnqueueResponse {
+                                deadline: Some(resp.deadline.into()),
+                            }),
+                            Err(err) => Err(err.into()),
+                        };
+                        resp_tx.send(resp).expect("response channel closed?");
+                    }
+                    Some(Err(err)) => {
+                        resp_tx.send(Err(err)).expect("response channel closed?");
+                    }
+                    None => break,
+                }
+            }
+        });
+
         tokio::spawn(async move {
             let mut queue_name = String::new();
             loop {
@@ -74,7 +99,11 @@ impl Qrono for QronoService {
                     Ok(Some(req)) => req,
                     Ok(None) => break,
                     Err(err) => {
-                        tx.send(Err(err)).await.expect("response channel closed?");
+                        resp_adapter_tx
+                            .send(Err(err))
+                            .await
+                            .map_err(|_| "response channel closed?")
+                            .unwrap();
                         break;
                     }
                 };
@@ -82,36 +111,37 @@ impl Qrono for QronoService {
                     queue_name = req.queue;
                 }
                 if queue_name.is_empty() {
-                    tx.send(Err(Status::invalid_argument("queue name required")))
+                    resp_adapter_tx
+                        .send(Err(Status::invalid_argument("queue name required")))
                         .await
-                        .expect("response channel closed?");
+                        .map_err(|_| "response channel closed?")
+                        .unwrap();
                     continue;
                 }
                 let queue = &queue_name;
                 let deadline = match req.deadline.try_into() {
                     Ok(deadline) => deadline,
                     Err(err) => {
-                        tx.send(Err(err)).await.expect("response channel closed?");
+                        resp_adapter_tx
+                            .send(Err(err))
+                            .await
+                            .map_err(|_| "response channel closed?")
+                            .unwrap();
                         continue;
                     }
                 };
                 let value = ValueReq::Bytes(Bytes::from(req.value));
                 let req = EnqueueReq { value, deadline };
                 let (promise, resp) = QronoFuture::new_std();
+                resp_adapter_tx
+                    .send(Ok(resp))
+                    .await
+                    .map_err(|_| "response channel closed?")
+                    .unwrap();
                 qrono.enqueue(queue, req, promise);
-                let resp = match resp.await {
-                    Ok(resp) => {
-                        Ok(EnqueueResponse {
-                            deadline: Some(resp.deadline.into()),
-                        })
-                    }
-                    Err(err) => Err(err.into()),
-                };
-                tx.send(resp).await.expect("response channel closed?");
             }
-            drop(tx);
         });
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(UnboundedReceiverStream::new(resp_rx)))
     }
 
     async fn dequeue(
