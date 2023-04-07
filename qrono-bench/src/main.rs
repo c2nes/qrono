@@ -15,16 +15,12 @@ use redis::{
 
 #[derive(Debug)]
 struct EnqueueResult {
-    _id: i64,
     _deadline: i64,
 }
 
 impl FromRedisValue for EnqueueResult {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
-        FromRedisValue::from_redis_value(v).map(|x: (i64, i64)| EnqueueResult {
-            _id: x.0,
-            _deadline: x.1,
-        })
+        FromRedisValue::from_redis_value(v).map(|x: i64| EnqueueResult { _deadline: x })
     }
 }
 
@@ -267,8 +263,72 @@ trait Batching: num::Integer + Copy {
 
 impl<T: num::Integer + Copy> Batching for T {}
 
-struct Benchmark {
-    target: HostAndPort,
+trait QronoConnection {
+    fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult>;
+
+    fn dequeue(
+        &mut self,
+        queue_name: &str,
+        count: u64,
+        timeout: Option<Duration>,
+    ) -> Vec<DequeueResult>;
+
+    fn release<I: IntoIterator<Item = i64>>(&mut self, queue_name: &str, ids: I) -> Vec<bool>;
+    fn delete(&mut self, queue_name: &str);
+}
+
+impl QronoConnection for redis::Connection {
+    fn dequeue(
+        &mut self,
+        queue_name: &str,
+        count: u64,
+        timeout: Option<Duration>,
+    ) -> Vec<DequeueResult> {
+        let mut dequeue = redis::cmd("DEQUEUE");
+        dequeue.arg(queue_name);
+        if count > 1 {
+            dequeue.arg("COUNT").arg(count);
+        }
+        if let Some(timeout) = timeout {
+            dequeue.arg("TIMEOUT").arg(timeout.as_millis() as u64);
+        }
+        dequeue.query(self).unwrap()
+    }
+
+    fn release<I: IntoIterator<Item = i64>>(&mut self, queue_name: &str, ids: I) -> Vec<bool> {
+        let mut pipe = redis::pipe();
+        for id in ids {
+            pipe.cmd("RELEASE").arg(&queue_name).arg(id);
+        }
+
+        pipe.query::<Vec<bool>>(self).unwrap()
+    }
+
+    fn delete(&mut self, queue_name: &str) {
+        redis::cmd("DELETE")
+            .arg(&queue_name)
+            .query::<bool>(self)
+            .unwrap();
+    }
+
+    fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult> {
+        let mut pipe = redis::pipe();
+        for _ in 0..count {
+            pipe.cmd("ENQUEUE").arg(&queue_name).arg(value);
+        }
+
+        pipe.query::<Vec<EnqueueResult>>(self).unwrap()
+    }
+}
+
+// struct
+
+struct Benchmark<C, F>
+where
+    C: QronoConnection,
+    F: Fn() -> C,
+{
+    client: F,
     queue_names: Vec<String>,
     count: HumanSize,
     size: usize,
@@ -298,45 +358,38 @@ struct Benchmark {
     base_time: Instant,
 }
 
-impl Benchmark {
+impl<C, F> Benchmark<C, F>
+where
+    C: QronoConnection,
+    F: Fn() -> C + Sync,
+{
     fn record_latency(hist: &Mutex<Histogram<u64>>, start: Instant) {
         let nanos = start.elapsed().as_nanos() as u64;
         hist.lock().unwrap().saturating_record(nanos);
     }
 
-    fn run_consumer(
-        &self,
-        client: &redis::Client,
-        queue_name: String,
-        count: u64,
-    ) -> Result<(), Error> {
-        let mut conn = client.get_connection().unwrap();
+    fn run_consumer(&self, queue_name: String, count: u64) -> Result<(), Error> {
         let pipeline = self.pipeline;
+        let mut conn = (self.client)();
 
         let mut remaining = count;
         while remaining > 0 {
-            let mut dequeue = redis::cmd("DEQUEUE");
-            dequeue.arg(&queue_name);
-            if self.pipeline > 1 {
-                dequeue.arg("COUNT").arg(remaining.min(pipeline as u64));
-            }
-            if self.dequeue_timeout > 0 {
-                dequeue.arg("TIMEOUT").arg(self.dequeue_timeout);
-            }
-
             let dequeue_start = Instant::now();
-            let resp: Vec<DequeueResult> = dequeue.query(&mut conn).unwrap();
+            let resp: Vec<DequeueResult> = conn.dequeue(
+                &queue_name,
+                remaining.min(pipeline as u64),
+                if self.dequeue_timeout > 0 {
+                    Some(Duration::from_millis(self.dequeue_timeout))
+                } else {
+                    None
+                },
+            );
 
             if !resp.is_empty() {
                 Self::record_latency(&self.hist_dequeue, dequeue_start);
 
-                let mut pipe = redis::pipe();
-                for dequeue in &resp {
-                    pipe.cmd("RELEASE").arg(&queue_name).arg(dequeue.id);
-                }
-
                 let release_start = Instant::now();
-                pipe.query::<Vec<bool>>(&mut conn).unwrap();
+                conn.release(&queue_name, resp.iter().map(|r| r.id));
                 Self::record_latency(&self.hist_release, release_start);
 
                 for dequeue in &resp {
@@ -355,15 +408,10 @@ impl Benchmark {
         Ok(())
     }
 
-    fn run_publisher(
-        &self,
-        client: &redis::Client,
-        queue_name: String,
-        n: u64,
-    ) -> Result<(), Error> {
+    fn run_publisher(&self, queue_name: String, n: u64) -> Result<(), Error> {
         let mut limiter = RateLimiter::new(self.publish_rate / self.publisher_count as f64);
         let mut value = vec![b'A'; self.size];
-        let mut conn = client.get_connection().unwrap();
+        let mut conn = (self.client)();
 
         for (_, count) in n.batches(self.pipeline as u64) {
             limiter.acquire(count as u32);
@@ -372,13 +420,8 @@ impl Benchmark {
             let timestamp = self.base_time.elapsed().as_nanos() as u64;
             value[0..8].copy_from_slice(&timestamp.to_be_bytes());
 
-            let mut pipe = redis::pipe();
-            for _ in 0..count {
-                pipe.cmd("ENQUEUE").arg(&queue_name).arg(&value[..]);
-            }
-
             let start = Instant::now();
-            pipe.query::<Vec<EnqueueResult>>(&mut conn).unwrap();
+            conn.enqueue(&queue_name, &value[..], count);
             Self::record_latency(&self.hist_enqueue, start);
         }
 
@@ -399,7 +442,6 @@ impl Benchmark {
     }
 
     fn run_queue(&self, queue_name: String) -> Result<(), Error> {
-        let client = redis::Client::open(&self.target).unwrap();
         let n = self.count.0;
 
         let consumer_barrier = Barrier::new(self.consumer_count as usize + 1);
@@ -410,12 +452,11 @@ impl Benchmark {
             let mut consumers = Vec::new();
             if self.mode.has_consumer() {
                 for (_, count) in n.partition(self.consumer_count) {
-                    let client = &client;
                     let consumer_barrier = &consumer_barrier;
                     let queue_name = queue_name.clone();
                     let handle = s.spawn(move |_| {
                         consumer_barrier.wait();
-                        self.run_consumer(client, queue_name, count).unwrap();
+                        self.run_consumer(queue_name, count).unwrap();
                     });
 
                     consumers.push(handle);
@@ -424,13 +465,12 @@ impl Benchmark {
 
             let mut publishers = Vec::new();
             for (_, n) in n.partition(self.publisher_count) {
-                let client = &client;
                 let publisher_barrier = &publisher_barrier;
                 let queue_name = queue_name.clone();
 
                 publishers.push(s.spawn(move |_| {
                     publisher_barrier.wait();
-                    self.run_publisher(client, queue_name, n).unwrap();
+                    self.run_publisher(queue_name, n).unwrap();
                 }));
             }
 
@@ -449,11 +489,7 @@ impl Benchmark {
 
             match self.mode {
                 Mode::PublishThenDelete => {
-                    let mut conn = client.get_connection().unwrap();
-                    redis::cmd("DELETE")
-                        .arg(&queue_name)
-                        .query::<bool>(&mut conn)
-                        .unwrap();
+                    (self.client)().delete(&queue_name);
                 }
                 Mode::PublishThenConsume => {
                     // Start consumers
@@ -666,8 +702,11 @@ fn main() {
         }
     };
 
+    let target: HostAndPort = arg(&matches, "target");
+    let client = redis::Client::open(&target).unwrap();
+
     let benchmark = Benchmark {
-        target: arg(&matches, "target"),
+        client: || client.get_connection().unwrap(),
         queue_names: names.clone(),
         count: arg(&matches, "count"),
         size: arg(&matches, "size"),
