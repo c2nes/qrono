@@ -154,7 +154,7 @@ fn start_http_server(opts: &Opts, qrono: Arc<Qrono>) -> Shutdown<Result<(), impl
 fn start_grpc_server(opts: &Opts, qrono: Arc<Qrono>) -> Shutdown<Result<(), impl Error>> {
     let service = qrono::grpc::service(qrono);
     let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(include_bytes!("../grpc/generated/qrono.bin"))
+        .register_encoded_file_descriptor_set(include_bytes!("../../../qrono_descriptor.pb.bin"))
         .build()
         .unwrap();
     let (shutdown, shutdown_signal) = Future::new_std();

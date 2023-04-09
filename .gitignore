@@ -9,3 +9,4 @@ flamegraph.svg
 bench.sh
 dump.rdb
 *.profraw
+*.pb.bin

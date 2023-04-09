@@ -1,0 +1,14 @@
+[package]
+name = "qrono-grpc"
+version = "0.1.0"
+authors = ["Chris Thunes <cthunes@brewtab.com>"]
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.52"
+tonic = "0.8"
+prost = "0.11"
+prost-types = "0.11"
+
+[build-dependencies]
+tonic-build = "0.8"

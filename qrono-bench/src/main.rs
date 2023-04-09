@@ -3,15 +3,21 @@ use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 use std::io::Error;
 use std::str::FromStr;
-use std::sync::{Barrier, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{App, Arg, ArgMatches};
 use hdrhistogram::Histogram;
+use qrono_grpc::qrono_client::QronoClient;
+use qrono_grpc::release_request::IdPattern;
+use qrono_grpc::{DeleteRequest, DequeueRequest, EnqueueRequest, ReleaseRequest};
 use redis::{
     ConnectionAddr, ConnectionInfo, FromRedisValue, IntoConnectionInfo, RedisResult, Value,
 };
+use tokio::runtime::Runtime;
+use tonic::transport::Channel;
+use tonic::{Code, Request};
 
 #[derive(Debug)]
 struct EnqueueResult {
@@ -91,6 +97,23 @@ impl IntoConnectionInfo for &HostAndPort {
                 password: None,
             },
         })
+    }
+}
+
+enum Target {
+    Resp2(HostAndPort),
+    Grpc(String),
+}
+
+impl FromStr for Target {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("grpc://") {
+            Ok(Self::Grpc(s.to_string()))
+        } else {
+            Ok(Self::Resp2(s.parse()?))
+        }
     }
 }
 
@@ -263,7 +286,7 @@ trait Batching: num::Integer + Copy {
 
 impl<T: num::Integer + Copy> Batching for T {}
 
-trait QronoConnection {
+trait QronoConnection: Send {
     fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult>;
 
     fn dequeue(
@@ -273,7 +296,7 @@ trait QronoConnection {
         timeout: Option<Duration>,
     ) -> Vec<DequeueResult>;
 
-    fn release<I: IntoIterator<Item = i64>>(&mut self, queue_name: &str, ids: I) -> Vec<bool>;
+    fn release(&mut self, queue_name: &str, items: &[DequeueResult]) -> Vec<bool>;
     fn delete(&mut self, queue_name: &str);
 }
 
@@ -295,10 +318,10 @@ impl QronoConnection for redis::Connection {
         dequeue.query(self).unwrap()
     }
 
-    fn release<I: IntoIterator<Item = i64>>(&mut self, queue_name: &str, ids: I) -> Vec<bool> {
+    fn release(&mut self, queue_name: &str, items: &[DequeueResult]) -> Vec<bool> {
         let mut pipe = redis::pipe();
-        for id in ids {
-            pipe.cmd("RELEASE").arg(&queue_name).arg(id);
+        for item in items {
+            pipe.cmd("RELEASE").arg(&queue_name).arg(item.id);
         }
 
         pipe.query::<Vec<bool>>(self).unwrap()
@@ -321,7 +344,136 @@ impl QronoConnection for redis::Connection {
     }
 }
 
-// struct
+#[derive(Debug, Clone)]
+struct GrpcConnection {
+    runtime: Arc<Runtime>,
+    client: QronoClient<Channel>,
+}
+
+impl QronoConnection for GrpcConnection {
+    fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult> {
+        self.runtime.block_on(async {
+            let mut enqueues = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                enqueues.push(EnqueueRequest {
+                    queue: queue_name.to_string(),
+                    value: value.to_vec(),
+                    deadline: None,
+                });
+            }
+            let mut responses = self
+                .client
+                .enqueue_many(Request::new(tokio_stream::iter(enqueues)))
+                .await
+                .unwrap()
+                .into_inner();
+
+            let mut results = Vec::with_capacity(count as usize);
+            loop {
+                match responses.message().await.unwrap() {
+                    Some(res) => {
+                        let ts = res.deadline.unwrap();
+                        results.push(EnqueueResult {
+                            _deadline: ts.seconds * 1000 + (ts.nanos as i64) / 1000000,
+                        });
+                    }
+                    None => break,
+                }
+            }
+            results
+        })
+    }
+
+    fn dequeue(
+        &mut self,
+        queue_name: &str,
+        count: u64,
+        timeout: Option<Duration>,
+    ) -> Vec<DequeueResult> {
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .dequeue(DequeueRequest {
+                    count,
+                    timeout_millis: timeout.map(|d| d.as_millis()).unwrap_or(0) as u64,
+                    queue: queue_name.to_string(),
+                })
+                .await;
+
+            match resp {
+                Ok(resp) => {
+                    let mut results = Vec::with_capacity(count as usize);
+                    for item in resp.into_inner().item {
+                        results.push(DequeueResult {
+                            id: item.id as i64,
+                            _deadline: 0,
+                            _enqueue_time: 0,
+                            _requeue_time: 0,
+                            _dequeue_count: 0,
+                            data: item.value,
+                        });
+                    }
+                    results
+                }
+                Err(err) if err.code() == Code::NotFound => {
+                    vec![]
+                }
+                Err(err) => panic!("dequeue failure: {:?}", err),
+            }
+        })
+    }
+
+    fn release(&mut self, queue_name: &str, items: &[DequeueResult]) -> Vec<bool> {
+        self.runtime.block_on(async {
+            let mut count = 0;
+            for item in items {
+                self.client
+                    .release(ReleaseRequest {
+                        queue: queue_name.to_string(),
+                        id_pattern: Some(IdPattern::Id(item.id as u64)),
+                    })
+                    .await
+                    .unwrap();
+                count += 1;
+            }
+            vec![true; count]
+        })
+    }
+
+    fn delete(&mut self, queue_name: &str) {
+        self.runtime.block_on(async {
+            self.client
+                .delete(DeleteRequest {
+                    queue: queue_name.to_string(),
+                })
+                .await
+                .unwrap();
+        })
+    }
+}
+
+impl QronoConnection for Box<dyn QronoConnection> {
+    fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult> {
+        self.as_mut().enqueue(queue_name, value, count)
+    }
+
+    fn dequeue(
+        &mut self,
+        queue_name: &str,
+        count: u64,
+        timeout: Option<Duration>,
+    ) -> Vec<DequeueResult> {
+        self.as_mut().dequeue(queue_name, count, timeout)
+    }
+
+    fn release(&mut self, queue_name: &str, items: &[DequeueResult]) -> Vec<bool> {
+        self.as_mut().release(queue_name, items)
+    }
+
+    fn delete(&mut self, queue_name: &str) {
+        self.as_mut().delete(queue_name)
+    }
+}
 
 struct Benchmark<C, F>
 where
@@ -389,7 +541,7 @@ where
                 Self::record_latency(&self.hist_dequeue, dequeue_start);
 
                 let release_start = Instant::now();
-                conn.release(&queue_name, resp.iter().map(|r| r.id));
+                conn.release(&queue_name, &resp[..]);
                 Self::record_latency(&self.hist_release, release_start);
 
                 for dequeue in &resp {
@@ -607,7 +759,7 @@ fn main() {
                 .short("t")
                 .long("target")
                 .default_value("localhost:16379")
-                .validator(validate::<HostAndPort, _>)
+                .validator(validate::<Target, _>)
                 .help("Qrono server address")
                 .takes_value(true),
         )
@@ -702,11 +854,28 @@ fn main() {
         }
     };
 
-    let target: HostAndPort = arg(&matches, "target");
-    let client = redis::Client::open(&target).unwrap();
+    let target: Target = arg(&matches, "target");
+    let client: Box<dyn Fn() -> Box<dyn QronoConnection> + Sync> = match target {
+        Target::Resp2(target) => {
+            let client = redis::Client::open(&target).unwrap();
+            Box::new(move || Box::new(client.get_connection().unwrap()))
+        }
+        Target::Grpc(target) => {
+            let runtime = Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+            );
+
+            let client = runtime.block_on(QronoClient::connect(target)).unwrap();
+            let client = GrpcConnection { runtime, client };
+            Box::new(move || Box::new(client.clone()))
+        }
+    };
 
     let benchmark = Benchmark {
-        client: || client.get_connection().unwrap(),
+        client,
         queue_names: names.clone(),
         count: arg(&matches, "count"),
         size: arg(&matches, "size"),

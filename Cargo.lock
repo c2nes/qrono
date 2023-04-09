@@ -1459,6 +1459,7 @@ dependencies = [
  "prost",
  "prost-types",
  "qrono-channel",
+ "qrono-grpc",
  "qrono-promise",
  "rand",
  "rand_chacha",
@@ -1473,7 +1474,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
  "tonic-reflection",
 ]
 
@@ -1481,12 +1481,22 @@ dependencies = [
 name = "qrono-bench"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "crossbeam",
+ "futures-core",
+ "futures-util",
  "hdrhistogram",
  "num",
+ "prost",
+ "prost-types",
+ "qrono-grpc",
  "rand",
  "redis",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-reflection",
 ]
 
 [[package]]
@@ -1497,6 +1507,17 @@ dependencies = [
  "crossbeam",
  "crossbeam-utils",
  "jemallocator",
+]
+
+[[package]]
+name = "qrono-grpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

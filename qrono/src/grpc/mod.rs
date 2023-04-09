@@ -1,5 +1,3 @@
-mod generated;
-
 use crate::bytes::Bytes;
 use crate::ops::{
     CompactReq, DeadlineReq, DeleteReq, DequeueReq, EnqueueReq, EnqueueResp, IdPattern, InfoReq,
@@ -9,8 +7,8 @@ use crate::promise::QronoFuture;
 use crate::result::QronoResult;
 use std::sync::Arc;
 
-use generated::qrono::qrono_server::{Qrono, QronoServer};
-use generated::qrono::{
+use qrono_grpc::qrono_server::{Qrono, QronoServer};
+use qrono_grpc::{
     CompactRequest, CompactResponse, DeleteRequest, DeleteResponse, DequeueRequest,
     DequeueResponse, EnqueueRequest, EnqueueResponse, InfoRequest, InfoResponse, PeekRequest,
     PeekResponse, ReleaseRequest, ReleaseResponse, RequeueRequest, RequeueResponse,
@@ -21,18 +19,18 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::error::QronoError;
-use crate::grpc::generated::qrono::{Item, Stats};
+use qrono_grpc::{Item, Stats};
 use tonic::{Request, Response, Status, Streaming};
 
 pub mod messages {
-    pub use super::generated::qrono::{
+    pub use qrono_grpc::{
         CompactRequest, CompactResponse, DeleteRequest, DeleteResponse, DequeueRequest,
         DequeueResponse, EnqueueRequest, EnqueueResponse, InfoRequest, InfoResponse, PeekRequest,
         PeekResponse, ReleaseRequest, ReleaseResponse, RequeueRequest, RequeueResponse,
     };
 }
 
-pub use generated::qrono::qrono_client::QronoClient;
+pub use qrono_grpc::qrono_client::QronoClient;
 
 struct QronoService {
     qrono: Arc<crate::service::Qrono>,
@@ -327,8 +325,8 @@ impl<D: TryInto<DeadlineReq, Error = Status>> TryInto<DeadlineReq> for Option<D>
     }
 }
 
-deadline_req_impl!(generated::qrono::enqueue_request::Deadline);
-deadline_req_impl!(generated::qrono::requeue_request::Deadline);
+deadline_req_impl!(qrono_grpc::enqueue_request::Deadline);
+deadline_req_impl!(qrono_grpc::requeue_request::Deadline);
 
 macro_rules! id_pattern_impl {
     ($id_pattern:ty) => {
@@ -356,5 +354,5 @@ impl<I: TryInto<IdPattern, Error = Status>> TryInto<IdPattern> for Option<I> {
     }
 }
 
-id_pattern_impl!(generated::qrono::requeue_request::IdPattern);
-id_pattern_impl!(generated::qrono::release_request::IdPattern);
+id_pattern_impl!(qrono_grpc::requeue_request::IdPattern);
+id_pattern_impl!(qrono_grpc::release_request::IdPattern);
