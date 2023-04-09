@@ -321,7 +321,7 @@ impl QronoConnection for redis::Connection {
     fn release(&mut self, queue_name: &str, items: &[DequeueResult]) -> Vec<bool> {
         let mut pipe = redis::pipe();
         for item in items {
-            pipe.cmd("RELEASE").arg(&queue_name).arg(item.id);
+            pipe.cmd("RELEASE").arg(queue_name).arg(item.id);
         }
 
         pipe.query::<Vec<bool>>(self).unwrap()
@@ -329,7 +329,7 @@ impl QronoConnection for redis::Connection {
 
     fn delete(&mut self, queue_name: &str) {
         redis::cmd("DELETE")
-            .arg(&queue_name)
+            .arg(queue_name)
             .query::<bool>(self)
             .unwrap();
     }
@@ -337,7 +337,7 @@ impl QronoConnection for redis::Connection {
     fn enqueue(&mut self, queue_name: &str, value: &[u8], count: u64) -> Vec<EnqueueResult> {
         let mut pipe = redis::pipe();
         for _ in 0..count {
-            pipe.cmd("ENQUEUE").arg(&queue_name).arg(value);
+            pipe.cmd("ENQUEUE").arg(queue_name).arg(value);
         }
 
         pipe.query::<Vec<EnqueueResult>>(self).unwrap()
@@ -369,16 +369,11 @@ impl QronoConnection for GrpcConnection {
                 .into_inner();
 
             let mut results = Vec::with_capacity(count as usize);
-            loop {
-                match responses.message().await.unwrap() {
-                    Some(res) => {
-                        let ts = res.deadline.unwrap();
-                        results.push(EnqueueResult {
-                            _deadline: ts.seconds * 1000 + (ts.nanos as i64) / 1000000,
-                        });
-                    }
-                    None => break,
-                }
+            while let Some(res) = responses.message().await.unwrap() {
+                let ts = res.deadline.unwrap();
+                results.push(EnqueueResult {
+                    _deadline: ts.seconds * 1000 + (ts.nanos as i64) / 1000000,
+                });
             }
             results
         })
