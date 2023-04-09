@@ -8,10 +8,6 @@ edition = "2021"
 name = "qrono"
 path = "src/bin/server.rs"
 
-[[bin]]
-name = "grpcbench"
-path = "src/bin/grpcbench.rs"
-
 [[bench]]
 name = "benches"
 harness = false

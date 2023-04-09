@@ -112,9 +112,9 @@ impl WriteAheadLog {
         if let Some(file) = &self.file {
             if self.sync_period.is_some() {
                 let start = Instant::now();
-                file.sync_all()?;
+                file.sync_data()?;
                 let end = Instant::now();
-                trace!("sync_all completed in {:?}", end - start);
+                trace!("sync_data completed in {:?}", end - start);
                 self.last_sync = end;
             }
         }
